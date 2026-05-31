@@ -339,14 +339,23 @@ impl RegistryClient {
         // when developing from a terminal. Same precedence as the legacy
         // status_view::detect_bootc_image_info path so the env var still works
         // after the UI migrates to the service.
+        //
+        // Parsing is lenient on the tag (uses it as-is if it isn't dated) so
+        // `FINUPDATE_IMAGE=ghcr.io/ublue-os/bluefin:stable` works. parse_image_ref
+        // is stricter — it requires a date suffix because it's used to interpret
+        // bootc-status output where tags are always dated.
         if let Ok(override_ref) = std::env::var("FINUPDATE_IMAGE") {
             if !override_ref.is_empty() {
-                if let Some(client) = parse_image_ref(&override_ref) {
-                    println!(
-                        "[debug] RegistryClient::detect_with_settings() FINUPDATE_IMAGE = {}",
-                        override_ref
-                    );
-                    return Some(client);
+                if let Some((without_tag, tag)) = override_ref.rsplit_once(':') {
+                    let parts: Vec<&str> = without_tag.splitn(3, '/').collect();
+                    if parts.len() >= 3 {
+                        let stream = strip_date_suffix(tag).unwrap_or_else(|| tag.to_string());
+                        println!(
+                            "[debug] RegistryClient::detect_with_settings() FINUPDATE_IMAGE = {}",
+                            override_ref
+                        );
+                        return Some(Self::new(parts[0], parts[1], parts[2], &stream));
+                    }
                 }
             }
         }

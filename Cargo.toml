@@ -61,6 +61,18 @@ async-trait = "0.1"
 # rustls-tls: no system OpenSSL needed inside the Flatpak sandbox.
 oci-client = { version = "0.15", default-features = false, features = ["rustls-tls"] }
 
+[[bin]]
+name = "finupdate"
+path = "src/main.rs"
+
+# Headless subcommand binary. Shares the service / registry_client / settings
+# modules with the GUI binary by file path (each binary compiles them into its
+# own crate). The CLI never links app/ui/dbus_progress/gpu — proving the
+# UpdaterService trait actually decouples the backend from the GTK frontend.
+[[bin]]
+name = "finupdate-cli"
+path = "src/cli.rs"
+
 [dev-dependencies]
 # test-util enables `#[tokio::test(start_paused = true)]` so tests that drive
 # simulated event sequences with internal sleeps run in virtual time, not wall clock.
