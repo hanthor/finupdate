@@ -686,6 +686,18 @@ mod tests {
             "finupdate-runner script not found in data/"
         );
 
+        // Guarantee include_app_updates is true via isolated config home
+        let temp_config = tempfile::tempdir().unwrap();
+        let original_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", temp_config.path());
+        }
+
+        let mut settings = crate::settings::Settings::default();
+        settings.include_app_updates = true;
+        settings.save();
+
         unsafe {
             std::env::set_var("PATH", &new_path);
             std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &runner_path);
@@ -706,9 +718,14 @@ mod tests {
             std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
             std::env::remove_var("FINUPDATE_TEST_BREW_BIN");
             std::env::remove_var("PKEXEC_USER");
+            if let Some(ref val) = original_xdg {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
         }
 
-        assert!(!events.is_empty());
+        assert!(!events.is_empty(), "Events list should not be empty");
         let expected = vec![
             UpdateEvent::ModuleStarted(Module::System),
             UpdateEvent::ModuleFinished(Module::System, ModuleStatus::Success),
@@ -722,7 +739,12 @@ mod tests {
         ];
 
         for item in &expected {
-            assert!(events.contains(item), "Missing expected event: {:?}", item);
+            assert!(
+                events.contains(item),
+                "Missing expected event: {:?}. Full events list: {:?}",
+                item,
+                events
+            );
         }
 
         let invocations = env.read_invocations();
@@ -806,7 +828,12 @@ mod tests {
         ];
 
         for item in &expected {
-            assert!(events.contains(item), "Missing expected event: {:?}", item);
+            assert!(
+                events.contains(item),
+                "Missing expected event: {:?}. Full events list: {:?}",
+                item,
+                events
+            );
         }
 
         let invocations = env.read_invocations();
