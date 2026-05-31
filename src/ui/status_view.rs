@@ -11,7 +11,9 @@
 use adw::prelude::*;
 use relm4::prelude::*;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::process::Command;
+use std::rc::Rc;
 use std::time::Instant;
 
 use crate::app::{AppState, PreflightStatus};
@@ -87,7 +89,7 @@ pub enum StatusViewInput {
     /// Registry versions loaded in background
     RegistryVersionsLoaded(Vec<crate::registry_client::ImageVersion>),
     /// Available tags loaded from registry for the tag selector
-    AvailableTagsLoaded(Vec<String>),
+    AvailableTagsLoaded(Vec<crate::registry_client::AvailableTag>),
     /// Github commits loaded in background
     GithubCommitsLoaded(Vec<(String, String, String)>),
     /// SBOM package diff loaded in background
@@ -197,6 +199,11 @@ pub struct StatusView {
     registry_row_sub: gtk::Label,
     tag_row: adw::ComboRow,
     tag_model: gtk::StringList,
+    /// Parallel list of raw tag strings, indexed the same as `tag_model`'s
+    /// display entries. `tag_model` shows pretty names ("Build 2026-05-15"
+    /// for sha tags) while bootc switch needs the actual sha — we look it up
+    /// here on selection.
+    tag_raws: Rc<RefCell<Vec<String>>>,
     history_list_box: gtk::ListBox,
     images_count_label: gtk::Label,
     changelog_box: gtk::Box,
@@ -689,15 +696,29 @@ impl StatusView {
 
                 row_box.append(&msg_box);
 
-                // Make the whole row clickable to open GitHub commit
+                // Whole-row click opens the GitHub commit page in the user's
+                // default browser. Use gtk::UriLauncher (sandbox-aware xdg
+                // portal call) rather than `xdg-open` directly — the bare
+                // command silently no-ops inside a Flatpak because the
+                // portal isn't on PATH from the sandbox.
                 if let Some(ref base_url) = github_url {
                     let commit_url = format!("{}/commit/{}", base_url, sha);
                     let gesture = gtk::GestureClick::new();
-                    let url = commit_url.clone();
+                    let row_for_gesture = row_box.clone();
                     gesture.connect_pressed(move |_, _, _, _| {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(&url)
-                            .spawn();
+                        let launcher = gtk::UriLauncher::new(&commit_url);
+                        let parent = row_for_gesture
+                            .root()
+                            .and_then(|r| r.downcast::<gtk::Window>().ok());
+                        launcher.launch(
+                            parent.as_ref(),
+                            gtk::gio::Cancellable::NONE,
+                            |result| {
+                                if let Err(e) = result {
+                                    tracing::warn!("Couldn't open commit URL: {}", e);
+                                }
+                            },
+                        );
                     });
                     row_box.add_controller(gesture);
                     row_box.set_cursor_from_name(Some("pointer"));
@@ -1122,6 +1143,10 @@ impl SimpleComponent for StatusView {
             }
         };
         let tag_model = gtk::StringList::new(&[]);
+        // Display == raw for the bootstrap tags (`latest` / detected tag) —
+        // no sha entries at construction time. The mapping evolves when
+        // AvailableTagsLoaded fires with the real tag list from the registry.
+        let tag_raws: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(tags.clone()));
         for t in &tags {
             tag_model.append(t);
         }
@@ -1134,11 +1159,14 @@ impl SimpleComponent for StatusView {
         // Disable until the background fetch fills in real tags.
         tag_row.set_sensitive(tags.len() > 1);
         let select_sender = sender.input_sender().clone();
+        let tag_raws_for_select = tag_raws.clone();
         tag_row.connect_selected_notify(move |row| {
-            if let Some(item) = row.selected_item() {
-                if let Some(s) = item.downcast_ref::<gtk::StringObject>() {
-                    select_sender.emit(StatusViewInput::SelectTag(s.string().to_string()));
-                }
+            // Look up the raw tag by selected index — display strings may be
+            // "Build YYYY-MM-DD" for sha-tagged manifests, but bootc switch
+            // needs the actual sha-hex tag string.
+            let idx = row.selected() as usize;
+            if let Some(raw) = tag_raws_for_select.borrow().get(idx).cloned() {
+                select_sender.emit(StatusViewInput::SelectTag(raw));
             }
         });
         source_group.add(&tag_row);
@@ -1388,6 +1416,7 @@ impl SimpleComponent for StatusView {
             registry_row_sub: registry_row_sub.clone(),
             tag_row: tag_row.clone(),
             tag_model: tag_model.clone(),
+            tag_raws: tag_raws.clone(),
             history_list_box: history_list_box.clone(),
             images_count_label,
             changelog_box: changelog_box.clone(),
@@ -1915,18 +1944,23 @@ impl SimpleComponent for StatusView {
             }
 
             StatusViewInput::AvailableTagsLoaded(tags) => {
-                // Repopulate the StringList model in-place. ComboRow rebuilds
-                // its dropdown from the model automatically.
+                // Repopulate the StringList model in-place with display
+                // strings; keep a parallel raw-tag list so the SelectTag
+                // dispatcher can map index → real tag (sha hash for dakota,
+                // verbatim for stream/dated tags).
                 while self.tag_model.n_items() > 0 {
                     self.tag_model.remove(0);
                 }
+                let mut raws = Vec::with_capacity(tags.len());
                 for t in &tags {
-                    self.tag_model.append(t);
+                    self.tag_model.append(&t.display);
+                    raws.push(t.raw.clone());
                 }
-                let active_idx = tags
+                let active_idx = raws
                     .iter()
-                    .position(|t| t == &self.selected_tag)
+                    .position(|raw| raw == &self.selected_tag)
                     .unwrap_or(0) as u32;
+                *self.tag_raws.borrow_mut() = raws;
                 self.tag_row.set_selected(active_idx);
                 self.tag_row.set_sensitive(tags.len() > 1);
             }

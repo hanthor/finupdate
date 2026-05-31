@@ -157,8 +157,15 @@ async fn cmd_tags() -> ExitCode {
     };
     match svc.list_available_tags(&image).await {
         Ok(tags) => {
+            // Each entry is a (display, raw) pair — print both when they
+            // differ (sha tags get a "Build YYYY-MM-DD" display label) so
+            // users can pipe the raw column for further automation.
             for t in tags {
-                println!("{}", t);
+                if t.display == t.raw {
+                    println!("{}", t.raw);
+                } else {
+                    println!("{}\t{}", t.raw, t.display);
+                }
             }
             ExitCode::SUCCESS
         }

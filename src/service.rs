@@ -74,7 +74,7 @@ pub trait Registry: Send + Sync {
     async fn list_available_tags(
         &self,
         image: &ImageRef,
-    ) -> Result<Vec<String>, ServiceError>;
+    ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError>;
 }
 
 /// Production Registry implementation backed by the existing
@@ -112,7 +112,7 @@ impl Registry for HttpRegistry {
     async fn list_available_tags(
         &self,
         image: &ImageRef,
-    ) -> Result<Vec<String>, ServiceError> {
+    ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError> {
         let client = crate::registry_client::RegistryClient::new(
             &image.registry,
             &image.org,
@@ -255,7 +255,7 @@ pub trait UpdaterService: Send + Sync {
     async fn list_available_tags(
         &self,
         image: &ImageRef,
-    ) -> Result<Vec<String>, ServiceError>;
+    ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError>;
 
     /// Compute the target image ref for a family + selected features. Returns
     /// None if the combination doesn't match a published image.
@@ -378,7 +378,7 @@ impl UpdaterService for BootcUpdaterService {
     async fn list_available_tags(
         &self,
         image: &ImageRef,
-    ) -> Result<Vec<String>, ServiceError> {
+    ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError> {
         self.registry.list_available_tags(image).await
     }
 
@@ -494,7 +494,7 @@ mod tests {
     struct FixtureRegistry {
         booted: Option<ImageRef>,
         versions: std::collections::HashMap<String, Vec<ImageVersion>>,
-        tags: std::collections::HashMap<String, Vec<String>>,
+        tags: std::collections::HashMap<String, Vec<crate::registry_client::AvailableTag>>,
         fetch_versions_calls: Mutex<u32>,
         detect_calls: Mutex<u32>,
         list_tags_calls: Mutex<u32>,
@@ -523,8 +523,19 @@ mod tests {
         }
 
         fn with_tags(mut self, image: &ImageRef, tags: Vec<&str>) -> Self {
-            self.tags
-                .insert(image.as_string(), tags.into_iter().map(String::from).collect());
+            // Display == raw for plain stream / dated tags; that matches the
+            // production transform for non-sha tags. Tests that need to
+            // exercise the sha→date display swap should construct
+            // `AvailableTag` values directly.
+            self.tags.insert(
+                image.as_string(),
+                tags.into_iter()
+                    .map(|t| crate::registry_client::AvailableTag {
+                        display: t.to_string(),
+                        raw: t.to_string(),
+                    })
+                    .collect(),
+            );
             self
         }
     }
@@ -550,7 +561,7 @@ mod tests {
         async fn list_available_tags(
             &self,
             image: &ImageRef,
-        ) -> Result<Vec<String>, ServiceError> {
+        ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError> {
             *self.list_tags_calls.lock().unwrap() += 1;
             self.tags
                 .get(&image.as_string())
@@ -781,7 +792,8 @@ mod tests {
         let svc = BootcUpdaterService::with_registry(reg);
         let tags = svc.list_available_tags(&img).await.unwrap();
         assert_eq!(tags.len(), 4);
-        assert_eq!(tags[0], "latest");
+        assert_eq!(tags[0].display, "latest");
+        assert_eq!(tags[0].raw, "latest");
     }
 
     #[tokio::test]

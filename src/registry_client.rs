@@ -49,6 +49,20 @@ pub enum RegistryError {
     NoCurrentImage,
 }
 
+/// One entry in the available-tags list.
+///
+/// `raw` is the actual tag string the registry serves (what gets passed to
+/// `bootc switch` / `image:tag` refs). `display` is what the tag dropdown
+/// shows the user — typically equal to `raw`, but for sha-tagged manifests
+/// (dakota-nvidia and other Project Bluefin images) we substitute a human-
+/// friendly `"Build YYYY-MM-DD"` label so the dropdown isn't full of 40-char
+/// hex hashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailableTag {
+    pub display: String,
+    pub raw: String,
+}
+
 /// One coherent product family — a user-facing concept that groups a set of
 /// sibling image *names* (the GPU/hardware variants like `-nvidia`, `-dx`,
 /// `-deck`) and the tag streams (channels) under which they're published.
@@ -496,8 +510,15 @@ impl RegistryClient {
         // Sort by date DESC, but DO NOT truncate yet — if we're short of
         // CANDIDATE_CAP we'll supplement via the sha-tag config-blob harvest
         // below, and a final sort+truncate happens after that.
+        //
+        // SHA_PROBE_CAP was bumped from 30 → 120 because dakota switched
+        // fully to sha-tagged manifests around 2026-02; with the smaller
+        // cap and unspecified GHCR tag-list ordering, the probe was
+        // landing on a handful of old February tags and missing every
+        // build since. 120 probes at 8-way concurrency runs in ~5-10s
+        // against ghcr.io — acceptable for a one-shot changelog fetch.
         const CANDIDATE_CAP: usize = 8;
-        const SHA_PROBE_CAP: usize = 30;
+        const SHA_PROBE_CAP: usize = 120;
         candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
 
         // Slow path: dakota-nvidia and similar images publish via sha-only
@@ -628,9 +649,17 @@ impl RegistryClient {
     }
 
     /// Return the tags available for this image, organised for the tag selector:
-    /// - non-dated "stream/channel" tags first (e.g. `latest`, `gts`)
-    /// - then dated tags for this stream, newest-first (e.g. `latest-20260527`)
-    pub async fn fetch_available_tags(&self) -> Result<Vec<String>, RegistryError> {
+    /// - non-dated "stream/channel" tags first (e.g. `latest`, `gts`) — display == raw
+    /// - dated tags for this stream, newest-first (e.g. `latest-20260527`) — display == raw
+    /// - sha-tagged manifests (dakota-nvidia and similar) — display becomes
+    ///   `"Build YYYY-MM-DD"` derived from the config-blob `created` field;
+    ///   raw stays as the sha-hex string so `bootc switch` can use it.
+    ///
+    /// The sha branch reuses [`Self::probe_sha_tag_dates`], which is what
+    /// [`Self::fetch_versions`] also calls — same date source, same 8-way
+    /// concurrency cap. Bounded by `tag_cap` total entries (default 30) so
+    /// the dropdown stays manageable on long-lived registries.
+    pub async fn fetch_available_tags(&self) -> Result<Vec<AvailableTag>, RegistryError> {
         let token = self.get_token().await?;
         let tags_url = format!(
             "https://{}/v2/{}/{}/tags/list?n=1000",
@@ -647,25 +676,58 @@ impl RegistryClient {
 
         let mut stream_tags: Vec<String> = Vec::new();
         let mut dated: Vec<(NaiveDate, String)> = Vec::new();
+        let mut sha_tags: Vec<String> = Vec::new();
 
         for tag in &tag_resp.tags {
-            // Skip OCI digest references and suspiciously long tokens.
-            if tag.starts_with("sha256:") || tag.len() > 80 {
+            if tag.starts_with("sha256:") {
+                // OCI digest reference (registry-internal) — skip; the sha-
+                // hex commit tags below are the actual identifiers we want.
+                continue;
+            }
+            if is_sha_only_tag(tag) {
+                sha_tags.push(tag.clone());
                 continue;
             }
             if let Some(date) = parse_dated_tag(tag, &self.stream) {
                 dated.push((date, tag.clone()));
             } else if strip_date_suffix(tag).is_none() {
-                // No date suffix → it's a stream / channel tag.
                 stream_tags.push(tag.clone());
             }
         }
 
+        // Probe sha tags for build dates so the dropdown shows readable
+        // labels instead of 40-char hashes. Same SHA_PROBE_CAP as
+        // fetch_versions — large enough that dakota's post-Feb-2026
+        // sha-only history actually surfaces.
+        const SHA_PROBE_CAP: usize = 120;
+        if sha_tags.len() > SHA_PROBE_CAP {
+            sha_tags.truncate(SHA_PROBE_CAP);
+        }
+        let dated_sha: Vec<(NaiveDate, String)> = if sha_tags.is_empty() {
+            Vec::new()
+        } else {
+            let client = self.client.clone();
+            self.probe_sha_tag_dates(&sha_tags, &token, &client).await
+        };
+
         stream_tags.sort();
         dated.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut dated_sha = dated_sha;
+        dated_sha.sort_by(|a, b| b.0.cmp(&a.0));
 
-        let mut result = stream_tags;
-        result.extend(dated.into_iter().take(30).map(|(_, t)| t));
+        let mut result: Vec<AvailableTag> = Vec::new();
+        for t in stream_tags {
+            result.push(AvailableTag { display: t.clone(), raw: t });
+        }
+        for (_date, t) in dated.into_iter().take(30) {
+            result.push(AvailableTag { display: t.clone(), raw: t });
+        }
+        for (date, sha) in dated_sha {
+            result.push(AvailableTag {
+                display: format!("Build {}", date.format("%Y-%m-%d")),
+                raw: sha,
+            });
+        }
         Ok(result)
     }
 
