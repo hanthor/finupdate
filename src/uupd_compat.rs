@@ -413,4 +413,178 @@ mod tests {
         let c: UupdConfig = serde_json::from_str(extended).unwrap();
         assert!(c.checks.hardware.enable);
     }
+
+    static UUPD_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct MockEnv {
+        _temp_dir: tempfile::TempDir,
+        bin_dir: std::path::PathBuf,
+    }
+
+    impl MockEnv {
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let bin_dir = temp_dir.path().join("bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            Self {
+                _temp_dir: temp_dir,
+                bin_dir,
+            }
+        }
+
+        fn create_mock_bin(&self, name: &str, stdout: &str, exit_code: i32) {
+            let path = self.bin_dir.join(name);
+            let content = format!(
+                "#!/bin/sh\n\
+                 echo -n \"{stdout}\"\n\
+                 exit {exit_code}\n",
+                stdout = stdout,
+                exit_code = exit_code
+            );
+            std::fs::write(&path, content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_uupd_installed() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("which", "/usr/bin/uupd\n", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let installed = is_uupd_installed();
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert!(installed);
+    }
+
+    #[tokio::test]
+    async fn test_is_uupd_not_installed() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("which", "", 1);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let installed = is_uupd_installed();
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert!(!installed);
+    }
+
+    #[tokio::test]
+    async fn test_is_uupd_timer_active_enabled() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("systemctl", "enabled\n", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let active = is_uupd_timer_active();
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert_eq!(active, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_is_uupd_timer_active_disabled() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("systemctl", "disabled\n", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let active = is_uupd_timer_active();
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert_eq!(active, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_set_uupd_timer_success() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("pkexec", "", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let result = set_uupd_timer(true).await;
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_uupd_timer_failure() {
+        let _lock = UUPD_TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("pkexec", "", 1);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+
+        let result = set_uupd_timer(true).await;
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+        }
+
+        assert!(result.is_err());
+    }
 }
