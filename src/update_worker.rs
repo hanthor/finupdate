@@ -20,7 +20,7 @@
 use tokio::sync::mpsc;
 
 /// Events emitted by the update worker as the subprocess runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateEvent {
     /// A line of stdout/stderr output from the update process.
     Output(String),
