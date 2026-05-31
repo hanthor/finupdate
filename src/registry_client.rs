@@ -167,7 +167,7 @@ pub const KNOWN_FAMILIES: &[Family] = &[
         // don't exist for Dakota — leaving them here would let the rebase
         // dialog show feature switches that resolve to bogus refs.
         images: &["dakota", "dakota-nvidia"],
-        streams: &["latest"],
+        streams: &["latest", "testing"],
     },
 ];
 
@@ -1484,6 +1484,9 @@ mod tests {
             dakota.select_image_for_features(&["nvidia"]),
             Some("dakota-nvidia")
         );
+
+        let dakota_testing = Family::best_match("projectbluefin", "dakota", "testing").unwrap();
+        assert_eq!(dakota_testing.name, "Bluefin Dakota");
     }
 
     #[test]
@@ -1518,6 +1521,9 @@ mod tests {
     fn parse_image_ref_full_ghcr_with_dash_date() {
         let c = parse_image_ref("ghcr.io/projectbluefin/dakota:latest-20260527").unwrap();
         assert_eq!(c.stream, "latest");
+
+        let c2 = parse_image_ref("ghcr.io/projectbluefin/dakota:testing-20260527").unwrap();
+        assert_eq!(c2.stream, "testing");
     }
 
     #[test]

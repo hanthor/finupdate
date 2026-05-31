@@ -87,7 +87,7 @@ mod cli_tests {
 
         assert!(output_fam.status.success());
         let stdout_fam = String::from_utf8_lossy(&output_fam.stdout);
-        assert!(stdout_fam.contains("family: Dakota"));
+        assert!(stdout_fam.contains("family: Bluefin Dakota"));
         assert!(stdout_fam.contains("base:   dakota"));
     }
 
