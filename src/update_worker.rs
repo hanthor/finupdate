@@ -40,7 +40,7 @@ pub enum UpdateEvent {
 }
 
 /// What the simulated update run should end with.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimulationScenario {
     /// All four modules succeed, update completes normally.
     Success,

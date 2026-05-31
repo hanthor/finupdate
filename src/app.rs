@@ -1175,3 +1175,69 @@ fn inject_app_css() {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init_gtk() {
+        INIT.call_once(|| {
+            unsafe {
+                std::env::set_var("GDK_BACKEND", "broadway");
+                std::env::set_var(
+                    "FINUPDATE_IMAGE",
+                    "ghcr.io/projectbluefin/dakota:latest-20260527",
+                );
+            }
+            gtk::init().expect("Failed to initialize headless GTK");
+            adw::init().expect("Failed to initialize headless Adwaita");
+
+            // Ensure process-wide global service is initialized.
+            service::init(service::BootcUpdaterService::new());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_app_ui_flow() {
+        init_gtk();
+
+        // Create a Relm4 app controller
+        let controller = App::builder().launch(()).detach();
+
+        // Assert initial state
+        assert_eq!(controller.model().state, AppState::Idle);
+        assert_eq!(controller.model().current_page, "main");
+
+        // Send messages to toggle dev mode and sim scenario
+        controller
+            .sender()
+            .send(AppMsg::ToggleDevMode(true))
+            .unwrap();
+        controller
+            .sender()
+            .send(AppMsg::SetSimScenario(SimulationScenario::Success))
+            .unwrap();
+
+        // Wait briefly for the Relm4 message loop to process
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(controller.model().settings.dev_mode);
+        assert_eq!(controller.model().sim_scenario, SimulationScenario::Success);
+
+        // Test Page navigation
+        controller
+            .sender()
+            .send(AppMsg::PageChanged("preferences".to_string()))
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(controller.model().current_page, "preferences");
+
+        controller.sender().send(AppMsg::GoBack).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(controller.model().current_page, "main");
+    }
+}
