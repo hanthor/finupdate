@@ -952,7 +952,13 @@ fn populate_family_switches(
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
 ) {
-    let slot: Arc<Mutex<Option<Option<FamilyInfo>>>> = Arc::new(Mutex::new(None));
+    // Two pieces of state get resolved in the background thread:
+    //   - the family the booted image belongs to (drives WHICH toggles show)
+    //   - the booted ImageRef itself (drives the toggles' INITIAL state, so
+    //     a user already on bluefin-dx-nvidia-open sees both toggles ON
+    //     when the dialog opens, not OFF as if rebasing would downgrade)
+    let slot: Arc<Mutex<Option<(Option<FamilyInfo>, Option<service::ImageRef>)>>> =
+        Arc::new(Mutex::new(None));
 
     {
         let slot = slot.clone();
@@ -962,13 +968,10 @@ fn populate_family_switches(
                 .build()
                 .expect("tokio runtime");
             let detected = rt.block_on(async move {
-                // Migrated from RegistryClient::detect() + Family::best_match
-                // to the service layer. Same observable behaviour (honours
-                // mock_identity, falls through to bootc status, then
-                // os-release) but the UI no longer reaches into the registry
-                // module directly — first step toward an alternative
-                // frontend being able to call the same code path.
-                service::global().current_family().await.ok().flatten()
+                let svc = service::global();
+                let family = svc.current_family().await.ok().flatten();
+                let image = svc.current_image().await.ok();
+                (family, image)
             });
             *slot.lock().unwrap() = Some(detected);
         });
@@ -979,18 +982,32 @@ fn populate_family_switches(
     let target_row = target_row.clone();
 
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        let Some(detected) = slot.lock().ok().and_then(|mut g| g.take()) else {
+        let Some((family_opt, image_opt)) = slot.lock().ok().and_then(|mut g| g.take()) else {
             return glib::ControlFlow::Continue;
         };
 
-        let Some(family) = detected else {
+        let Some(family) = family_opt else {
             family_label.set_label("Family not recognized");
             target_row.set_subtitle("(this image isn't in the KNOWN_FAMILIES catalogue)");
             return glib::ControlFlow::Break;
         };
 
         family_label.set_label(&format!("Family: {}", family.name));
-        target_row.set_subtitle(&format!("{} (no extras)", family.base_image));
+
+        // Derive the initial toggle state from the booted image's suffix so
+        // users already on -dx / -nvidia / -dx-nvidia-open see the dialog
+        // open with their current configuration represented, not with
+        // everything OFF. Without this the dialog implies that rebasing
+        // would *downgrade* to the base image.
+        let (initial_dx, initial_nvidia) =
+            derive_initial_toggle_state(&family, image_opt.as_ref());
+        target_row.set_subtitle(
+            image_opt
+                .as_ref()
+                .map(|img| format!("{} (currently booted)", img.image))
+                .unwrap_or_else(|| format!("{} (no extras)", family.base_image))
+                .as_str(),
+        );
 
         // Two opinionated toggles instead of one-per-atomic-feature. Per user
         // direction: "we should have toggle for Developer Mode and Nvidia".
@@ -1003,8 +1020,8 @@ fn populate_family_switches(
         let supports_nvidia =
             family.features.iter().any(|f| f.id == "nvidia" || f.id == "open");
 
-        let dx_state = Rc::new(Cell::new(false));
-        let nvidia_state = Rc::new(Cell::new(false));
+        let dx_state = Rc::new(Cell::new(initial_dx));
+        let nvidia_state = Rc::new(Cell::new(initial_nvidia));
 
         let recompute = {
             let family = family.clone();
@@ -1032,6 +1049,7 @@ fn populate_family_switches(
             let row = adw::SwitchRow::builder()
                 .title("Developer Mode")
                 .subtitle("Container tools, IDEs, and language SDKs")
+                .active(initial_dx)
                 .build();
             let recompute_ = recompute.clone();
             let dx_state_ = dx_state.clone();
@@ -1046,6 +1064,7 @@ fn populate_family_switches(
             let row = adw::SwitchRow::builder()
                 .title("NVIDIA drivers")
                 .subtitle("Picks the open kernel modules where available, falls back to the proprietary driver")
+                .active(initial_nvidia)
                 .build();
             // Guard prevents the warn-and-revert path from re-firing this
             // handler when we programmatically flip the switch back to
@@ -1144,6 +1163,39 @@ fn resolve_dx_nvidia(
 
     let img = svc.resolve_target(family, &base);
     (base, img)
+}
+
+/// Reverse-engineer the toggle state from the user's booted image suffix so the
+/// rebase dialog opens with the toggles matching reality.
+///
+/// Example: booted on `bluefin-dx-nvidia-open` with family base `bluefin` →
+/// suffix `dx-nvidia-open` → `(dx=true, nvidia=true)`.
+///
+/// Returns `(false, false)` when the booted image is unknown, is the bare base,
+/// or doesn't match the expected `{base}-{suffix}` shape. Conservative default —
+/// if we can't be sure, show everything off rather than mislead the user about
+/// what they're running.
+fn derive_initial_toggle_state(
+    family: &FamilyInfo,
+    image: Option<&service::ImageRef>,
+) -> (bool, bool) {
+    let Some(image) = image else {
+        return (false, false);
+    };
+    let Some(suffix) = image
+        .image
+        .strip_prefix(&format!("{}-", family.base_image))
+    else {
+        // Bare base image (no suffix) or completely unrelated image name.
+        return (false, false);
+    };
+    let parts: Vec<&str> = suffix.split('-').collect();
+    let dx = parts.contains(&"dx");
+    // Either `-nvidia` or `-nvidia-open` (or future `-open`-only variants) all
+    // count as "NVIDIA on" from the user's mental model. resolve_dx_nvidia()
+    // picks the right specific variant when they save.
+    let nvidia = parts.contains(&"nvidia") || parts.contains(&"open");
+    (dx, nvidia)
 }
 
 // feature_display_name / feature_subtitle moved to service::feature_display_name
@@ -1432,5 +1484,90 @@ mod tests {
         let (feats, img) = resolve_dx_nvidia(&dakota_info(), true, false);
         assert_eq!(feats, vec!["dx".to_string()]);
         assert!(img.is_none());
+    }
+
+    // ── derive_initial_toggle_state ──────────────────────────────────────
+    // The dialog must open with toggles reflecting the booted variant so a
+    // user already on -dx-nvidia-open doesn't think rebasing would downgrade.
+
+    fn image_ref(image: &str) -> service::ImageRef {
+        service::ImageRef {
+            registry: "ghcr.io".to_string(),
+            org: "ublue-os".to_string(),
+            image: image.to_string(),
+            tag: "stable".to_string(),
+        }
+    }
+
+    #[test]
+    fn initial_toggles_no_image_returns_off() {
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), None);
+        assert!(!dx);
+        assert!(!nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_base_image_returns_off() {
+        let img = image_ref("bluefin");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(!dx);
+        assert!(!nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_dx_only() {
+        let img = image_ref("bluefin-dx");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(dx);
+        assert!(!nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_plain_nvidia() {
+        let img = image_ref("bluefin-nvidia");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(!dx);
+        assert!(nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_nvidia_open() {
+        let img = image_ref("bluefin-nvidia-open");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(!dx);
+        assert!(nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_dx_and_nvidia_open() {
+        let img = image_ref("bluefin-dx-nvidia-open");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(dx);
+        assert!(nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_unrelated_image_returns_off() {
+        // Booted image's name doesn't share the family's base prefix — could
+        // happen if KNOWN_FAMILIES drifts vs reality. Show off rather than
+        // lie about state.
+        let img = image_ref("aurora-dx");
+        let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
+        assert!(!dx);
+        assert!(!nvidia);
+    }
+
+    #[test]
+    fn initial_toggles_dakota_plain_nvidia() {
+        // Dakota's -nvidia variant — no -open suffix, but still "NVIDIA on".
+        let img = service::ImageRef {
+            registry: "ghcr.io".to_string(),
+            org: "projectbluefin".to_string(),
+            image: "dakota-nvidia".to_string(),
+            tag: "latest".to_string(),
+        };
+        let (dx, nvidia) = derive_initial_toggle_state(&dakota_info(), Some(&img));
+        assert!(!dx);
+        assert!(nvidia);
     }
 }
