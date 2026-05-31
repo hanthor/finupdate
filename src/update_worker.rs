@@ -1,3 +1,7 @@
+// Consumed by the GUI binary; finupdate-cli compiles it but doesn't use
+// run() / run_simulated(), which trips dead-code warnings under that bin.
+#![allow(dead_code)]
+
 //! Event types and the thin public façade over the update orchestrator.
 //!
 //! The real work lives in [`crate::orchestrator`], which spawns the bundled

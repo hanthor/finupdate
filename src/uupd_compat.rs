@@ -1,3 +1,7 @@
+// Consumed by the GUI binary; finupdate-cli compiles it but doesn't use
+// it, which trips dead-code warnings under that bin. Module-level allow.
+#![allow(dead_code)]
+
 //! Compatibility shim for the optional host `uupd` binary.
 //!
 //! `uupd` is not required — finupdate has its own orchestrator. But if it IS

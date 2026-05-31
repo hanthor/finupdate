@@ -2273,16 +2273,26 @@ fn read_image_info() -> Option<String> {
 }
 
 fn read_os_release_field(key: &str) -> Option<String> {
-    let prefix = format!("{}=", key);
     for path in &["/run/host/etc/os-release", "/etc/os-release"] {
         if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Some(v) = line.strip_prefix(prefix.as_str()) {
-                    let val = v.trim_matches('"').to_string();
-                    if !val.is_empty() {
-                        return Some(val);
-                    }
-                }
+            if let Some(v) = parse_os_release_field(&content, key) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Pure-function counterpart of [`read_os_release_field`] — extracted so
+/// the key=value parsing is unit-testable without filesystem fixtures.
+/// Strips surrounding double-quotes; rejects empty values; first match wins.
+fn parse_os_release_field(content: &str, key: &str) -> Option<String> {
+    let prefix = format!("{}=", key);
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix(prefix.as_str()) {
+            let val = v.trim_matches('"').to_string();
+            if !val.is_empty() {
+                return Some(val);
             }
         }
     }
@@ -2294,6 +2304,13 @@ fn read_os_release_field(key: &str) -> Option<String> {
 /// Per user direction this is more informative than "Booted N days ago".
 fn read_booted_image_summary() -> Option<String> {
     let json = get_cached_bootc_status()?;
+    parse_booted_image_summary(&json)
+}
+
+/// Pure-function counterpart of [`read_booted_image_summary`] — extracted
+/// for unit testing without spawning `bootc status --json`. Takes the same
+/// JSON shape bootc emits and returns the formatted subtitle.
+fn parse_booted_image_summary(json: &Value) -> Option<String> {
     let booted = json.pointer("/status/booted")?;
     let version = booted
         .pointer("/image/version")
@@ -3396,6 +3413,131 @@ fn spawn_changelog_fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    // ── parse_booted_image_summary ───────────────────────────────────────
+    // Pure JSON-shape tests for the hero-row subtitle helper. The bootc
+    // status JSON shape is `{ "status": { "booted": { "image": { ... } } } }`.
+
+    #[test]
+    fn booted_summary_with_version_and_digest() {
+        let j = json!({
+            "status": {
+                "booted": {
+                    "image": {
+                        "version": "43.20260527.0",
+                        "imageDigest": "sha256:abcdef1234567890"
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            parse_booted_image_summary(&j),
+            Some("43.20260527.0  ·  shaabcdef12".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_summary_with_version_only() {
+        let j = json!({
+            "status": { "booted": { "image": { "version": "43.20260527.0" } } }
+        });
+        assert_eq!(
+            parse_booted_image_summary(&j),
+            Some("43.20260527.0".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_summary_with_digest_only() {
+        let j = json!({
+            "status": {
+                "booted": { "image": { "imageDigest": "sha256:cafe1234ffff5678" } }
+            }
+        });
+        assert_eq!(
+            parse_booted_image_summary(&j),
+            Some("shacafe1234".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_summary_handles_unprefixed_digest() {
+        // Some bootc versions emit the digest without the `sha256:` prefix.
+        let j = json!({
+            "status": {
+                "booted": { "image": { "imageDigest": "00ff11ee22dd33cc" } }
+            }
+        });
+        assert_eq!(
+            parse_booted_image_summary(&j),
+            Some("sha00ff11ee".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_summary_missing_booted_returns_none() {
+        let j = json!({ "status": {} });
+        assert_eq!(parse_booted_image_summary(&j), None);
+    }
+
+    #[test]
+    fn booted_summary_empty_image_returns_none() {
+        let j = json!({ "status": { "booted": { "image": {} } } });
+        assert_eq!(parse_booted_image_summary(&j), None);
+    }
+
+    // ── parse_os_release_field ───────────────────────────────────────────
+
+    const SAMPLE_OS_RELEASE: &str = r#"NAME="Bluefin Dakota"
+PRETTY_NAME="Bluefin Dakota"
+ID=dakota
+VERSION_ID="43"
+IMAGE_ID=dakota
+VARIANT_ID=dakota
+LOGO=bluefin
+"#;
+
+    #[test]
+    fn os_release_pretty_name_unquoted() {
+        assert_eq!(
+            parse_os_release_field(SAMPLE_OS_RELEASE, "PRETTY_NAME"),
+            Some("Bluefin Dakota".to_string())
+        );
+    }
+
+    #[test]
+    fn os_release_unquoted_value() {
+        assert_eq!(
+            parse_os_release_field(SAMPLE_OS_RELEASE, "ID"),
+            Some("dakota".to_string())
+        );
+    }
+
+    #[test]
+    fn os_release_missing_key_returns_none() {
+        assert_eq!(
+            parse_os_release_field(SAMPLE_OS_RELEASE, "BUILD_ID"),
+            None
+        );
+    }
+
+    #[test]
+    fn os_release_empty_value_skipped() {
+        // VARIANT="" should NOT be returned — empty strings aren't useful.
+        let content = "ID=fedora\nVARIANT=\"\"\nLOGO=fedora\n";
+        assert_eq!(parse_os_release_field(content, "VARIANT"), None);
+        // But ID still wins.
+        assert_eq!(parse_os_release_field(content, "ID"), Some("fedora".to_string()));
+    }
+
+    #[test]
+    fn os_release_first_match_wins() {
+        // os-release CAN have duplicate keys in pathological cases — first
+        // occurrence wins (matches the read order).
+        let content = "ID=first\nID=second\n";
+        assert_eq!(parse_os_release_field(content, "ID"), Some("first".to_string()));
+    }
 
     // ── strip_date_suffix ────────────────────────────────────────────────
     // Mirror of the parser in registry_client::strip_date_suffix but a

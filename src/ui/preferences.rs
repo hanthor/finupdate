@@ -417,7 +417,12 @@ fn build_system_group(
 }
 
 // ── Developer group ───────────────────────────────────────────────────────────
+//
+// Kept around behind an explicit `#[allow(dead_code)]` because re-enabling
+// it from the dialog is one call site (build_updates_group above) — handy
+// when iterating on dev_mode UX without re-deriving the SwitchRow plumbing.
 
+#[allow(dead_code)]
 fn build_developer_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings>>) {
     let group = adw::PreferencesGroup::builder()
         .title("Developer")
