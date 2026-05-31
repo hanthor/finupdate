@@ -230,12 +230,14 @@ pub fn show_update_check_dialog(
     button_box.set_halign(gtk::Align::End);
     button_box.set_hexpand(true);
 
+    // Dialog action buttons (bottom-right, in a horizontal box) — per GNOME
+    // HIG / control-center idiom these are rectangular with rounded corners
+    // (.suggested-action alone), not pill-shaped. .pill is reserved for
+    // centered standalone hero CTAs.
     let close_btn = gtk::Button::with_label("Close");
-    close_btn.add_css_class("pill");
 
     let install_btn = gtk::Button::with_label("Install all");
     install_btn.add_css_class("suggested-action");
-    install_btn.add_css_class("pill");
     install_btn.set_visible(false);
 
     button_box.append(&close_btn);

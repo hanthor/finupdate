@@ -98,6 +98,10 @@ pub struct App {
     cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// Reference to header bar for dynamic subtitle updates.
     header_bar: adw::HeaderBar,
+    /// Title widget in the header bar — title shows the current page name,
+    /// subtitle shows the app name. Same idiom as gnome-control-center: the
+    /// headerbar title swaps as the user navigates between panels.
+    window_title: adw::WindowTitle,
     /// Back button in header bar
     back_btn: gtk::Button,
     /// Currently visible subpage ("main", "history", etc.)
@@ -191,6 +195,7 @@ impl SimpleComponent for App {
 
             adw::ToolbarView {
                 add_top_bar = &model.header_bar.clone() -> adw::HeaderBar {
+                    set_title_widget: Some(&model.window_title.clone()),
                     pack_start = &model.back_btn.clone() -> gtk::Button {
                         connect_clicked[sender] => move |_| {
                             sender.input(AppMsg::GoBack);
@@ -259,6 +264,12 @@ impl SimpleComponent for App {
 
         let toast_overlay = adw::ToastOverlay::new();
         let header_bar = adw::HeaderBar::new();
+        // Headerbar title widget — title is the current page name, subtitle is
+        // the app name. Same idiom as gnome-control-center About: header shows
+        // "About" with no subtitle (because there's only the panel name worth
+        // showing). Our root page sets title="Finupdate" with no subtitle for
+        // the same effect; subpages set title=<page name> subtitle="Finupdate".
+        let window_title = adw::WindowTitle::new("Finupdate", "");
         let dev_banner = adw::Banner::new("Developer Mode — updates are simulated");
 
         let settings = Settings::load();
@@ -279,6 +290,7 @@ impl SimpleComponent for App {
             status_view,
             cancel_tx: None,
             header_bar,
+            window_title,
             back_btn,
             current_page: "main".to_string(),
             dev_banner,
@@ -882,16 +894,29 @@ impl SimpleComponent for App {
 
             AppMsg::PageChanged(page) => {
                 self.current_page = page.clone();
-                let title = match page.as_str() {
-                    "main" => "OS Image".to_string(),
-                    "history" => "Version history".to_string(),
-                    "source" => "Image source".to_string(),
-                    "changelog" => "What’s new".to_string(),
-                    _ => "OS Image".to_string(),
+                let page_label = match page.as_str() {
+                    "main" => "Finupdate",
+                    "history" => "Version History",
+                    "source" => "Image Source",
+                    "changelog" => "What’s New",
+                    _ => "Finupdate",
                 };
+                // Drive the headerbar's WindowTitle: page name on top, app
+                // name as subtitle on subpages. Same shape as control-center
+                // panels — title swaps as you navigate.
+                self.window_title.set_title(page_label);
+                self.window_title
+                    .set_subtitle(if page == "main" { "" } else { "Finupdate" });
+                // Window title (used by GNOME Shell's task list) keeps the
+                // expanded form so the user can identify the open page.
                 if let Some(root) = self.status_view.widget().root() {
                     if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        window.set_title(Some(&format!("Finupdate — {}", title)));
+                        let win_title = if page == "main" {
+                            "Finupdate".to_string()
+                        } else {
+                            format!("Finupdate — {}", page_label)
+                        };
+                        window.set_title(Some(&win_title));
                     }
                 }
                 self.back_btn.set_visible(page != "main");

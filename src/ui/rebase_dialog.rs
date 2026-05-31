@@ -340,8 +340,10 @@ fn build_loaded_page(
         .margin_top(8)
         .margin_bottom(16)
         .build();
+    // Inline action button (in-page, not a centered StatusPage CTA) — per
+    // GNOME HIG / control-center About "Donate" pattern, use .suggested-action
+    // alone, without .pill. .pill is reserved for standalone hero CTAs.
     rebase_btn.add_css_class("suggested-action");
-    rebase_btn.add_css_class("pill");
 
     // ── Build calendar grid ─────────────────────────────────────────────
     let calendar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);

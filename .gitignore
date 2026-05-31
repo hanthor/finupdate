@@ -2,3 +2,4 @@
 /_build
 /_flatpak
 /.flatpak-builder
+/tests/visual-audit/screenshots/

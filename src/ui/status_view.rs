@@ -410,7 +410,6 @@ impl StatusView {
                 .icon_name("object-select-symbolic")
                 .build();
             install_btn.add_css_class("suggested-action");
-            install_btn.add_css_class("pill");
             install_btn.set_valign(gtk::Align::Center);
             let out_sender = sender.output_sender().clone();
             install_btn.connect_clicked(move |_| {
@@ -822,9 +821,11 @@ impl SimpleComponent for StatusView {
         hero_icon.add_css_class("accent");
         hero_row.add_prefix(&hero_icon);
 
+        // Status indicator on the hero row — plain colored caption text (no
+        // pill background). gnome-control-center About uses the same idiom:
+        // colored text for state, no pill chrome around it.
         let status_pill = gtk::Label::new(Some("Checking"));
         status_pill.add_css_class("caption");
-        status_pill.add_css_class("pill");
         status_pill.add_css_class("dim-label");
         status_pill.set_valign(gtk::Align::Center);
         hero_row.add_suffix(&status_pill);
@@ -859,8 +860,10 @@ impl SimpleComponent for StatusView {
         });
 
         let banner_install_btn = gtk::Button::with_label("Install");
+        // ActionRow suffix CTA — matches gnome-control-center About "Donate"
+        // button: .suggested-action only, no .pill (rectangle with rounded
+        // corners, not full pill shape).
         banner_install_btn.add_css_class("suggested-action");
-        banner_install_btn.add_css_class("pill");
         let install_sender = sender.output_sender().clone();
         banner_install_btn.connect_clicked(move |_| {
             let _ = install_sender.send(StatusViewOutput::StartUpdate);
@@ -868,7 +871,6 @@ impl SimpleComponent for StatusView {
 
         let banner_restart_btn = gtk::Button::with_label("Restart");
         banner_restart_btn.add_css_class("suggested-action");
-        banner_restart_btn.add_css_class("pill");
         let restart_sender = sender.output_sender().clone();
         banner_restart_btn.connect_clicked(move |_| {
             let _ = restart_sender.send(StatusViewOutput::Reboot);
@@ -896,7 +898,6 @@ impl SimpleComponent for StatusView {
             .use_underline(true)
             .build();
         let check_btn = gtk::Button::with_label("Check");
-        check_btn.add_css_class("pill");
         check_btn.set_valign(gtk::Align::Center);
         let check_sender = sender.output_sender().clone();
         check_btn.connect_clicked(move |_| {
@@ -1063,7 +1064,6 @@ impl SimpleComponent for StatusView {
         registry_entry.set_hexpand(true);
         let reg_save_btn = gtk::Button::with_label("Save");
         reg_save_btn.add_css_class("suggested-action");
-        reg_save_btn.add_css_class("pill");
         let reg_entry_clone = registry_entry.clone();
         let save_sender = sender.input_sender().clone();
         reg_save_btn.connect_clicked(move |_| {
@@ -1255,7 +1255,6 @@ impl SimpleComponent for StatusView {
         ch_install_label.add_css_class("dim-label");
         let ch_install_btn = gtk::Button::with_label("Install");
         ch_install_btn.add_css_class("suggested-action");
-        ch_install_btn.add_css_class("pill");
         let ch_inst_sender = sender.output_sender().clone();
         ch_install_btn.connect_clicked(move |_| {
             let _ = ch_inst_sender.send(StatusViewOutput::StartUpdate);
@@ -1289,7 +1288,6 @@ impl SimpleComponent for StatusView {
             .tooltip_text("Copy log output to clipboard")
             .icon_name("edit-copy-symbolic")
             .build();
-        copy_btn.add_css_class("pill");
         let copy_sender = sender.input_sender().clone();
         copy_btn.connect_clicked(move |_| {
             copy_sender.emit(StatusViewInput::CopyLog);
@@ -1299,7 +1297,6 @@ impl SimpleComponent for StatusView {
             .label("Cancel")
             .tooltip_text("Cancel the running update")
             .build();
-        cancel_btn.add_css_class("pill");
         cancel_btn.add_css_class("destructive-action");
         let cancel_sender = sender.output_sender().clone();
         cancel_btn.connect_clicked(move |_| {
@@ -2786,7 +2783,6 @@ fn rebuild_history_list(
                 .icon_name("document-save-symbolic")
                 .build();
             pull_btn.add_css_class("suggested-action");
-            pull_btn.add_css_class("pill");
             let pull_d = d.clone();
             pull_btn.connect_clicked(move |_| {
                 println!("[debug] Pull requested for {}:{}", pull_d.image, pull_d.tag);
@@ -2798,7 +2794,6 @@ fn rebuild_history_list(
                 .icon_name("edit-undo-symbolic")
                 .build();
             rb_btn.add_css_class("suggested-action");
-            rb_btn.add_css_class("pill");
             let rb_sender = sender.input_sender().clone();
             let rb_d = d.clone();
             rb_btn.connect_clicked(move |_| {
@@ -2811,7 +2806,6 @@ fn rebuild_history_list(
             let def_btn = gtk::Button::builder()
                 .label("Set as default boot")
                 .build();
-            def_btn.add_css_class("pill");
             let def_sender = sender.input_sender().clone();
             let def_d = d.clone();
             def_btn.connect_clicked(move |_| {
@@ -2824,7 +2818,6 @@ fn rebuild_history_list(
             .label("View changelog")
             .build();
         ch_btn.add_css_class("flat");
-        ch_btn.add_css_class("pill");
         let ch_sender = sender.input_sender().clone();
         let ch_tag = d.tag.clone();
         ch_btn.connect_clicked(move |_| {
