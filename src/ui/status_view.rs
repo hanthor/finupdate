@@ -879,6 +879,13 @@ impl SimpleComponent for StatusView {
         let hero_row = adw::ActionRow::builder()
             .title(initial_image_info.as_deref().unwrap_or("System Image"))
             .subtitle(&initial_subtitle)
+            // Per user direction: the SHA needs to be copyable so people
+            // can paste it into diagnostics / bug reports. subtitle_selectable
+            // is the gnome-control-center About-panel idiom (cc-about-page.blp
+            // uses it on every property row); enables drag-to-select + the
+            // context-menu Copy entry on the subtitle.
+            .subtitle_selectable(true)
+            .title_selectable(true)
             .build();
         hero_row.set_activatable(false);
 
@@ -1463,11 +1470,14 @@ impl SimpleComponent for StatusView {
         log_clamp.set_vexpand(true);
         log_clamp.set_child(Some(log_view.widget()));
 
-        let copy_btn = gtk::Button::builder()
-            .label("Copy Log")
-            .tooltip_text("Copy log output to clipboard")
-            .icon_name("edit-copy-symbolic")
-            .build();
+        // Icon-only Copy button (per user direction). gnome-control-center
+        // uses the same `edit-copy-symbolic` glyph in `.flat .circular`
+        // styling for inline copy affordances; the tooltip carries the
+        // semantics.
+        let copy_btn = gtk::Button::from_icon_name("edit-copy-symbolic");
+        copy_btn.set_tooltip_text(Some("Copy log output to clipboard"));
+        copy_btn.add_css_class("flat");
+        copy_btn.add_css_class("circular");
         let copy_sender = sender.input_sender().clone();
         copy_btn.connect_clicked(move |_| {
             copy_sender.emit(StatusViewInput::CopyLog);
