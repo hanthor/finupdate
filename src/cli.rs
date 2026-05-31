@@ -367,22 +367,22 @@ async fn cmd_update(system_only: bool) -> ExitCode {
     let mut exit_code = ExitCode::SUCCESS;
     while let Some(event) = rx.recv().await {
         match event {
-            orchestrator::UpdateEvent::Output(line) => {
+            update_worker::UpdateEvent::Output(line) => {
                 println!("  [output] {}", line);
             }
-            orchestrator::UpdateEvent::ModuleStarted(module) => {
+            update_worker::UpdateEvent::ModuleStarted(module) => {
                 println!("=== MODULE STARTED: {:?} ===", module);
             }
-            orchestrator::UpdateEvent::ModuleFinished(module, status) => {
+            update_worker::UpdateEvent::ModuleFinished(module, status) => {
                 println!("=== MODULE FINISHED: {:?} ({:?}) ===", module, status);
             }
-            orchestrator::UpdateEvent::Complete => {
+            update_worker::UpdateEvent::Complete => {
                 println!("Update completed successfully!");
             }
-            orchestrator::UpdateEvent::UpToDate => {
+            update_worker::UpdateEvent::UpToDate => {
                 println!("System is already up to date.");
             }
-            orchestrator::UpdateEvent::Error(err) => {
+            update_worker::UpdateEvent::Error(err) => {
                 eprintln!("Error during update: {}", err);
                 exit_code = ExitCode::FAILURE;
             }
