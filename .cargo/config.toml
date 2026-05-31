@@ -1,0 +1,11 @@
+# Cargo network tuning for slow connections. Default 10 bytes/sec floor
+# aborts fetches on stalls; bump timeouts + retries so the flatpak rebuild
+# survives a throttled link.
+
+[net]
+retry = 10
+git-fetch-with-cli = true
+
+[http]
+timeout = 600
+low-speed-limit = 1
