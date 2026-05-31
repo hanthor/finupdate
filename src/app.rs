@@ -1072,63 +1072,21 @@ relm4::new_stateless_action!(FactoryResetAction, WindowActionGroup, "factory-res
 relm4::new_stateful_action!(DeveloperModeAction, WindowActionGroup, "dev-mode", (), bool);
 
 fn inject_app_css() {
+    // Minimal CSS layer. Status colours, banner icons, and hero icons now use
+    // built-in Adwaita classes (.accent, .success, .warning, .error, .caption)
+    // instead of bespoke pills / gradient boxes — matches gnome-control-center.
+    //
+    // What's left:
+    //   - .destructive-title  — adw::ActionRow doesn't expose a "danger" style
+    //                           for the title label; this just tints it red on
+    //                           the Factory Reset row.
+    //   - .deploy-indicator-* — small coloured dots in the deployment list.
+    //                           Equivalent to control-center's connection-
+    //                           strength dots; no built-in class for "current
+    //                           deployment marker" specifically.
     let css = gtk::CssProvider::new();
     css.load_from_string(
         r#"
-        .sidebar-box {
-            background-color: @window_bg_color;
-            border-right: 1px solid alpha(currentColor, 0.07);
-        }
-        .navigation-sidebar {
-            background-color: transparent;
-        }
-        .sidebar-badge {
-            background-color: @accent_color;
-            min-width: 8px;
-            min-height: 8px;
-            border-radius: 4px;
-            margin-right: 6px;
-        }
-        .hero-logo-box {
-            background: linear-gradient(135deg, @accent_color, #60a5fa);
-            border-radius: 14px;
-            padding: 12px;
-            color: white;
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
-        }
-        .status-pill-staged {
-            background-color: alpha(@warning_color, 0.15);
-            color: @warning_color;
-            font-weight: bold;
-            border-radius: 999px;
-            padding: 4px 10px;
-        }
-        .status-pill-ready {
-            background-color: alpha(@accent_color, 0.15);
-            color: @accent_color;
-            font-weight: bold;
-            border-radius: 999px;
-            padding: 4px 10px;
-        }
-        .status-pill-ok {
-            background-color: alpha(@success_color, 0.15);
-            color: @success_color;
-            font-weight: bold;
-            border-radius: 999px;
-            padding: 4px 10px;
-        }
-        .status-pill-dot {
-            background-color: currentColor;
-            min-width: 8px;
-            min-height: 8px;
-            border-radius: 4px;
-        }
-        .update-banner-icon {
-            background-color: alpha(@accent_color, 0.15);
-            color: @accent_color;
-            border-radius: 10px;
-            padding: 10px;
-        }
         .destructive-title label {
             color: @error_color;
         }

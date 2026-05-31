@@ -123,7 +123,7 @@ pub struct StatusView {
     /// Toast overlay for copy confirmation.
     toast_overlay: adw::ToastOverlay,
     /// Root widget for the idle page.
-    idle_page: gtk::ScrolledWindow,
+    idle_page: adw::PreferencesPage,
     /// Hero row showing the current image summary.
     hero_row: adw::ActionRow,
     /// Status pill shown in the hero row suffix.
@@ -232,16 +232,16 @@ impl StatusView {
         };
         self.hero_row.set_subtitle(&format!("{}{}", tag_display, self.idle_subtitle()));
 
-        for class in ["status-pill-ready", "status-pill-ok", "status-pill-staged", "dim-label"] {
+        for class in ["accent", "success", "warning", "dim-label"] {
             self.status_pill.remove_css_class(class);
         }
 
         let (pill_text, pill_class) = if self.reboot_pending {
-            ("Staged", "status-pill-staged")
+            ("Staged", "warning")
         } else {
             match self.preflight_status {
-                PreflightStatus::UpdateAvailable => ("Update ready", "status-pill-ready"),
-                PreflightStatus::UpToDate => ("Up to date", "status-pill-ok"),
+                PreflightStatus::UpdateAvailable => ("Update ready", "accent"),
+                PreflightStatus::UpToDate => ("Up to date", "success"),
                 PreflightStatus::Checking => ("Checking", "dim-label"),
                 PreflightStatus::Unknown => ("Ready", "dim-label"),
             }
@@ -346,7 +346,7 @@ impl StatusView {
 
         if is_update {
             let update_pill = gtk::Label::new(Some("Update"));
-            update_pill.add_css_class("status-pill-ready");
+            update_pill.add_css_class("accent");
             update_pill.add_css_class("caption");
             tag_box.append(&update_pill);
         } else {
@@ -358,7 +358,7 @@ impl StatusView {
             };
             if is_booted {
                 let booted_pill = gtk::Label::new(Some("✓ Booted"));
-                booted_pill.add_css_class("status-pill-ok");
+                booted_pill.add_css_class("success");
                 booted_pill.add_css_class("caption");
                 tag_box.append(&booted_pill);
             }
@@ -673,7 +673,7 @@ impl SimpleComponent for StatusView {
             set_transition_duration: 200,
 
             // ─── Idle page ──────────────────────────────────────────────
-            add_child = &model.idle_page.clone() -> gtk::ScrolledWindow {} -> {
+            add_child = &model.idle_page.clone() -> adw::PreferencesPage {} -> {
                 set_name: "idle",
             },
 
@@ -802,22 +802,10 @@ impl SimpleComponent for StatusView {
             format!("{}{}", tag_str, update_text)
         };
 
-        let idle_page = gtk::ScrolledWindow::new();
-        idle_page.set_hscrollbar_policy(gtk::PolicyType::Never);
-        idle_page.set_vscrollbar_policy(gtk::PolicyType::Automatic);
-        idle_page.set_vexpand(true);
-
-        let idle_clamp = adw::Clamp::new();
-        idle_clamp.set_maximum_size(600);
-        idle_clamp.set_tightening_threshold(400);
-        idle_page.set_child(Some(&idle_clamp));
-
-        let idle_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        idle_content.set_margin_start(24);
-        idle_content.set_margin_end(24);
-        idle_content.set_margin_top(24);
-        idle_content.set_margin_bottom(24);
-        idle_clamp.set_child(Some(&idle_content));
+        // adw::PreferencesPage gives us HIG-standard scrolling, clamp width,
+        // and margins for free — same chrome gnome-control-center uses on its
+        // settings panels. Groups are added via `.add(&group)` below.
+        let idle_page = adw::PreferencesPage::new();
 
         let hero_group = adw::PreferencesGroup::new();
         let hero_row = adw::ActionRow::builder()
@@ -825,15 +813,14 @@ impl SimpleComponent for StatusView {
             .subtitle(&initial_subtitle)
             .build();
         hero_row.set_activatable(false);
-        
-        let hero_logo_box = gtk::Box::builder()
-            .css_classes(vec!["hero-logo-box".to_string()])
-            .build();
+
+        // Plain symbolic icon in the accent color — same pattern as
+        // gnome-control-center's PreferencesRow prefixes. No gradient box.
         let logo_name = read_logo_icon_name();
         let hero_icon = gtk::Image::from_icon_name(&logo_name);
         hero_icon.set_pixel_size(32);
-        hero_logo_box.append(&hero_icon);
-        hero_row.add_prefix(&hero_logo_box);
+        hero_icon.add_css_class("accent");
+        hero_row.add_prefix(&hero_icon);
 
         let status_pill = gtk::Label::new(Some("Checking"));
         status_pill.add_css_class("caption");
@@ -842,7 +829,7 @@ impl SimpleComponent for StatusView {
         status_pill.set_valign(gtk::Align::Center);
         hero_row.add_suffix(&status_pill);
         hero_group.add(&hero_row);
-        idle_content.append(&hero_group);
+        idle_page.add(&hero_group);
 
         let update_banner_group = adw::PreferencesGroup::new();
         let banner_title_row = adw::ActionRow::builder()
@@ -851,13 +838,12 @@ impl SimpleComponent for StatusView {
             .build();
         banner_title_row.set_activatable(false);
         
-        let banner_icon_box = gtk::Box::builder()
-            .css_classes(vec!["update-banner-icon".to_string()])
-            .build();
+        // Symbolic icon in accent color — no custom rounded background, same
+        // as gnome-control-center's row-prefix icons.
         let banner_icon = gtk::Image::from_icon_name("software-update-available-symbolic");
         banner_icon.set_pixel_size(24);
-        banner_icon_box.append(&banner_icon);
-        banner_title_row.add_prefix(&banner_icon_box);
+        banner_icon.add_css_class("accent");
+        banner_title_row.add_prefix(&banner_icon);
 
         // Each button is added as a direct suffix (not nested inside a Box) so
         // it shows up as an individual accessible child of the ActionRow in the
@@ -901,7 +887,7 @@ impl SimpleComponent for StatusView {
         banner_title_row.add_suffix(&banner_discard_btn);
         update_banner_group.add(&banner_title_row);
         update_banner_group.set_visible(false);
-        idle_content.append(&update_banner_group);
+        idle_page.add(&update_banner_group);
 
         // Boxed List Settings Card (Left sidebar settings style)
         let check_row = adw::ActionRow::builder()
@@ -972,16 +958,12 @@ impl SimpleComponent for StatusView {
             history_sender.emit(StatusViewInput::ShowPage("history".to_string()));
         });
 
-        let settings_card = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .margin_bottom(12)
-            .build();
-        settings_card.add_css_class("card");
-        settings_card.append(&check_row);
-        settings_card.append(&auto_row);
-        settings_card.append(&source_row);
-        settings_card.append(&history_row);
-        idle_content.append(&settings_card);
+        let settings_card = adw::PreferencesGroup::new();
+        settings_card.add(&check_row);
+        settings_card.add(&auto_row);
+        settings_card.add(&source_row);
+        settings_card.add(&history_row);
+        idle_page.add(&settings_card);
 
         // Reset Card (Powerwash & Factory reset).
         // accessible_role=Button so dogtail's `.left_click()` sees these as
@@ -1019,16 +1001,16 @@ impl SimpleComponent for StatusView {
             fact_sender.emit(StatusViewInput::TogglePin("factory".to_string()));
         });
 
-        let reset_card = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .margin_bottom(12)
-            .build();
-        reset_card.add_css_class("card");
-        reset_card.append(&powerwash_row);
-        reset_card.append(&factory_row);
-        idle_content.append(&reset_card);
+        let reset_card = adw::PreferencesGroup::new();
+        reset_card.add(&powerwash_row);
+        reset_card.add(&factory_row);
+        idle_page.add(&reset_card);
 
         // ── Image Source Subpage ──────────────────────────────────────────
+        // Kept on ScrolledWindow+Clamp because the inline registry-edit row
+        // is a free-form gtk::Box (Entry + Save + Cancel) which can't live in
+        // an adw::PreferencesGroup. The idle and history pages are migrated
+        // to PreferencesPage; this one stays with manual chrome for now.
         let source_page = gtk::ScrolledWindow::new();
         source_page.set_hscrollbar_policy(gtk::PolicyType::Never);
         source_page.set_vexpand(true);
@@ -1042,7 +1024,9 @@ impl SimpleComponent for StatusView {
         source_clamp.set_child(Some(&source_content));
         source_page.set_child(Some(&source_clamp));
 
-        let source_desc = gtk::Label::new(Some("Where this device pulls its OS image from. Changes apply on next update."));
+        let source_desc = gtk::Label::new(Some(
+            "Where this device pulls its OS image from. Changes apply on next update.",
+        ));
         source_desc.add_css_class("dim-label");
         source_desc.add_css_class("caption");
         source_desc.set_margin_bottom(12);
@@ -1051,7 +1035,7 @@ impl SimpleComponent for StatusView {
         let source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .build();
-        source_list.add_css_class("card");
+        source_list.add_css_class("boxed-list");
 
         // Registry row
         let reg_row = adw::ActionRow::builder()
@@ -1152,7 +1136,7 @@ impl SimpleComponent for StatusView {
             .subtitle("Only install images signed by the publisher.")
             .build();
         let sig_badge = gtk::Label::new(Some("✓ On"));
-        sig_badge.add_css_class("status-pill-ok");
+        sig_badge.add_css_class("success");
         sig_badge.add_css_class("caption");
         sig_badge.set_valign(gtk::Align::Center);
         sig_row.add_suffix(&sig_badge);
@@ -1162,30 +1146,25 @@ impl SimpleComponent for StatusView {
         root.add_named(&source_page, Some("source"));
 
         // ── Version History Subpage ──────────────────────────────────────
-        let history_page = gtk::ScrolledWindow::new();
-        history_page.set_hscrollbar_policy(gtk::PolicyType::Never);
-        history_page.set_vexpand(true);
-        let history_clamp = adw::Clamp::new();
-        history_clamp.set_maximum_size(600);
-        let history_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        history_content.set_margin_start(24);
-        history_content.set_margin_end(24);
-        history_content.set_margin_top(24);
-        history_content.set_margin_bottom(24);
-        history_clamp.set_child(Some(&history_content));
-        history_page.set_child(Some(&history_clamp));
-
-        let history_desc = gtk::Label::new(Some("Past images stay on disk so you can roll back. Pin a version to keep it across upgrades."));
-        history_desc.add_css_class("dim-label");
-        history_desc.add_css_class("caption");
-        history_desc.set_margin_bottom(12);
-        history_content.append(&history_desc);
-
+        // HIG-aligned: PreferencesPage + PreferencesGroup with the description
+        // doubling as page-level explanation. Rows are appended dynamically as
+        // bootc-status results come in (see rebuild_history_list).
+        let history_page = adw::PreferencesPage::new();
+        let history_group = adw::PreferencesGroup::builder()
+            .description(
+                "Past images stay on disk so you can roll back. Pin a version to keep it across upgrades.",
+            )
+            .build();
+        // history_list_box is still a gtk::ListBox so the existing
+        // rebuild_history_list code (which builds custom row widgets, not
+        // ActionRows) keeps working unchanged. PreferencesGroup hosts it as a
+        // single custom widget — same visual outcome, less plumbing.
         let history_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .build();
-        history_list_box.add_css_class("card");
-        history_content.append(&history_list_box);
+        history_list_box.add_css_class("boxed-list");
+        history_group.add(&history_list_box);
+        history_page.add(&history_group);
         root.add_named(&history_page, Some("history"));
 
         // ── Changelogs Subpage ───────────────────────────────────────────
@@ -2509,23 +2488,23 @@ fn rebuild_history_list(
         
         if d.state == "current" {
             let pill = gtk::Label::new(Some("Booted"));
-            pill.add_css_class("status-pill-ok");
+            pill.add_css_class("success");
             pill.add_css_class("caption");
             title_box.append(&pill);
         } else if d.state == "staged" {
             let pill = gtk::Label::new(Some("Staged"));
-            pill.add_css_class("status-pill-ready");
+            pill.add_css_class("accent");
             pill.add_css_class("caption");
             title_box.append(&pill);
         } else if d.state == "remote" {
             let pill = gtk::Label::new(Some("Remote"));
-            pill.add_css_class("status-pill-ready");
+            pill.add_css_class("accent");
             pill.add_css_class("caption");
             title_box.append(&pill);
         }
         if d.pinned {
             let pill = gtk::Label::new(Some("Pinned"));
-            pill.add_css_class("status-pill-staged");
+            pill.add_css_class("warning");
             pill.add_css_class("caption");
             title_box.append(&pill);
         }
