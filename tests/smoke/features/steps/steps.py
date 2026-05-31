@@ -122,7 +122,7 @@ def wait_for_window(context, name, app_id):
         except Exception:
             pass
         time.sleep(0.5)
-    assert False, f"Window {name!r} did not appear in {app_id}"
+    raise AssertionError(f"Window {name!r} did not appear in {app_id}")
 
 
 # ── Friendlier wait-and-click ─────────────────────────────────────────────
@@ -176,7 +176,10 @@ def wait_for_text(context, text, app_id, seconds):
     except Exception:
         pass
     found_summary = "\n      ".join(found_texts[:30]) if found_texts else "(nothing with name/desc found)"
-    assert False, f"Timed out after {seconds}s waiting for {text!r} in {app_id}.\n    Visible text nodes:\n      {found_summary}"
+    raise AssertionError(
+        f"Timed out after {seconds}s waiting for {text!r} in {app_id}.\n"
+        f"    Visible text nodes:\n      {found_summary}"
+    )
 
 
 # ── Real mode setup ───────────────────────────────────────────────────────
@@ -297,7 +300,7 @@ def assert_history_count(context, n, app_id, seconds):
     except Exception:
         pass
     summary = "\n      ".join(seen_history_labels[:20]) if seen_history_labels else "(none)"
-    assert False, (
+    raise AssertionError(
         f"Image history reached only {observed_max} entries in {app_id} "
         f"(wanted ≥ {n} within {seconds}s).\n    Labels seen:\n      {summary}"
     )
@@ -363,7 +366,7 @@ def click_any_available_day(context):
     except Exception:
         pass
     summary = ", ".join(seen[:40]) if seen else "(no day buttons found)"
-    assert False, f"No sensitive day buttons in rebase calendar. Saw: {summary}"
+    raise AssertionError(f"No sensitive day buttons in rebase calendar. Saw: {summary}")
 
 
 @step('Click button whose label starts with "{prefix}" in "{app_id}"')
@@ -387,7 +390,7 @@ def click_button_with_prefix(context, prefix, app_id):
         except Exception:
             pass
         time.sleep(0.3)
-    assert False, f"No push button starting with {prefix!r} found in {app_id}"
+    raise AssertionError(f"No push button starting with {prefix!r} found in {app_id}")
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────

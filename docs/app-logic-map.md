@@ -64,7 +64,7 @@ Runs on launch in a background tokio runtime. Calls `bootc upgrade --check`
 | Status            | When                                | UI effect                          |
 |-------------------|-------------------------------------|------------------------------------|
 | `Checking`        | initial state on launch             | hero shows spinner + "Checking…"   |
-| `UpdateAvailable` | bootc returned 0                    | "Update Available" pill + suggested action |
+| `UpdateAvailable` | bootc returned 0                    | "Update ready" pill + suggested action |
 | `UpToDate`        | bootc returned 77                   | "Up to date" pill                  |
 | `Unknown`         | bootc errored, missing, or cancelled| neutral hero, manual check button only |
 
@@ -134,7 +134,7 @@ prompt OR a public-network round-trip.
 
 | Touch                                              | When                            | Caller                              | Cost      | Test seam |
 |----------------------------------------------------|---------------------------------|-------------------------------------|-----------|-----------|
-| `bootc upgrade --check`                            | on launch (preflight)           | `src/app.rs` preflight closure      | pkexec    | (would need fake binary on PATH) |
+| `bootc upgrade --check`                            | on launch (preflight)           | `src/app.rs` preflight closure      | direct (no pkexec) | (would need fake binary on PATH) |
 | `bootc status --json`                              | rebase dialog open + registry detect | `src/registry_client.rs`        | **root**  | castrojo/finupdate#9 |
 | `flatpak-spawn --host pkexec /app/bin/finupdate-runner` | StartUpdate (non-dev)      | `src/orchestrator.rs::run`          | pkexec    | mock runner in tests (**add**) |
 | `pkexec systemctl reboot`                          | ConfirmReboot (non-dev)         | `src/app.rs` reboot handler         | pkexec    | dev-mode gates it; manual |
@@ -190,7 +190,7 @@ against a fresh build). Update when widget names change.
 | Widget                       | Role         | Name |
 |------------------------------|--------------|------|
 | Hero row                     | list item    | (image ref) |
-| Status pill                  | label        | "Up to date" / "Update Available" / "Checking…" |
+| Status pill                  | label        | "Up to date" / "Update ready" / "Checking…" |
 | "Check for Updates" button   | push button  | "Check for Updates" |
 | Banner install button        | push button  | "Install Updates" |
 

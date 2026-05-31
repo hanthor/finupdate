@@ -2149,20 +2149,23 @@ fn get_cached_bootc_status() -> Option<Value> {
         }
     }
 
+    // `bootc status --json` is a read-only query and runs as the calling
+    // user — using pkexec here triggered a polkit prompt at every app
+    // launch, which is exactly the kind of friction we want to avoid.
     let command_desc = if crate::update_worker::is_flatpak() {
-        "flatpak-spawn --host pkexec bootc status --json"
+        "flatpak-spawn --host bootc status --json"
     } else {
-        "pkexec bootc status --json"
+        "bootc status --json"
     };
     println!("[debug] read_image_info: running {}", command_desc);
 
     let output_result = if crate::update_worker::is_flatpak() {
         Command::new("flatpak-spawn")
-            .args(["--host", "pkexec", "bootc", "status", "--json"])
+            .args(["--host", "bootc", "status", "--json"])
             .output()
     } else {
-        Command::new("pkexec")
-            .args(["bootc", "status", "--json"])
+        Command::new("bootc")
+            .args(["status", "--json"])
             .output()
     };
 

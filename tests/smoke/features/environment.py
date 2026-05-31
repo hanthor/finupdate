@@ -37,8 +37,11 @@ def before_all(context) -> None:
         # Ctrl+Q is the documented quit shortcut (see README).
         context.finupdate.exit_shortcut = "<Ctrl>Q"
     except Exception as error:
+        # Capture diagnostics, then bail out — continuing past a broken
+        # setup cascades into misleading per-scenario failures.
         print(f"Environment error: before_all: {error}")
         context.failed_setup = traceback.format_exc()
+        raise RuntimeError("Smoke environment initialization failed") from error
 
 
 def before_scenario(context, scenario) -> None:

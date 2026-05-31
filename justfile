@@ -122,7 +122,11 @@ clean-flatpak:
 # Uses fedora-toolbox (which ships dnf) rather than the sealed Bluefin Dakota
 # image, which has no package manager.
 setup:
-    toolbox create -y --image {{ toolbox_image }} {{ toolbox }} || true
+    # Create only when the container is absent; let genuine create failures
+    # (network / image / auth) surface instead of being swallowed by `|| true`.
+    if ! toolbox list --containers | awk '{print $2}' | grep -qx '{{ toolbox }}'; then \
+        toolbox create -y --image {{ toolbox_image }} {{ toolbox }}; \
+    fi
     toolbox run --container {{ toolbox }} sudo dnf install -y \
         cargo rust \
         gtk4-devel libadwaita-devel pango-devel cairo-devel openssl-devel \

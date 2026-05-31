@@ -56,11 +56,9 @@ launch_reference() {
     # Background it so we can capture; pid tracked so cleanup is precise.
     host_run pkill -f "gnome-control-center" 2>/dev/null || true
     sleep 0.5
-    host_run gnome-control-center "$slug" &
-    LAUNCH_PID=$!
-    # Give the window time to render + settle. Cold-start is ~1-2s; second
-    # panel-switch within the same launch is ~200ms but we kill between runs
-    # so always treat it as a cold start.
+    host_run gnome-control-center "$slug" >/dev/null 2>&1 &
+    # Give the window time to render + settle. Cold-start is ~1-2s; we kill
+    # between runs so always treat it as a cold start.
     sleep 2.5
 }
 

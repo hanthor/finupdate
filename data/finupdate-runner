@@ -63,8 +63,18 @@ else
     done
 
     if [ -n "$BREW_BIN" ]; then
-        # brew must run as the real user, not root — find the first human user.
-        BREW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }')
+        # brew must run as the invoking human user, not root. Prefer pkexec's
+        # own provenance (PKEXEC_UID / PKEXEC_USER, set by polkit) before
+        # falling back to the "first UID ≥ 1000" heuristic — on multi-user
+        # systems the heuristic can target the wrong account.
+        BREW_USER=""
+        if [ -n "${PKEXEC_UID:-}" ] && getent passwd "${PKEXEC_UID}" >/dev/null 2>&1; then
+            BREW_USER="$(getent passwd "${PKEXEC_UID}" | cut -d: -f1)"
+        elif [ -n "${PKEXEC_USER:-}" ]; then
+            BREW_USER="${PKEXEC_USER}"
+        else
+            BREW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }')
+        fi
         if [ -n "$BREW_USER" ]; then
             su - "$BREW_USER" -c "$BREW_BIN upgrade --quiet"
             emit "MODULE:brew:done:$?"
