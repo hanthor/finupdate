@@ -331,7 +331,6 @@ impl SimpleComponent for App {
         let rebase_action: RelmAction<RebaseAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                tracing::info!("[DEBUG] rebase_action closure fired");
                 sender.emit(AppMsg::ShowRebaseDialog);
             })
         };
@@ -398,10 +397,7 @@ impl SimpleComponent for App {
 
         let powerwash_action: RelmAction<PowerwashAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| {
-                tracing::info!("[DEBUG] powerwash_action closure fired");
-                s.emit(AppMsg::TriggerPowerwash);
-            })
+            RelmAction::new_stateless(move |_| s.emit(AppMsg::TriggerPowerwash))
         };
         group.add_action(powerwash_action);
 
@@ -814,7 +810,6 @@ impl SimpleComponent for App {
             }
 
             AppMsg::ShowRebaseDialog => {
-                tracing::info!("ShowRebaseDialog handler reached");
                 let window_opt = self
                     .status_view
                     .widget()
