@@ -219,6 +219,41 @@ fn start_version_fetch(
     let result_slot: Arc<Mutex<Option<FetchResult>>> = Arc::new(Mutex::new(None));
     spawn_fetch_thread(result_slot.clone(), &variant_str, max_versions);
 
+    // Build a "reload with EXPANDED_FETCH_COUNT" closure that the loaded
+    // page passes to the "Load older builds" button inside the calendar.
+    // Has to be a Rc<dyn Fn()> so the calendar widget can clone it into
+    // its click handler — and so it captures all the args this function
+    // needs to recursively call itself.
+    let reload_fn: Rc<dyn Fn()> = {
+        let stack = stack.clone();
+        let loaded_box = loaded_box.clone();
+        let dialog = dialog.clone();
+        let parent = parent.clone();
+        let error_page = error_page.clone();
+        let variant_owned = variant_str.clone();
+        let current_family = current_family.clone();
+        let selected_features = selected_features.clone();
+        Rc::new(move || {
+            start_version_fetch(
+                stack.clone(),
+                loaded_box.clone(),
+                dialog.clone(),
+                parent.clone(),
+                error_page.clone(),
+                dev_mode,
+                &variant_owned,
+                current_family.clone(),
+                selected_features.clone(),
+                EXPANDED_FETCH_COUNT,
+            );
+        })
+    };
+
+    // "is_expanded" flag drives whether we surface the "Load older builds"
+    // button — if this call IS the expanded fetch, the button doesn't
+    // belong (we already have all 120).
+    let is_expanded = max_versions >= EXPANDED_FETCH_COUNT;
+
     let start_time = std::time::Instant::now();
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
         if let Some(result) = result_slot.lock().ok().and_then(|mut guard| guard.take()) {
@@ -233,6 +268,7 @@ fn start_version_fetch(
                         dev_mode,
                         current_family.clone(),
                         selected_features.clone(),
+                        if is_expanded { None } else { Some(reload_fn.clone()) },
                     );
                     stack.set_visible_child_name("loaded");
                 }
@@ -310,6 +346,7 @@ fn build_loaded_page(
     dev_mode: bool,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
+    reload_fn: Option<Rc<dyn Fn()>>,
 ) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -438,6 +475,32 @@ fn build_loaded_page(
         }
     }
     calendar_box.append(&grid);
+
+    // "Load older builds" button at the bottom of the calendar — only when
+    // the initial fetch was the small INITIAL_FETCH_COUNT cut. Clicking
+    // restarts start_version_fetch with EXPANDED_FETCH_COUNT=120 so the
+    // user can roll back past the initial window. Hidden when the page is
+    // already showing expanded results.
+    if let Some(reload) = reload_fn.as_ref() {
+        let load_older_btn = gtk::Button::builder()
+            .label("Load older builds")
+            .halign(gtk::Align::Center)
+            .margin_top(8)
+            .margin_bottom(4)
+            .build();
+        load_older_btn.add_css_class("flat");
+        let reload = reload.clone();
+        let btn = load_older_btn.clone();
+        load_older_btn.connect_clicked(move |_| {
+            // Spinner-as-label + insensitive so the user knows the fetch
+            // is in flight; start_version_fetch swaps the whole loaded
+            // page out so we don't have to reset this state ourselves.
+            btn.set_label("Loading…");
+            btn.set_sensitive(false);
+            reload();
+        });
+        calendar_box.append(&load_older_btn);
+    }
 
     inject_calendar_css();
 

@@ -2026,8 +2026,31 @@ impl SimpleComponent for StatusView {
             }
 
             StatusViewInput::SelectChangelogVersion(version) => {
-                self.changelog_version = version;
-                self.rebuild_changelog_page(&sender);
+                // Short-circuit: if the user clicks (i) repeatedly without
+                // having changed the selected tag, the changelog page is
+                // already built and the data behind it (commits, sbom diff,
+                // registry versions) hasn't changed. Skip the expensive
+                // rebuild_changelog_page widget tear-down + reconstruction
+                // and just stack-switch. Cuts perceived latency from
+                // hundreds of ms to instant.
+                //
+                // Pass the version as-is (empty string from the hero's (i)
+                // button is treated as "keep current") and only rebuild
+                // when the actual selection changed.
+                let target = if version.is_empty() {
+                    self.changelog_version.clone()
+                } else {
+                    version
+                };
+                if target != self.changelog_version {
+                    let t0 = std::time::Instant::now();
+                    self.changelog_version = target;
+                    self.rebuild_changelog_page(&sender);
+                    tracing::debug!(
+                        "changelog: rebuild took {}ms",
+                        t0.elapsed().as_millis()
+                    );
+                }
                 self.stack.set_visible_child_name("changelog");
                 let _ = sender.output(StatusViewOutput::PageChanged("changelog".to_string()));
             }
@@ -3188,6 +3211,7 @@ fn spawn_changelog_fetch(
             .expect("tokio runtime");
 
         rt.block_on(async move {
+            let total_start = std::time::Instant::now();
             println!("[debug] changelog: starting fetch for registry_uri={}", registry_uri);
 
             // Build an ImageRef from registry_uri + selected_tag for the
@@ -3207,33 +3231,56 @@ fn spawn_changelog_fetch(
                 };
                 let svc = crate::service::global();
 
-                // Migrated from direct registry_client calls to the
-                // UpdaterService trait. Same observable behaviour; future
-                // alt frontends share this path.
+                // Each network round-trip is timed independently so we can
+                // tell which path is the bottleneck (per #48). Look for
+                // [debug] changelog: phase= lines in stdout / RUST_LOG output.
+                let t = std::time::Instant::now();
                 match svc.list_available_tags(&image_ref).await {
                     Ok(available) if !available.is_empty() => {
-                        println!("[debug] changelog: fetched {} available tags", available.len());
+                        println!(
+                            "[debug] changelog: phase=list_available_tags ms={} count={}",
+                            t.elapsed().as_millis(),
+                            available.len()
+                        );
                         let _ = sender.input(StatusViewInput::AvailableTagsLoaded(available));
                     }
-                    Ok(_) => {}
-                    Err(e) => println!("[debug] changelog: failed to fetch tag list: {}", e),
+                    Ok(_) => println!(
+                        "[debug] changelog: phase=list_available_tags ms={} count=0",
+                        t.elapsed().as_millis()
+                    ),
+                    Err(e) => println!(
+                        "[debug] changelog: phase=list_available_tags ms={} err={}",
+                        t.elapsed().as_millis(),
+                        e
+                    ),
                 }
 
+                let t = std::time::Instant::now();
                 match svc.list_versions(&image_ref, 8).await {
                     Ok(versions) => {
-                        println!("[debug] changelog: fetched {} registry versions", versions.len());
+                        println!(
+                            "[debug] changelog: phase=list_versions ms={} count={}",
+                            t.elapsed().as_millis(),
+                            versions.len()
+                        );
                         sender.input(StatusViewInput::RegistryVersionsLoaded(versions));
                     }
-                    Err(e) => {
-                        println!("[debug] changelog: failed to fetch registry versions: {}", e);
-                    }
+                    Err(e) => println!(
+                        "[debug] changelog: phase=list_versions ms={} err={}",
+                        t.elapsed().as_millis(),
+                        e
+                    ),
                 }
             }
 
             // 2. Fetch GitHub commits (with dates for fallback version building)
+            let t_github = std::time::Instant::now();
             if let Some((org, repo)) = parse_org_repo(&registry_uri) {
                 let url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
-                println!("[debug] changelog: fetching github commits from {}", url);
+                println!(
+                    "[debug] changelog: phase=github_commits url={}",
+                    url
+                );
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(10))
                     .user_agent("Finupdate/0.1.0")
@@ -3264,17 +3311,30 @@ fn spawn_changelog_fetch(
                                 .into_iter()
                                 .map(|c| (c.sha, c.commit.message, c.commit.author.name))
                                 .collect();
-                            println!("[debug] changelog: fetched {} github commits", commits.len());
+                            println!(
+                                "[debug] changelog: phase=github_commits ms={} count={}",
+                                t_github.elapsed().as_millis(),
+                                commits.len()
+                            );
                             let _ = sender.input(StatusViewInput::GithubCommitsLoaded(commits));
                         } else {
-                            println!("[debug] changelog: failed to parse github commits JSON");
+                            println!(
+                                "[debug] changelog: phase=github_commits ms={} err=parse_failed",
+                                t_github.elapsed().as_millis()
+                            );
                         }
                     }
-                    Err(e) => {
-                        println!("[debug] changelog: failed to fetch github commits: {}", e);
-                    }
+                    Err(e) => println!(
+                        "[debug] changelog: phase=github_commits ms={} err={}",
+                        t_github.elapsed().as_millis(),
+                        e
+                    ),
                 }
             }
+            println!(
+                "[debug] changelog: phase=total ms={}",
+                total_start.elapsed().as_millis()
+            );
 
             // 3. Fetch and diff SBOMs — lazily, in a detached task. SPDX
             //    artifacts are MB-scale tarballs that parse to thousands of
