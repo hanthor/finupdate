@@ -615,4 +615,204 @@ mod tests {
         }
         assert!(got_error);
     }
+
+    struct MockEnv {
+        _temp_dir: tempfile::TempDir,
+        bin_dir: std::path::PathBuf,
+        log_path: std::path::PathBuf,
+    }
+
+    impl MockEnv {
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let bin_dir = temp_dir.path().join("bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            let log_path = temp_dir.path().join("invocations.log");
+            Self {
+                _temp_dir: temp_dir,
+                bin_dir,
+                log_path,
+            }
+        }
+
+        fn create_mock_bin(&self, name: &str, exit_code: i32) -> std::path::PathBuf {
+            let path = self.bin_dir.join(name);
+            let content = format!(
+                "#!/bin/sh\n\
+                 echo \"{name} called with args: $@\" >> \"{log}\"\n\
+                 exit {exit_code}\n",
+                name = name,
+                log = self.log_path.display(),
+                exit_code = exit_code
+            );
+            std::fs::write(&path, content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            path
+        }
+
+        fn read_invocations(&self) -> String {
+            if self.log_path.exists() {
+                std::fs::read_to_string(&self.log_path).unwrap()
+            } else {
+                String::new()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_real_runner_full_success_with_mocks() {
+        let _lock = TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("bootc", 0);
+        env.create_mock_bin("flatpak", 0);
+        env.create_mock_bin("su", 0);
+        env.create_mock_bin("distrobox", 0);
+
+        let brew_path = env.create_mock_bin("mock-brew", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        let runner_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("finupdate-runner");
+        assert!(
+            runner_path.exists(),
+            "finupdate-runner script not found in data/"
+        );
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &runner_path);
+            std::env::set_var("FINUPDATE_TEST_BREW_BIN", &brew_path);
+            std::env::set_var("PKEXEC_USER", "mocked-human-user");
+        }
+
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+            std::env::remove_var("FINUPDATE_TEST_BREW_BIN");
+            std::env::remove_var("PKEXEC_USER");
+        }
+
+        assert!(!events.is_empty());
+        let expected = vec![
+            UpdateEvent::ModuleStarted(Module::System),
+            UpdateEvent::ModuleFinished(Module::System, ModuleStatus::Success),
+            UpdateEvent::ModuleStarted(Module::Flatpak),
+            UpdateEvent::ModuleFinished(Module::Flatpak, ModuleStatus::Success),
+            UpdateEvent::ModuleStarted(Module::Brew),
+            UpdateEvent::ModuleFinished(Module::Brew, ModuleStatus::Success),
+            UpdateEvent::ModuleStarted(Module::Distrobox),
+            UpdateEvent::ModuleFinished(Module::Distrobox, ModuleStatus::Success),
+            UpdateEvent::Complete,
+        ];
+
+        for item in &expected {
+            assert!(events.contains(item), "Missing expected event: {:?}", item);
+        }
+
+        let invocations = env.read_invocations();
+        assert!(
+            invocations.contains("bootc called with args: upgrade"),
+            "bootc call invalid"
+        );
+        assert!(
+            invocations.contains("flatpak called with args: update -y --noninteractive"),
+            "flatpak call invalid"
+        );
+        assert!(
+            invocations.contains("su called with args: - mocked-human-user -c"),
+            "su call invalid"
+        );
+        assert!(
+            invocations.contains("distrobox called with args: upgrade --all"),
+            "distrobox call invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_real_runner_system_only_skips_others() {
+        let _lock = TEST_MUTEX.lock().await;
+
+        let env = MockEnv::new();
+        env.create_mock_bin("bootc", 0);
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
+
+        let runner_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("finupdate-runner");
+
+        let temp_config = tempfile::tempdir().unwrap();
+        let original_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", temp_config.path());
+        }
+
+        let mut settings = crate::settings::Settings::default();
+        settings.include_app_updates = false;
+        settings.save();
+
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &runner_path);
+        }
+
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+
+        unsafe {
+            std::env::set_var("PATH", &original_path);
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+            if let Some(ref val) = original_xdg {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
+
+        assert!(!events.is_empty());
+        let expected = vec![
+            UpdateEvent::ModuleStarted(Module::System),
+            UpdateEvent::ModuleFinished(Module::System, ModuleStatus::Success),
+            UpdateEvent::ModuleStarted(Module::Flatpak),
+            UpdateEvent::ModuleFinished(Module::Flatpak, ModuleStatus::Skipped),
+            UpdateEvent::ModuleStarted(Module::Brew),
+            UpdateEvent::ModuleFinished(Module::Brew, ModuleStatus::Skipped),
+            UpdateEvent::ModuleStarted(Module::Distrobox),
+            UpdateEvent::ModuleFinished(Module::Distrobox, ModuleStatus::Skipped),
+            UpdateEvent::Complete,
+        ];
+
+        for item in &expected {
+            assert!(events.contains(item), "Missing expected event: {:?}", item);
+        }
+
+        let invocations = env.read_invocations();
+        assert!(invocations.contains("bootc called with args: upgrade"));
+        assert!(!invocations.contains("flatpak"));
+        assert!(!invocations.contains("su"));
+        assert!(!invocations.contains("distrobox"));
+    }
 }

@@ -51,16 +51,18 @@ if [ "$SYSTEM_ONLY" = "1" ]; then
     echo "brew: skipped (system-only mode)"
     emit MODULE:brew:skipped
 else
-    BREW_BIN=""
-    for candidate in \
-        /home/linuxbrew/.linuxbrew/bin/brew \
-        /usr/local/bin/brew \
-        /opt/homebrew/bin/brew; do
-        if [ -x "$candidate" ]; then
-            BREW_BIN="$candidate"
-            break
-        fi
-    done
+    BREW_BIN="${FINUPDATE_TEST_BREW_BIN:-}"
+    if [ -z "$BREW_BIN" ]; then
+        for candidate in \
+            /home/linuxbrew/.linuxbrew/bin/brew \
+            /usr/local/bin/brew \
+            /opt/homebrew/bin/brew; do
+            if [ -x "$candidate" ]; then
+                BREW_BIN="$candidate"
+                break
+            fi
+        done
+    fi
 
     if [ -n "$BREW_BIN" ]; then
         # brew must run as the invoking human user, not root. Prefer pkexec's
