@@ -1191,6 +1191,145 @@ impl SimpleComponent for StatusView {
         source_group.add(&sig_row);
 
         source_page.add(&source_group);
+
+        // ── Variants group: per-family feature toggles ────────────────────
+        // User direction: NVIDIA / DX toggles should be visible on the
+        // Image Source page so users can flip them without diving into
+        // the rebase dialog. Same resolver the rebase dialog uses
+        // (resolve_dx_nvidia) — toggling rewrites the registry entry to
+        // the resolved image variant. The user then hits the entry's
+        // Apply button (✓) to commit.
+        let variants_group = adw::PreferencesGroup::builder()
+            .title("Variants")
+            .description(
+                "Switch between feature variants of this image. \
+                 Apply the registry change above to take effect on the next update.",
+            )
+            .build();
+        let dx_switch = adw::SwitchRow::builder()
+            .title("Developer Mode")
+            .subtitle("Container tools, IDEs, and language SDKs")
+            .build();
+        let nvidia_switch = adw::SwitchRow::builder()
+            .title("NVIDIA drivers")
+            .subtitle("Picks the open kernel modules where available, falls back to the proprietary driver")
+            .build();
+        variants_group.add(&dx_switch);
+        variants_group.add(&nvidia_switch);
+        source_page.add(&variants_group);
+
+        // Wire the toggles to recompute the target image and write it back
+        // into the registry EntryRow. Same two-stage pattern as the rebase
+        // dialog's populate_family_switches: a non-GTK background thread
+        // fetches (family, image) via the service, then a glib timeout
+        // running on the GTK thread does all the widget mutations.
+        // adw::* widgets are GObject (not Send), so they MUST be touched
+        // from the GTK thread only.
+        let slot: std::sync::Arc<std::sync::Mutex<Option<(Option<crate::service::FamilyInfo>, Option<crate::service::ImageRef>)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        {
+            let slot = slot.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime");
+                let detected = rt.block_on(async {
+                    let svc = crate::service::global();
+                    let family = svc.current_family().await.ok().flatten();
+                    let image = svc.current_image().await.ok();
+                    (family, image)
+                });
+                *slot.lock().unwrap() = Some(detected);
+            });
+        }
+
+        let dx_switch_for_timer = dx_switch.clone();
+        let nvidia_switch_for_timer = nvidia_switch.clone();
+        let variants_group_for_timer = variants_group.clone();
+        let registry_entry_for_timer = registry_entry_row.clone();
+        let registry_uri_initial = initial_registry_uri.clone();
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            let Some((family_opt, image_opt)) =
+                slot.lock().ok().and_then(|mut g| g.take())
+            else {
+                return gtk::glib::ControlFlow::Continue;
+            };
+
+            let Some(fam) = family_opt else {
+                // Unknown family — hide the toggles entirely.
+                variants_group_for_timer.set_visible(false);
+                return gtk::glib::ControlFlow::Break;
+            };
+
+            // Derive initial state from booted image's suffix.
+            let suffix = image_opt
+                .as_ref()
+                .and_then(|i| i.image.strip_prefix(&format!("{}-", fam.base_image)))
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let initial_dx = suffix.split('-').any(|p| p == "dx");
+            let initial_nvidia = suffix.split('-').any(|p| p == "nvidia" || p == "open");
+
+            let supports_dx = fam.features.iter().any(|f| f.id == "dx");
+            let supports_nvidia = fam
+                .features
+                .iter()
+                .any(|f| f.id == "nvidia" || f.id == "open");
+
+            dx_switch_for_timer.set_visible(supports_dx);
+            nvidia_switch_for_timer.set_visible(supports_nvidia);
+            dx_switch_for_timer.set_active(initial_dx);
+            nvidia_switch_for_timer.set_active(initial_nvidia);
+            variants_group_for_timer.set_visible(supports_dx || supports_nvidia);
+
+            let recompute = {
+                let dx_switch = dx_switch_for_timer.clone();
+                let nvidia_switch = nvidia_switch_for_timer.clone();
+                let entry = registry_entry_for_timer.clone();
+                let registry_uri = registry_uri_initial.clone();
+                let fam = fam.clone();
+                move || {
+                    let dx = dx_switch.is_active();
+                    let nvidia = nvidia_switch.is_active();
+                    let svc = crate::service::global();
+                    let mut feats: Vec<String> = Vec::new();
+                    if dx {
+                        feats.push("dx".to_string());
+                    }
+                    if nvidia {
+                        feats.push("nvidia".to_string());
+                        feats.push("open".to_string());
+                    }
+                    let resolved = svc.resolve_target(&fam, &feats).or_else(|| {
+                        if nvidia {
+                            let mut plain = if dx { vec!["dx".to_string()] } else { vec![] };
+                            plain.push("nvidia".to_string());
+                            svc.resolve_target(&fam, &plain)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(target) = resolved {
+                        let parts: Vec<&str> = registry_uri.split('/').collect();
+                        if parts.len() >= 2 {
+                            entry.set_text(&format!(
+                                "{}/{}/{}",
+                                parts[0], parts[1], target.image
+                            ));
+                        }
+                    }
+                }
+            };
+            let rc = Rc::new(recompute);
+            let rc2 = rc.clone();
+            dx_switch_for_timer.connect_active_notify(move |_| rc2());
+            let rc3 = rc.clone();
+            nvidia_switch_for_timer.connect_active_notify(move |_| rc3());
+
+            gtk::glib::ControlFlow::Break
+        });
+
         root.add_named(&source_page, Some("source"));
 
         // ── Version History Subpage ──────────────────────────────────────
