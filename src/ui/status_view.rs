@@ -1650,31 +1650,25 @@ impl SimpleComponent for StatusView {
                     let settings_snapshot = Settings::load();
                     dialog.connect_response(None, move |dlg, response| {
                         if response == "powerwash" {
-                            // Powerwash semantics: reset /etc to image defaults
-                            // and uninstall apps, BUT preserve the user's home.
-                            // bootc's `install reset` resets the full system
-                            // (including /var, which contains /var/home). The
-                            // home-preserving wrapper (tar /var/home → reset →
-                            // restore) is a follow-up; for now powerwash uses
-                            // the same canonical command as factory reset, and
-                            // the UI copy below over-claims slightly. Tracked
-                            // separately.
-                            // See: https://bootc.dev/bootc/experimental-install-reset.html
+                            // Powerwash = uninstall every user Flatpak + remove
+                            // every Distrobox container. Leaves /var/home, /etc,
+                            // and the bootc image untouched, so the dialog copy
+                            // ("home, files, accounts are kept") is honest.
+                            // Factory Reset is the destructive bootc-install-
+                            // reset path; the two are intentionally different.
                             if settings_snapshot.dry_run || settings_snapshot.dev_mode {
                                 tracing::warn!(
                                     "POWERWASH suppressed (dry_run={}, dev_mode={}). \
                                      Would have called:\n  \
-                                     1. tar -C /var/home -czf /var/tmp/finupdate-home-backup.tar.gz .\n  \
-                                     2. pkexec bootc install reset --experimental --apply\n  \
-                                     3. (after reboot) tar -C /var/home -xzf /var/tmp/finupdate-home-backup.tar.gz\n  \
-                                     4. flatpak uninstall --all -y  (selective)",
+                                     1. flatpak uninstall --user --all -y\n  \
+                                     2. distrobox rm -f -a",
                                     settings_snapshot.dry_run,
                                     settings_snapshot.dev_mode
                                 );
                                 let toast = adw::Toast::new("Powerwash staged (dry-run, no commands run)");
                                 toast_overlay.add_toast(toast);
                             } else {
-                                run_bootc_install_reset(&toast_overlay, "Powerwash");
+                                run_powerwash(&toast_overlay);
                             }
                         }
                         dlg.close();
@@ -2418,6 +2412,123 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
             Err(std::sync::mpsc::TryRecvError::Disconnected) => gtk::glib::ControlFlow::Break,
         }
     });
+}
+
+/// Run the "powerwash" command set on the host: uninstall every user-installed
+/// Flatpak, then remove every Distrobox container. Does NOT touch `/var/home`,
+/// `/etc`, or the bootc image — what you get back is a system that boots the
+/// same OS but with all third-party apps gone and a clean container fleet.
+///
+/// We deliberately avoid `bootc install reset` here. That command also wipes
+/// `/var/home`, which contradicts the dialog copy ("Your home directory, files,
+/// and signed-in accounts are kept"). Factory reset uses `bootc install reset`;
+/// powerwash uses this lighter command set.
+///
+/// All commands run via `flatpak-spawn --host` when inside the sandbox. None
+/// of them need pkexec (user-level flatpak uninstall and per-user distrobox
+/// operations don't require root), so we don't gate this on polkit.
+///
+/// This is destructive (apps and containers go away). It should only be reached
+/// after the caller has confirmed `!settings.dry_run && !settings.dev_mode` AND
+/// user confirmation.
+fn run_powerwash(toast_overlay: &adw::ToastOverlay) {
+    let current = Settings::load();
+    if current.dry_run || current.dev_mode {
+        tracing::warn!(
+            "Powerwash aborted at the last moment — settings now show dry_run={} dev_mode={}",
+            current.dry_run,
+            current.dev_mode
+        );
+        let abort = adw::Toast::new("Powerwash aborted (settings now in dry-run)");
+        abort.set_timeout(4);
+        toast_overlay.add_toast(abort);
+        return;
+    }
+
+    let start_toast = adw::Toast::new("Powerwash starting… (uninstalling apps and containers)");
+    start_toast.set_timeout(4);
+    toast_overlay.add_toast(start_toast);
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let toast_overlay = toast_overlay.clone();
+
+    std::thread::spawn(move || {
+        // Each step records (label, ok?, optional error tail). We don't bail
+        // on the first failure: even if distrobox isn't installed (no
+        // containers to remove), the Flatpak uninstall should still proceed.
+        let mut steps: Vec<(&'static str, bool, String)> = Vec::new();
+
+        steps.push(run_host_command(
+            "flatpak uninstall (user)",
+            &["flatpak", "uninstall", "--user", "--all", "-y"],
+        ));
+        steps.push(run_host_command(
+            "distrobox rm -fa",
+            &["distrobox", "rm", "-f", "-a"],
+        ));
+
+        let ok_count = steps.iter().filter(|(_, ok, _)| *ok).count();
+        let summary = if ok_count == steps.len() {
+            "Powerwash complete — apps and containers cleared".to_string()
+        } else {
+            let failed = steps
+                .iter()
+                .filter(|(_, ok, _)| !*ok)
+                .map(|(label, _, err)| format!("{}: {}", label, err))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("Powerwash finished with errors — {failed}")
+        };
+        for (label, ok, err) in &steps {
+            if *ok {
+                tracing::info!("Powerwash step '{}' succeeded", label);
+            } else {
+                tracing::warn!("Powerwash step '{}' failed: {}", label, err);
+            }
+        }
+        let _ = tx.send(summary);
+    });
+
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        match rx.try_recv() {
+            Ok(summary) => {
+                let t = adw::Toast::new(&summary);
+                t.set_timeout(6);
+                toast_overlay.add_toast(t);
+                gtk::glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => gtk::glib::ControlFlow::Break,
+        }
+    });
+}
+
+/// Run a host command (via `flatpak-spawn --host` inside the sandbox, or
+/// directly on the host otherwise). Returns (label, ok, error_tail) for the
+/// caller to aggregate into a status message.
+///
+/// `args[0]` is the program name, `args[1..]` are arguments. Exit-code-zero is
+/// success; anything else is failure with the last line of stderr as the tail.
+fn run_host_command(label: &'static str, args: &[&str]) -> (&'static str, bool, String) {
+    let output = if crate::update_worker::is_flatpak() {
+        let mut full = vec!["--host"];
+        full.extend_from_slice(args);
+        Command::new("flatpak-spawn").args(&full).output()
+    } else {
+        Command::new(args[0]).args(&args[1..]).output()
+    };
+    match output {
+        Ok(out) if out.status.success() => (label, true, String::new()),
+        Ok(out) => {
+            let tail = String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("(no stderr)")
+                .to_string();
+            (label, false, tail)
+        }
+        Err(e) => (label, false, e.to_string()),
+    }
 }
 
 fn get_host_kernel() -> String {
