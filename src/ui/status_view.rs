@@ -60,6 +60,10 @@ pub enum StatusViewInput {
     /// on current state. The single inline button does double duty per the
     /// macOS Tahoe "Install" / "Restart" pattern on the Software Update card.
     HeroActionClicked,
+    /// Parent App pushed updated Settings (Advanced dialog closed, CLI flag
+    /// applied, etc.). StatusView refreshes any front-page widgets that
+    /// mirror persistent settings — currently just the Auto Updates switch.
+    SettingsChanged(Settings),
     /// "Restart Tonight" button clicked — schedules the host to reboot at
     /// 02:00 via `pkexec shutdown -r 02:00`. Only meaningful when
     /// reboot_pending is true (a deployment is staged); the button is hidden
@@ -165,7 +169,7 @@ pub struct StatusView {
     /// Banner discard button.
     banner_discard_btn: gtk::Button,
     /// Automatic updates toggle in the settings card.
-    auto_update_switch: gtk::Switch,
+    auto_update_switch: adw::SwitchRow,
     /// Preflight check result.
     preflight_status: PreflightStatus,
     /// Cached last-update text.
@@ -1031,19 +1035,20 @@ impl SimpleComponent for StatusView {
         });
         check_row.add_suffix(&check_btn);
 
-        let auto_row = adw::ActionRow::builder()
+        // adw::SwitchRow (rather than ActionRow + Switch suffix) so the
+        // entire row is the click target — matches gnome-control-center's
+        // Privacy / Sharing toggles. Also gives us correct AT-SPI semantics
+        // (it announces as a switch, not a generic list item).
+        let auto_row = adw::SwitchRow::builder()
             .title("_Automatic updates")
+            .subtitle("Refresh in the background on the systemd timer")
             .use_underline(true)
-            .build();
-        let auto_update_switch = gtk::Switch::builder()
             .active(auto_updates_enabled)
-            .valign(gtk::Align::Center)
             .build();
-        auto_update_switch.connect_state_set(move |switch, _| {
-            apply_auto_updates_setting(switch.is_active());
-            gtk::glib::Propagation::Proceed
+        let auto_update_switch = auto_row.clone();
+        auto_row.connect_active_notify(move |row| {
+            apply_auto_updates_setting(row.is_active());
         });
-        auto_row.add_suffix(&auto_update_switch);
 
         // ── Main page is intentionally minimal ────────────────────────────
         // Per user direction (macOS Software Update model): only Check +
@@ -1574,6 +1579,17 @@ impl SimpleComponent for StatusView {
                 self.reboot_pending = false;
                 self.preflight_status = PreflightStatus::UpToDate;
                 self.refresh_idle_description();
+            }
+
+            StatusViewInput::SettingsChanged(new_settings) => {
+                // Sync the front-page Auto Updates switch with the new
+                // settings (e.g. user toggled it inside the Advanced dialog).
+                // Block re-firing apply_auto_updates_setting via the active-
+                // notify handler by using `block_signal`-style: just check
+                // whether the desired state matches current first.
+                if self.auto_update_switch.is_active() != new_settings.auto_updates {
+                    self.auto_update_switch.set_active(new_settings.auto_updates);
+                }
             }
 
             StatusViewInput::HeroActionClicked => {

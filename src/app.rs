@@ -872,8 +872,13 @@ impl SimpleComponent for App {
 
             AppMsg::SettingsChanged(new_settings) => {
                 tracing::debug!("Settings updated: dev_mode={}", new_settings.dev_mode);
-                self.settings = new_settings;
+                self.settings = new_settings.clone();
                 self.dev_banner.set_revealed(self.settings.dev_mode);
+                // Forward to StatusView so the front-page Auto Updates
+                // SwitchRow stays in sync with the Advanced dialog (and any
+                // other future settings-aware widgets on the main page).
+                self.status_view
+                    .emit(StatusViewInput::SettingsChanged(new_settings));
             }
 
             AppMsg::PreflightResult(status) => {
