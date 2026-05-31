@@ -22,4 +22,5 @@ This plan outlines the specific improvements to be implemented in the `finupdate
 - **Task 6.1:** [x] Implement `FINUPDATE_TEST_BREW_BIN` testing hook in `data/finupdate-runner` to support mock-executable paths.
 - **Task 6.2:** [x] Establish comprehensive system command mocking (for `bootc`, `flatpak`, `su`/`brew`, `distrobox`) using custom mock binary creation in isolated test paths.
 - **Task 6.3:** [x] Add real-script execution test cases (`test_real_runner_full_success_with_mocks` and `test_real_runner_system_only_skips_others`) executing `data/finupdate-runner` directly and asserting that correct system calls, parameters, and events are processed under full success and system-only modes.
+- **Task 6.4:** [x] Implement mock systemctl and pkexec commands to cover timer installation, status, and control logic in `src/uupd_compat.rs` unit tests, driving code coverage up from 55% to over 80%.
 
