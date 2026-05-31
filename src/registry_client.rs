@@ -475,11 +475,17 @@ impl RegistryClient {
         None
     }
 
-    /// Fetch all available versions for this stream in the last `days` days.
+    /// Fetch the most recent `max` versions for this stream, newest-first.
     ///
     /// - Round trip 1: tag list
     /// - Round trip 2…N: manifest HEADs, up to 12 concurrent
-    pub async fn fetch_versions(&self, _days: u32) -> Result<Vec<ImageVersion>, RegistryError> {
+    ///
+    /// `max` is the CAP on the returned set — fewer entries are returned if
+    /// the stream simply doesn't have that many builds. The internal SHA
+    /// probe (for dakota-style sha-only-tagged images) is sized off the
+    /// same value so larger `max` actually surfaces more results rather
+    /// than capping at the old hardcoded CANDIDATE_CAP=8.
+    pub async fn fetch_versions(&self, max: usize) -> Result<Vec<ImageVersion>, RegistryError> {
         let token = self.get_token().await?;
         let client = self.client.clone();
 
@@ -517,8 +523,10 @@ impl RegistryClient {
         // landing on a handful of old February tags and missing every
         // build since. 120 probes at 8-way concurrency runs in ~5-10s
         // against ghcr.io — acceptable for a one-shot changelog fetch.
-        const CANDIDATE_CAP: usize = 8;
-        const SHA_PROBE_CAP: usize = 120;
+        // CANDIDATE_CAP = caller-supplied `max`; SHA_PROBE_CAP scales with
+        // it so a "load older builds" round trip actually surfaces more.
+        let candidate_cap = max.max(1);
+        let sha_probe_cap = candidate_cap.max(120);
         candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
 
         // Slow path: dakota-nvidia and similar images publish via sha-only
@@ -528,12 +536,12 @@ impl RegistryClient {
         // Two HTTP calls per probe (manifest + config blob), bounded by an
         // 8-way semaphore — measured at ~2-4s for 30 probes against
         // ghcr.io. Only runs when dated tags came up short.
-        if candidate_tags.len() < CANDIDATE_CAP {
+        if candidate_tags.len() < candidate_cap {
             let sha_tags: Vec<String> = tag_resp
                 .tags
                 .iter()
                 .filter(|t| is_sha_only_tag(t))
-                .take(SHA_PROBE_CAP)
+                .take(sha_probe_cap)
                 .cloned()
                 .collect();
             if !sha_tags.is_empty() {
@@ -545,7 +553,7 @@ impl RegistryClient {
             }
         }
 
-        candidate_tags.truncate(CANDIDATE_CAP);
+        candidate_tags.truncate(candidate_cap);
 
         if candidate_tags.is_empty() {
             // Fallback: nothing dated and nothing sha-probable — try the

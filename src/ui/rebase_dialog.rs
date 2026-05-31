@@ -156,6 +156,7 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
             &variant,
             current_family_for_retry.clone(),
             selected_features_for_retry.clone(),
+            INITIAL_FETCH_COUNT,
         );
     });
 
@@ -185,8 +186,18 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
         &initial_variant,
         current_family.clone(),
         selected_features.clone(),
+        INITIAL_FETCH_COUNT,
     );
 }
+
+/// Initial number of versions fetched when the rebase dialog opens.
+/// Powers the dropdown of recent builds (the user only sees the top 4 in the
+/// dropdown, but we pre-fetch a slightly larger window so the calendar has
+/// content the instant "Show older builds" is clicked). The "Load older
+/// builds" affordance inside the calendar re-fetches with EXPANDED_FETCH_COUNT.
+const INITIAL_FETCH_COUNT: usize = 12;
+const EXPANDED_FETCH_COUNT: usize = 120;
+const RECENT_DROPDOWN_COUNT: usize = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn start_version_fetch(
@@ -199,13 +210,14 @@ fn start_version_fetch(
     variant: &str,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
+    max_versions: usize,
 ) {
     stack.set_visible_child_name("loading");
     error_page.set_description(Some("Check your internet connection and try again."));
 
     let variant_str = variant.to_string();
     let result_slot: Arc<Mutex<Option<FetchResult>>> = Arc::new(Mutex::new(None));
-    spawn_fetch_thread(result_slot.clone(), &variant_str);
+    spawn_fetch_thread(result_slot.clone(), &variant_str, max_versions);
 
     let start_time = std::time::Instant::now();
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
@@ -249,7 +261,11 @@ fn start_version_fetch(
     });
 }
 
-fn spawn_fetch_thread(result_slot: Arc<Mutex<Option<FetchResult>>>, variant: &str) {
+fn spawn_fetch_thread(
+    result_slot: Arc<Mutex<Option<FetchResult>>>,
+    variant: &str,
+    max_versions: usize,
+) {
     let variant_str = variant.to_string();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -262,12 +278,12 @@ fn spawn_fetch_thread(result_slot: Arc<Mutex<Option<FetchResult>>>, variant: &st
             // the service layer. current_image() honours mock_identity →
             // bootc status → os-release; list_versions delegates to
             // fetch_versions internally with the config-blob date harvest
-            // included. Same observable behaviour; future alternative
-            // frontends share the same code path.
+            // included. `max_versions` lets the caller scale up the fetch
+            // when the user clicks "Load older builds" in the calendar.
             let svc = service::global();
             let result = match svc.current_image().await {
                 Err(_) => FetchResult::DetectFailed,
-                Ok(image) => match svc.list_versions(&image, 8).await {
+                Ok(image) => match svc.list_versions(&image, max_versions).await {
                     Ok(mut versions) => {
                         if !variant_str.is_empty() && variant_str != "default" {
                             versions.retain(|v| v.version.contains(&variant_str));
@@ -425,8 +441,94 @@ fn build_loaded_page(
 
     inject_calendar_css();
 
+    // ── Recent versions dropdown (top of the dialog) ──────────────────────
+    // User direction: surface the most recent N builds prominently. The
+    // calendar is overkill when the user is just rolling back to last week.
+    // Top-RECENT_DROPDOWN_COUNT versions render as a PreferencesGroup of
+    // activatable ActionRows; click activates the same selection state the
+    // calendar grid uses, so the rebase button + details panel get the same
+    // wiring.
+    let recent_group = adw::PreferencesGroup::builder()
+        .title("Recent builds")
+        .description("Most recent images — click to select, then Rebase")
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(8)
+        .margin_bottom(0)
+        .build();
+    let recent_take = RECENT_DROPDOWN_COUNT.min(versions.len());
+    for v in versions.iter().take(recent_take) {
+        let row = adw::ActionRow::builder()
+            .title(v.date.format("%B %-d, %Y").to_string())
+            .subtitle(v.version.clone())
+            .activatable(true)
+            .build();
+        row.set_accessible_role(gtk::AccessibleRole::Button);
+        let chev = gtk::Image::from_icon_name("go-next-symbolic");
+        chev.add_css_class("dim-label");
+        row.add_suffix(&chev);
+
+        let date = v.date;
+        let selected_rc = selected.clone();
+        let version_map_rc = version_map.clone();
+        let details_group_rc = details_group.clone();
+        let version_row_rc = version_row.clone();
+        let kernel_row_rc = kernel_row.clone();
+        let built_row_rc = built_row.clone();
+        let commit_row_rc = commit_row.clone();
+        let rebase_btn_rc = rebase_btn.clone();
+        row.connect_activated(move |_| {
+            *selected_rc.borrow_mut() = Some(date);
+            if let Some(v) = version_map_rc.get(&date) {
+                update_details(
+                    &details_group_rc,
+                    &version_row_rc,
+                    &kernel_row_rc,
+                    &built_row_rc,
+                    &commit_row_rc,
+                    &rebase_btn_rc,
+                    v,
+                    &date,
+                    current_date,
+                );
+            }
+        });
+        recent_group.add(&row);
+    }
+
+    // ── "Show older builds" reveals the full calendar ─────────────────────
+    let calendar_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(200)
+        .reveal_child(false)
+        .build();
+    calendar_revealer.set_child(Some(&calendar_box));
+
+    let show_older_btn = gtk::Button::builder()
+        .label("Show older builds…")
+        .halign(gtk::Align::Center)
+        .margin_top(8)
+        .margin_bottom(0)
+        .build();
+    show_older_btn.add_css_class("flat");
+    {
+        let revealer = calendar_revealer.clone();
+        let btn = show_older_btn.clone();
+        show_older_btn.connect_clicked(move |_| {
+            let new_state = !revealer.reveals_child();
+            revealer.set_reveal_child(new_state);
+            btn.set_label(if new_state {
+                "Hide calendar"
+            } else {
+                "Show older builds…"
+            });
+        });
+    }
+
     // ── Assemble container ──────────────────────────────────────────────
-    container.append(&calendar_box);
+    container.append(&recent_group);
+    container.append(&show_older_btn);
+    container.append(&calendar_revealer);
     container.append(&details_group);
     container.append(&rebase_btn);
 

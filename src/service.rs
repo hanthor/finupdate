@@ -54,12 +54,14 @@ pub use crate::registry_client::ImageVersion;
 /// for the direct calls that were inline in BootcUpdaterService.
 #[async_trait::async_trait]
 pub trait Registry: Send + Sync {
-    /// Fetch the recent ImageVersions for an image, newest-first, capped at
-    /// CANDIDATE_CAP=8 by the underlying implementation. Honours the
-    /// config-blob date harvest fallback for sha-only-tagged images.
+    /// Fetch up to `max` recent ImageVersions for an image, newest-first.
+    /// Honours the config-blob date harvest fallback for sha-only-tagged
+    /// images (dakota et al.); the harvest probe scales with `max` so a
+    /// larger ask actually returns more (was hardcoded at 8 before).
     async fn fetch_versions(
         &self,
         image: &ImageRef,
+        max: usize,
     ) -> Result<Vec<ImageVersion>, ServiceError>;
 
     /// Detect the currently-booted image, honouring mock_identity →
@@ -86,6 +88,7 @@ impl Registry for HttpRegistry {
     async fn fetch_versions(
         &self,
         image: &ImageRef,
+        max: usize,
     ) -> Result<Vec<ImageVersion>, ServiceError> {
         let client = crate::registry_client::RegistryClient::new(
             &image.registry,
@@ -94,7 +97,7 @@ impl Registry for HttpRegistry {
             &image.tag,
         );
         client
-            .fetch_versions(0)
+            .fetch_versions(max)
             .await
             .map_err(|e| ServiceError::Registry(e.to_string()))
     }
@@ -369,7 +372,7 @@ impl UpdaterService for BootcUpdaterService {
         image: &ImageRef,
         max: usize,
     ) -> Result<Vec<ImageVersion>, ServiceError> {
-        let mut versions = self.registry.fetch_versions(image).await?;
+        let mut versions = self.registry.fetch_versions(image, max).await?;
         versions.sort_by(|a, b| b.date.cmp(&a.date));
         versions.truncate(max);
         Ok(versions)
@@ -545,6 +548,7 @@ mod tests {
         async fn fetch_versions(
             &self,
             image: &ImageRef,
+            _max: usize,
         ) -> Result<Vec<ImageVersion>, ServiceError> {
             *self.fetch_versions_calls.lock().unwrap() += 1;
             self.versions
