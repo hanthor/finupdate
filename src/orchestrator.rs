@@ -291,6 +291,8 @@ fn parse_line(line: &str) -> ParsedLine {
 mod tests {
     use super::*;
 
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn expect_event(line: &str) -> UpdateEvent {
         match parse_line(line) {
             ParsedLine::Event(e) => e,
@@ -417,6 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_with_mock_process() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -484,6 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_cancellation() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -531,6 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_exit_77_uptodate() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -569,6 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_exit_error() {
+        let _lock = TEST_MUTEX.lock().unwrap();
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
