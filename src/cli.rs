@@ -40,6 +40,10 @@ Commands:
                       between the booted image and the named tag (defaults
                       to the booted tag — useful for previewing what an
                       Install would actually change).
+  timer [cmd]         Show uupd.timer status. Command can be 'enable' or
+                      'disable' to modify timer status.
+  update              Run the update process and stream progress live.
+                      Pass '--system-only' to only update system image.
   help                Print this help
 
 Environment:
@@ -76,6 +80,14 @@ fn main() -> ExitCode {
         "changelog" => {
             let target_tag = std::env::args().nth(2);
             rt.block_on(cmd_changelog(target_tag))
+        }
+        "timer" => {
+            let arg = std::env::args().nth(2);
+            rt.block_on(cmd_timer(arg))
+        }
+        "update" => {
+            let system_only = std::env::args().any(|x| x == "--system-only");
+            rt.block_on(cmd_update(system_only))
         }
         other => {
             eprintln!("finupdate-cli: unknown command '{}'\n", other);
@@ -296,4 +308,90 @@ async fn fetch_recent_commits(url: &str) -> Result<Vec<(String, String, String)>
         .into_iter()
         .map(|c| (c.sha, c.commit.message, c.commit.author.name))
         .collect())
+}
+
+async fn cmd_timer(action: Option<String>) -> ExitCode {
+    if let Some(act) = action {
+        let enable = match act.as_str() {
+            "enable" => true,
+            "disable" => false,
+            other => {
+                eprintln!(
+                    "finupdate-cli: unknown timer action '{}' (expected 'enable' or 'disable')",
+                    other
+                );
+                return ExitCode::from(2);
+            }
+        };
+        println!(
+            "Transitioning uupd.timer to: {}...",
+            if enable { "enabled" } else { "disabled" }
+        );
+        match uupd_compat::set_uupd_timer(enable).await {
+            Ok(_) => {
+                println!("Successfully configured uupd.timer.");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("Failed to configure uupd.timer: {}", e);
+                ExitCode::FAILURE
+            }
+        }
+    } else {
+        println!("uupd daemon state:");
+        println!("  installed: {}", uupd_compat::is_uupd_installed());
+        match uupd_compat::is_uupd_timer_active() {
+            Some(true) => println!("  timer:     enabled"),
+            Some(false) => println!("  timer:     disabled"),
+            None => println!("  timer:     unknown / unmanaged"),
+        }
+        ExitCode::SUCCESS
+    }
+}
+
+async fn cmd_update(system_only: bool) -> ExitCode {
+    println!("Starting update sequence...");
+
+    let mut original_settings = None;
+    if system_only {
+        println!("  (system-only mode forced via CLI flag)");
+        let mut settings = settings::Settings::load();
+        original_settings = Some(settings.clone());
+        settings.include_app_updates = false;
+        settings.save();
+    }
+
+    let (tx_cancel, rx_cancel) = tokio::sync::oneshot::channel();
+    let mut rx = orchestrator::run(rx_cancel).await;
+
+    let mut exit_code = ExitCode::SUCCESS;
+    while let Some(event) = rx.recv().await {
+        match event {
+            orchestrator::UpdateEvent::Output(line) => {
+                println!("  [output] {}", line);
+            }
+            orchestrator::UpdateEvent::ModuleStarted(module) => {
+                println!("=== MODULE STARTED: {:?} ===", module);
+            }
+            orchestrator::UpdateEvent::ModuleFinished(module, status) => {
+                println!("=== MODULE FINISHED: {:?} ({:?}) ===", module, status);
+            }
+            orchestrator::UpdateEvent::Complete => {
+                println!("Update completed successfully!");
+            }
+            orchestrator::UpdateEvent::UpToDate => {
+                println!("System is already up to date.");
+            }
+            orchestrator::UpdateEvent::Error(err) => {
+                eprintln!("Error during update: {}", err);
+                exit_code = ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if let Some(orig) = original_settings {
+        orig.save();
+    }
+
+    exit_code
 }
