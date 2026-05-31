@@ -173,10 +173,15 @@ pub enum AppMsg {
     /// Dismiss the staged-reboot banner. Wired to Ctrl+Backspace for the
     /// same reason as ShowWhatsNew.
     DismissBanner,
-    /// Open the powerwash confirmation dialog. Wired to Ctrl+Alt+P.
+    /// Open the powerwash confirmation dialog (menu / Advanced dialog).
     TriggerPowerwash,
-    /// Open the factory-reset confirmation dialog. Wired to Ctrl+Alt+F.
+    /// Open the factory-reset confirmation dialog (menu / Advanced dialog).
     TriggerFactoryReset,
+    /// Navigate the StatusView stack to a specific subpage ("source",
+    /// "history", "main"). Used by the Advanced dialog's action rows so a
+    /// click on "Image Source" pushes the user to that subpage from
+    /// wherever they were.
+    ShowStatusPage(String),
 }
 
 #[relm4::component(pub)]
@@ -222,29 +227,17 @@ impl SimpleComponent for App {
     }
 
     menu! {
-        // Hamburger menu. Per macOS Software Update mental model, the main
-        // page shows only Check + Automatic Updates. Everything else lives
-        // here — one click away but off the primary visual focus.
-        //
-        // Developer-mode and simulator toggles moved out entirely; those are
-        // now CLI args (--dev-mode, --sim=<scenario>) since the GUI menu
-        // shouldn't expose dev-only state to end users.
+        // Hamburger menu — kept minimal to match gnome-control-center which
+        // only exposes app-level items here (Keyboard Shortcuts / About /
+        // Quit). Panel-specific stuff (Image Source, Image History, Rebase,
+        // Powerwash, Factory Reset, settings) lives in the Advanced dialog
+        // reached from the "Advanced…" row on the main page.
         main_menu: {
             section! {
-                "Image _Source…" => ShowSourcePageAction,
-                "Image _History…" => ShowHistoryPageAction,
-                "_Rebase to Previous Version…" => RebaseAction,
-            },
-            section! {
-                "_Powerwash…" => PowerwashAction,
-                "_Factory Reset…" => FactoryResetAction,
-            },
-            section! {
-                "_Advanced…" => PreferencesAction,
-            },
-            section! {
-                "_About Finupdate" => AboutAction,
                 "_Keyboard Shortcuts" => ShortcutsAction,
+                "_About Finupdate" => AboutAction,
+            },
+            section! {
                 "_Quit" => QuitAction,
             }
         }
@@ -269,11 +262,8 @@ impl SimpleComponent for App {
                     StatusViewOutput::ShowRebase => AppMsg::ShowRebaseDialog,
                     StatusViewOutput::OpenCheckDialog => AppMsg::OpenCheckDialog,
                     StatusViewOutput::PageChanged(page) => AppMsg::PageChanged(page),
+                    StatusViewOutput::OpenAdvanced => AppMsg::ShowPreferences,
                 });
-        // Capture the sender now so we can wire it into menu-driven actions
-        // below — the controller itself gets moved into the model and won't
-        // be borrowable from action closures otherwise.
-        let status_view_sender = status_view.sender().clone();
 
         let toast_overlay = adw::ToastOverlay::new();
         let header_bar = adw::HeaderBar::new();
@@ -294,10 +284,20 @@ impl SimpleComponent for App {
             .visible(false)
             .build();
 
+        // Initial scenario from settings.json (set by behave smoke tests via
+        // _write_settings(sim_scenario="...") or by the --sim CLI flag).
+        // Default Success when unset or unparseable.
+        let initial_sim_scenario = match settings.sim_scenario.as_deref() {
+            Some("Failure") | Some("failure") => SimulationScenario::Failure,
+            Some("AlreadyUpToDate") | Some("up-to-date") | Some("uptodate") => {
+                SimulationScenario::AlreadyUpToDate
+            }
+            _ => SimulationScenario::Success,
+        };
         let model = App {
             state: AppState::Idle,
             preflight_status: PreflightStatus::Checking,
-            sim_scenario: SimulationScenario::Success,
+            sim_scenario: initial_sim_scenario,
             log_lines: Vec::new(),
             toast_overlay: toast_overlay.clone(),
             status_view,
@@ -349,27 +349,10 @@ impl SimpleComponent for App {
             })
         };
 
-        // Image Source / Image History menu entries — push the StatusView
-        // stack to the corresponding subpage. Same code path the old in-page
-        // ActionRow used; just driven from the menu now since the rows were
-        // removed from the main page. The sender was captured before
-        // status_view was moved into the model.
-        let source_page_action: RelmAction<ShowSourcePageAction> = {
-            let s = status_view_sender.clone();
-            RelmAction::new_stateless(move |_| {
-                s.emit(crate::ui::status_view::StatusViewInput::ShowPage(
-                    "source".to_string(),
-                ));
-            })
-        };
-        let history_page_action: RelmAction<ShowHistoryPageAction> = {
-            let s = status_view_sender.clone();
-            RelmAction::new_stateless(move |_| {
-                s.emit(crate::ui::status_view::StatusViewInput::ShowPage(
-                    "history".to_string(),
-                ));
-            })
-        };
+        // Source / History page navigation no longer needs dedicated
+        // actions — clicks happen via the Advanced dialog's System group
+        // rows, which dispatch AppMsg::ShowStatusPage directly through the
+        // app input sender.
 
         let mut group = RelmActionGroup::<WindowActionGroup>::new();
         group.add_action(about_action);
@@ -377,8 +360,6 @@ impl SimpleComponent for App {
         group.add_action(quit_action);
         group.add_action(shortcuts_action);
         group.add_action(rebase_action);
-        group.add_action(source_page_action);
-        group.add_action(history_page_action);
 
         let install_action: RelmAction<InstallAction> = {
             let sender = sender.input_sender().clone();
@@ -437,9 +418,11 @@ impl SimpleComponent for App {
         app.set_accelerators_for_action::<WhatsNewAction>(&["<primary>w"]);
         app.set_accelerators_for_action::<RestartAction>(&["<primary><shift>b"]);
         app.set_accelerators_for_action::<DismissBannerAction>(&["<primary>BackSpace"]);
-        // Destructive actions — guarded behind dry_run / dev_mode toasts.
-        app.set_accelerators_for_action::<PowerwashAction>(&["<primary><alt>p"]);
-        app.set_accelerators_for_action::<FactoryResetAction>(&["<primary><alt>f"]);
+        // Powerwash and Factory Reset deliberately have NO accelerator —
+        // destructive actions shouldn't have keyboard shortcuts a user could
+        // hit by mistake. They live in the hamburger menu and require an
+        // intentional click; the in-dialog confirmation gates the actual
+        // destructive call.
 
         // ─── Close Request Handler ──────────────────────────────────────
         // Intercept window close to warn if an update is in progress.
@@ -873,10 +856,16 @@ impl SimpleComponent for App {
             AppMsg::ShowPreferences => {
                 if let Some(root) = self.status_view.widget().root() {
                     if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        let sender = sender.input_sender().clone();
-                        show_preferences(window, self.settings.clone(), move |updated| {
-                            sender.emit(AppMsg::SettingsChanged(updated));
-                        });
+                        let s1 = sender.input_sender().clone();
+                        let s2 = sender.input_sender().clone();
+                        show_preferences(
+                            window,
+                            self.settings.clone(),
+                            s1,
+                            move |updated| {
+                                s2.emit(AppMsg::SettingsChanged(updated));
+                            },
+                        );
                     }
                 }
             }
@@ -948,6 +937,10 @@ impl SimpleComponent for App {
             AppMsg::TriggerFactoryReset => {
                 self.status_view
                     .emit(StatusViewInput::TogglePin("factory".to_string()));
+            }
+
+            AppMsg::ShowStatusPage(page) => {
+                self.status_view.emit(StatusViewInput::ShowPage(page));
             }
 
             AppMsg::ToggleDevMode(enabled) => {
@@ -1078,11 +1071,7 @@ fn show_shortcuts_window(window: &adw::ApplicationWindow) {
     section.add_group(&updates_group);
 
     let system_group = gtk::ShortcutsGroup::builder().title("System").build();
-    for (title, accel) in [
-        ("Open Rebase / Version History", "<Primary><Shift>r"),
-        ("Powerwash", "<Primary><Alt>p"),
-        ("Factory Reset", "<Primary><Alt>f"),
-    ] {
+    for (title, accel) in [("Open Rebase / Version History", "<Primary><Shift>r")] {
         system_group.add_shortcut(
             &gtk::ShortcutsShortcut::builder()
                 .title(title)
@@ -1091,6 +1080,8 @@ fn show_shortcuts_window(window: &adw::ApplicationWindow) {
         );
     }
     section.add_group(&system_group);
+    // Note: Powerwash and Factory Reset are intentionally absent here —
+    // destructive actions don't get keyboard shortcuts. Hamburger menu only.
 
     shortcuts.add_section(&section);
     shortcuts.set_visible(true);
@@ -1124,9 +1115,6 @@ relm4::new_stateless_action!(RestartAction, WindowActionGroup, "restart");
 relm4::new_stateless_action!(DismissBannerAction, WindowActionGroup, "dismiss-banner");
 relm4::new_stateless_action!(PowerwashAction, WindowActionGroup, "powerwash");
 relm4::new_stateless_action!(FactoryResetAction, WindowActionGroup, "factory-reset");
-// Subpage-navigation menu entries.
-relm4::new_stateless_action!(ShowSourcePageAction, WindowActionGroup, "show-source");
-relm4::new_stateless_action!(ShowHistoryPageAction, WindowActionGroup, "show-history");
 
 fn inject_app_css() {
     // Minimal CSS layer. Status colours, banner icons, and hero icons now use

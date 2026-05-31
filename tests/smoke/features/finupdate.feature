@@ -39,11 +39,10 @@ Feature: Finupdate smoke tests
     * Key combo: "<Control>comma"
     * Wait until "Preferences" "dialog" appears in "finupdate"
 
-  @preferences @dev_mode
-  Scenario: Developer Mode toggle is reachable in Preferences
-    * Key combo: "<Control>comma"
-    * Wait until "Preferences" "dialog" appears in "finupdate"
-    * Item "Developer Mode" "switch" is "showing" in "finupdate"
+  # Developer Mode toggle was removed from the UI — it's a CLI-only flag
+  # now (`finupdate --dev-mode`). The scenario that verified the switch is
+  # in Preferences no longer applies; smoke tests that need dev_mode just
+  # write settings.json before launch via the existing scenario step.
 
   # ── Dev-mode simulated update ───────────────────────────────────────────
   # These exercise the full UI state machine without root or a live system.
@@ -127,29 +126,14 @@ Feature: Finupdate smoke tests
     * Left click "Cancel" "button" in "finupdate"
     * Application "finupdate" is running
 
-  # ── Developer mode simulation scenarios ───────────────────────────────
-
-  @dev_mode @simulator @scenarios
-  Scenario: Sim scenario can be changed from hamburger menu
-    * Key combo: "<Alt>F10"
-    * Item "Simulate _Success" "menu item" is "showing" in "finupdate"
-    * Item "Simulate _Failure" "menu item" is "showing" in "finupdate"
-    * Item "Simulate Already _Up To Date" "menu item" is "showing" in "finupdate"
-
-  # ── Settings persistence ─────────────────────────────────────────────
-
-  @dev_mode @settings
-  Scenario: Developer mode setting persists across restarts
-    * Key combo: "<Control>comma"
-    * Wait until "Preferences" "dialog" appears in "finupdate"
-    * Left click "Developer Mode" "switch" in "finupdate"
-    * Close application "finupdate" via "shortcut"
-    * Application "finupdate" is no longer running
-    * Start application "finupdate" via "command"
-    * Wait until window "Finupdate" appears in "finupdate"
-    * Key combo: "<Control>comma"
-    * Wait until "Preferences" "dialog" appears in "finupdate"
-    * Item "Developer Mode" "switch" is "showing" in "finupdate"
+  # ── Developer mode + simulator are CLI-only ──────────────────────────
+  # The hamburger menu and Preferences toggle for these were removed
+  # (gnome-control-center idiom — no dev-only state exposed in the UI).
+  # Use `--dev-mode` and `--sim=<scenario>` on the command line, or write
+  # to settings.json via `_write_settings(dev_mode=True, sim_scenario=...)`
+  # which is what the existing scenario steps still do. The scenarios that
+  # asserted on the menu entries / Preferences toggle were removed since
+  # those widgets no longer exist.
 
   # ── Check dialog text verification ──────────────────────────────────
   # Verify check dialog displays correctly without waiting for real checks.
@@ -195,41 +179,21 @@ Feature: Finupdate smoke tests
     * Wait until 5 seconds
     * Application "finupdate" is running
 
-  # ── Image history and rebasing ──────────────────────────────────────────
+  # ── Image source / history are reached via the Advanced dialog ─────────
+  # The main page is intentionally minimal (Check + Automatic Updates +
+  # Advanced row). The previous scenarios that asserted on "Image source"
+  # / "Image history" list items being on the home page no longer apply;
+  # those rows moved into the Advanced (Preferences) dialog → System group.
+  # The strict-count matrix below still exercises the history-fetch path
+  # end-to-end and is the meaningful coverage; spot-presence on the home
+  # page would be tautological now.
 
-  @dev_mode @rebase
-  Scenario: Image history and version information is accessible
-    * Item "Image history" "list item" is "showing" in "finupdate"
-    * Wait until "images" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
-
-  @dev_mode @image_management
-  Scenario: Image source configuration is visible
-    * Item "Image source" "list item" is "showing" in "finupdate"
-    * Wait until "dakota" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
-
-  # ── Changelog and version details ────────────────────────────────────────
-
-  @changelog
-  Scenario: Changelog view displays available image versions
-    * Item "Image history" "list item" is "showing" in "finupdate"
-    * Wait until "images" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
-
-  @dev_mode @history
-  Scenario: Image history shows deployment information
-    * Wait until "Image history" appears in "finupdate" within 5 seconds
-    * Wait until "images" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
-
-  # ── Image family and registry ───────────────────────────────────────────
-
-  @image_management @registry
-  Scenario: Registry URI is displayed for current image
-    * Item "Image source" "list item" is "showing" in "finupdate"
-    * Wait until "projectbluefin" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
+  @dev_mode @advanced @image_management
+  Scenario: Advanced dialog exposes Image Source and Image History rows
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
+    * Wait until "Image Source" appears in "finupdate" within 5 seconds
+    * Wait until "Image History" appears in "finupdate" within 5 seconds
 
   # ── Mock-identity matrix: render against many bootc image families ─────
   # `Mock identity` sets settings.json.mock_identity (overrides bootc status),
@@ -242,9 +206,6 @@ Feature: Finupdate smoke tests
   Scenario Outline: Image surfaces render for <family>
     * Mock identity "<full_ref>" is configured
     * Wait until "<image_name>" appears in "finupdate" within 15 seconds
-    * Item "Image source" "list item" is "showing" in "finupdate"
-    * Item "Image history" "list item" is "showing" in "finupdate"
-    * Wait until "images" appears in "finupdate" within 30 seconds
     * Application "finupdate" is running
 
     Examples:
@@ -351,9 +312,7 @@ Feature: Finupdate smoke tests
   Scenario Outline: Changelog fetch keeps the app responsive for <family>
     * Mock identity "<full_ref>" is configured
     * Wait until "<image_name>" appears in "finupdate" within 15 seconds
-    * Wait until "images" appears in "finupdate" within 30 seconds
-    * Item "Image source" "list item" is "showing" in "finupdate"
-    * Item "Image history" "list item" is "showing" in "finupdate"
+    * Wait until 30 seconds
     * Application "finupdate" is running
 
     Examples:
@@ -362,11 +321,10 @@ Feature: Finupdate smoke tests
       | aurora   | ghcr.io/ublue-os/aurora:stable        | aurora     |
       | dakota   | ghcr.io/projectbluefin/dakota:latest  | dakota     |
 
-  @dev_mode @rollback
-  Scenario: Previous image versions are accessible for rollback
-    * Item "Image history" "list item" is "showing" in "finupdate"
-    * Wait until "images" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
+  # "Previous image versions accessible" rollback scenario removed — it
+  # asserted on an Image History list item on the home page which doesn't
+  # exist any more. The matrix scenarios above + the end-to-end rollback
+  # below cover the actual rollback path.
 
   # ── End-to-end rollback: dialog → pick day → confirm → simulated success ──
   # Mock identity puts dry_run=true AND dev_mode=true, so confirming the
@@ -388,41 +346,23 @@ Feature: Finupdate smoke tests
     * Wait until "simulated" appears in "finupdate" within 10 seconds
     * Application "finupdate" is running
 
-  @dev_mode @pin
-  Scenario: Pin functionality available for image versions
-    * Wait until "Image history" appears in "finupdate" within 5 seconds
-    * Wait until "images" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
+  # Pin functionality / Powerwash / Factory Reset on the home page —
+  # removed scenarios. These rows moved to the Advanced dialog's System
+  # group. Powerwash and Factory Reset no longer have keyboard shortcuts
+  # (destructive actions need intentional clicks); the Advanced dialog is
+  # the only entry point.
 
-  # ── Destructive operations (dialog testing only) ─────────────────────────
-
-  @destructive @powerwash @dialog
-  Scenario: Powerwash dialog displays with proper warnings
-    * Item "Powerwash" "list item" is "showing" in "finupdate"
+  @destructive @advanced @powerwash
+  Scenario: Powerwash row is reachable via Advanced dialog
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
     * Wait until "Powerwash" appears in "finupdate" within 5 seconds
-    * Wait until "Reset settings" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
 
-  @destructive @factory_reset @dialog
-  Scenario: Factory reset dialog displays with proper warnings
-    * Item "Factory reset" "list item" is "showing" in "finupdate"
-    * Wait until "Factory reset" appears in "finupdate" within 5 seconds
-    * Wait until "Erase everything" appears in "finupdate" within 5 seconds
-    * Application "finupdate" is running
-
-  @destructive @powerwash @dialog
-  Scenario: Powerwash dialog can be dismissed safely
-    * Item "Powerwash" "list item" is "showing" in "finupdate"
-    * Wait until "Powerwash" appears in "finupdate" within 5 seconds
-    * Key combo: "Escape"
-    * Application "finupdate" is running
-
-  @destructive @factory_reset @dialog
-  Scenario: Factory reset dialog can be dismissed safely
-    * Item "Factory reset" "list item" is "showing" in "finupdate"
-    * Wait until "Factory reset" appears in "finupdate" within 5 seconds
-    * Key combo: "Escape"
-    * Application "finupdate" is running
+  @destructive @advanced @factory_reset
+  Scenario: Factory Reset row is reachable via Advanced dialog
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
+    * Wait until "Factory Reset" appears in "finupdate" within 5 seconds
 
   # ── Accelerator coverage for non-AT-SPI surfaces ────────────────────────
   # libadwaita ActionRow doesn't enumerate suffix-button children to AT-SPI,

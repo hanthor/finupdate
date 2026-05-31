@@ -105,8 +105,18 @@ fn main() {
         }
     }
     if let Some(scenario) = sim_scenario {
-        unsafe { std::env::set_var("FINUPDATE_SIM_SCENARIO", scenario); }
-        tracing::info!("CLI override: simulator scenario = {}", scenario);
+        // Persist into Settings so App::init reads it on construction.
+        let mut s = settings::Settings::load();
+        let persisted = match scenario {
+            "success" => "Success",
+            "failure" => "Failure",
+            _ => "AlreadyUpToDate",
+        };
+        if s.sim_scenario.as_deref() != Some(persisted) {
+            s.sim_scenario = Some(persisted.to_string());
+            s.save();
+        }
+        tracing::info!("CLI override: simulator scenario = {}", persisted);
     }
 
     tracing::info!(

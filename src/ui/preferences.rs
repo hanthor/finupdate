@@ -15,17 +15,26 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use relm4::gtk;
+use relm4::gtk::prelude::AccessibleExt;
 
+use crate::app::AppMsg;
 use crate::settings::{Settings, UpdateInterval};
 use crate::uupd_compat::{self, UupdConfig};
 
-/// Build and present the preferences dialog attached to `parent`.
+/// Build and present the Advanced dialog attached to `parent`.
 ///
 /// `on_change` is called when the dialog closes, passing the final settings
 /// snapshot so the caller can update its own state.
+///
+/// `app_sender` lets the dialog's action rows dispatch AppMsg variants
+/// directly — Image Source / Image History / Rebase / Powerwash / Factory
+/// Reset all live as panel-action rows in the dialog now (replacing the
+/// hamburger-menu approach, per gnome-control-center convention).
 pub fn show_preferences(
     parent: &adw::ApplicationWindow,
     mut settings: Settings,
+    app_sender: relm4::Sender<AppMsg>,
     on_change: impl Fn(Settings) + 'static,
 ) {
     // Only read the timer state if uupd is actually installed.
@@ -53,6 +62,7 @@ pub fn show_preferences(
 
     build_updates_group(&page, &shared, &dialog);
     build_network_group(&page, &shared);
+    build_system_group(&page, &dialog, app_sender.clone());
     // Developer-mode + simulator are CLI-only now (`finupdate --dev-mode`,
     // `finupdate --sim=<scenario>`); the toggle no longer appears in this
     // dialog. The build_developer_group fn is kept around in case dev
@@ -291,6 +301,130 @@ fn build_network_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings
     group.add(&status_revealer);
 
     page.add(&group);
+}
+
+// ── System group (panel-action rows) ─────────────────────────────────────────
+//
+// Hosts the things that used to be standalone rows on the main page or
+// hamburger-menu entries: Image Source, Image History, Rebase to Previous
+// Version, Powerwash, Factory Reset. Each row dispatches an AppMsg via the
+// caller-supplied sender; navigation rows (Source / History) also close the
+// dialog so the user lands on the chosen subpage.
+
+fn build_system_group(
+    page: &adw::PreferencesPage,
+    dialog: &adw::PreferencesDialog,
+    sender: relm4::Sender<AppMsg>,
+) {
+    let group = adw::PreferencesGroup::builder()
+        .title("System")
+        .description(
+            "Inspect the image source, roll back to a previous version, or reset the device.",
+        )
+        .build();
+
+    // Helper: build a chevron-suffixed activatable ActionRow with the given
+    // title / subtitle. The on-activate callback receives nothing; the caller
+    // captures the dispatch sender.
+    let make_row = |title: &str, subtitle: &str| -> adw::ActionRow {
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(subtitle)
+            .activatable(true)
+            .build();
+        row.set_accessible_role(gtk::AccessibleRole::Button);
+        let chev = gtk::Image::from_icon_name("go-next-symbolic");
+        chev.add_css_class("dim-label");
+        row.add_suffix(&chev);
+        row
+    };
+
+    // Image Source — navigates the main StatusView stack to the source page,
+    // then closes the Advanced dialog so the user sees the subpage.
+    let source_row = make_row(
+        "Image Source",
+        "Registry, tag, and signature policy",
+    );
+    {
+        let s = sender.clone();
+        let d = dialog.clone();
+        source_row.connect_activated(move |_| {
+            s.emit(AppMsg::ShowStatusPage("source".to_string()));
+            d.close();
+        });
+    }
+    group.add(&source_row);
+
+    // Image History — navigates to the history subpage.
+    let history_row = make_row(
+        "Image History",
+        "Previous deployments and rollback options",
+    );
+    {
+        let s = sender.clone();
+        let d = dialog.clone();
+        history_row.connect_activated(move |_| {
+            s.emit(AppMsg::ShowStatusPage("history".to_string()));
+            d.close();
+        });
+    }
+    group.add(&history_row);
+
+    // Rebase to Previous Version — opens the modal rebase dialog. Closes the
+    // Advanced dialog first so the rebase dialog isn't stacked on top.
+    let rebase_row = make_row(
+        "Rebase to Previous Version…",
+        "Pick a date and switch the system image",
+    );
+    {
+        let s = sender.clone();
+        let d = dialog.clone();
+        rebase_row.connect_activated(move |_| {
+            s.emit(AppMsg::ShowRebaseDialog);
+            d.close();
+        });
+    }
+    group.add(&rebase_row);
+
+    page.add(&group);
+
+    // ── Reset group (destructive) ────────────────────────────────────────
+    // Separate group so the destructive actions are visually segregated from
+    // the navigational rows above. Factory Reset gets the destructive-title
+    // CSS class (red label) the same way the old main-page row did.
+    let reset_group = adw::PreferencesGroup::builder()
+        .title("Reset")
+        .description("Reversible: powerwash keeps your files. Destructive: factory reset erases everything.")
+        .build();
+
+    let powerwash_row = make_row(
+        "Powerwash",
+        "Uninstall apps and reset containers; keep your home folder",
+    );
+    {
+        let s = sender.clone();
+        powerwash_row.connect_activated(move |_| {
+            s.emit(AppMsg::TriggerPowerwash);
+            // Don't close the dialog — the confirmation modal opens on top
+            // and the user may want to back out and inspect other rows.
+        });
+    }
+    reset_group.add(&powerwash_row);
+
+    let factory_row = make_row(
+        "Factory Reset",
+        "Erase everything and redeploy the original image",
+    );
+    factory_row.add_css_class("destructive-title");
+    {
+        let s = sender.clone();
+        factory_row.connect_activated(move |_| {
+            s.emit(AppMsg::TriggerFactoryReset);
+        });
+    }
+    reset_group.add(&factory_row);
+
+    page.add(&reset_group);
 }
 
 // ── Developer group ───────────────────────────────────────────────────────────

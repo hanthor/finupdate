@@ -113,6 +113,10 @@ pub enum StatusViewOutput {
     OpenCheckDialog,
     /// Notify parent when page changes
     PageChanged(String),
+    /// User clicked the "Advanced…" row on the main page. Parent opens the
+    /// Advanced PreferencesDialog which hosts Image Source / Image History /
+    /// Rebase / Powerwash / Factory Reset / settings.
+    OpenAdvanced,
 }
 
 /// The status view model.
@@ -1045,6 +1049,29 @@ impl SimpleComponent for StatusView {
         settings_card.add(&check_row);
         settings_card.add(&auto_row);
         idle_page.add(&settings_card);
+
+        // Single "Advanced…" row at the bottom — opens the Advanced dialog
+        // (which hosts Image Source, Image History, Rebase, Powerwash,
+        // Factory Reset, and the Updates / Network settings groups).
+        // gnome-control-center doesn't bury panel-specific actions in the
+        // hamburger menu; we follow the same convention.
+        let advanced_row = adw::ActionRow::builder()
+            .title("_Advanced")
+            .subtitle("Image source, history, rollback, reset, and settings")
+            .activatable(true)
+            .use_underline(true)
+            .build();
+        advanced_row.set_accessible_role(gtk::AccessibleRole::Button);
+        let adv_chev = gtk::Image::from_icon_name("go-next-symbolic");
+        adv_chev.add_css_class("dim-label");
+        advanced_row.add_suffix(&adv_chev);
+        let advanced_sender = sender.output_sender().clone();
+        advanced_row.connect_activated(move |_| {
+            let _ = advanced_sender.send(StatusViewOutput::OpenAdvanced);
+        });
+        let advanced_group = adw::PreferencesGroup::new();
+        advanced_group.add(&advanced_row);
+        idle_page.add(&advanced_group);
 
         // ── Image Source Subpage (HIG-aligned) ────────────────────────────
         // adw::PreferencesPage + PreferencesGroup with canonical Adwaita

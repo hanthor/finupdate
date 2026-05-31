@@ -102,6 +102,12 @@ pub struct Settings {
     /// `FINUPDATE_SYSTEM_ONLY` env var.
     #[serde(default = "default_true")]
     pub include_app_updates: bool,
+    /// Dev-mode simulator scenario: "Success" | "AlreadyUpToDate" | "Failure".
+    /// Only read on startup when `dev_mode` is true. Behave smoke tests poke
+    /// this via `_write_settings(sim_scenario="...")` to drive the simulated
+    /// update worker without UI interaction. `None` falls back to Success.
+    #[serde(default)]
+    pub sim_scenario: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -124,6 +130,7 @@ impl Default for Settings {
             mock_identity: None,
             dry_run: false,
             include_app_updates: true,
+            sim_scenario: None,
         }
     }
 }
@@ -225,6 +232,7 @@ mod tests {
             }),
             dry_run: true,
             include_app_updates: false,
+            sim_scenario: Some("Failure".to_string()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
@@ -236,6 +244,7 @@ mod tests {
         assert_eq!(back.mock_identity, original.mock_identity);
         assert_eq!(back.dry_run, original.dry_run);
         assert_eq!(back.include_app_updates, original.include_app_updates);
+        assert_eq!(back.sim_scenario, original.sim_scenario);
     }
 
     #[test]
