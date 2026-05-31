@@ -58,6 +58,12 @@ pub enum StatusViewInput {
     /// on current state. The single inline button does double duty per the
     /// macOS Tahoe "Install" / "Restart" pattern on the Software Update card.
     HeroActionClicked,
+    /// "Restart Tonight" button clicked — schedules the host to reboot at
+    /// 02:00 via `pkexec shutdown -r 02:00`. Only meaningful when
+    /// reboot_pending is true (a deployment is staged); the button is hidden
+    /// otherwise. Toast confirms; user can cancel manually with
+    /// `sudo shutdown -c`.
+    ScheduleRebootTonight,
     /// Copy log to clipboard.
     CopyLog,
     /// Navigate stack to a page name
@@ -136,6 +142,9 @@ pub struct StatusView {
     /// depending on state, hidden when neither applies. macOS Tahoe-inspired
     /// layout: put the CTA inline on the hero card.
     hero_action_btn: gtk::Button,
+    /// "Restart Tonight" button on the hero row — only shown when
+    /// reboot_pending. Schedules a 02:00 reboot via `pkexec shutdown -r`.
+    hero_schedule_btn: gtk::Button,
     /// (i) info button in the hero row — opens the changelog page. Always
     /// visible when an image is loaded.
     hero_info_btn: gtk::Button,
@@ -273,13 +282,18 @@ impl StatusView {
         if self.reboot_pending {
             self.hero_action_btn.set_label("Restart");
             self.hero_action_btn.set_visible(true);
+            // "Restart Tonight" only when there's something staged to boot
+            // into — otherwise it'd just schedule a noop reboot.
+            self.hero_schedule_btn.set_visible(true);
             self.status_pill.set_visible(false);
         } else if matches!(self.preflight_status, PreflightStatus::UpdateAvailable) {
             self.hero_action_btn.set_label("Install");
             self.hero_action_btn.set_visible(true);
+            self.hero_schedule_btn.set_visible(false);
             self.status_pill.set_visible(false);
         } else {
             self.hero_action_btn.set_visible(false);
+            self.hero_schedule_btn.set_visible(false);
             self.status_pill.set_visible(true);
         }
 
@@ -891,6 +905,20 @@ impl SimpleComponent for StatusView {
         });
         hero_row.add_suffix(&hero_info_btn);
 
+        // "Restart Tonight" — scheduled-reboot button shown only when a
+        // deployment is staged (reboot_pending). Schedules the host to reboot
+        // at 02:00 (next occurrence) via `shutdown -r 02:00`, matching macOS
+        // Software Update's "Update Tonight" affordance — but limited to the
+        // reboot step only, no install scheduling (user direction).
+        let hero_schedule_btn = gtk::Button::with_label("Restart Tonight");
+        hero_schedule_btn.set_valign(gtk::Align::Center);
+        hero_schedule_btn.set_visible(false);
+        let schedule_sender = sender.input_sender().clone();
+        hero_schedule_btn.connect_clicked(move |_| {
+            schedule_sender.emit(StatusViewInput::ScheduleRebootTonight);
+        });
+        hero_row.add_suffix(&hero_schedule_btn);
+
         // Primary action button — Install when an update is available, Restart
         // when a deployment is staged for reboot. Same widget, label/handler
         // swap in update().
@@ -1356,6 +1384,7 @@ impl SimpleComponent for StatusView {
             hero_row,
             status_pill,
             hero_action_btn,
+            hero_schedule_btn,
             hero_info_btn,
             update_banner_group,
             banner_title_row,
@@ -1557,6 +1586,24 @@ impl SimpleComponent for StatusView {
                     let _ = sender.output(StatusViewOutput::Reboot);
                 } else {
                     let _ = sender.output(StatusViewOutput::StartUpdate);
+                }
+            }
+
+            StatusViewInput::ScheduleRebootTonight => {
+                // Honour the dry_run guard — never call shutdown(8) on a
+                // test/dev host. Surface what we *would* have done via toast.
+                let settings = Settings::load();
+                if settings.dry_run || settings.dev_mode {
+                    tracing::warn!(
+                        "Reboot Tonight suppressed (dry_run={}, dev_mode={}). \
+                         Would have called: pkexec shutdown -r 02:00",
+                        settings.dry_run, settings.dev_mode
+                    );
+                    let t = adw::Toast::new("Restart scheduled for 02:00 (dry-run)");
+                    t.set_timeout(4);
+                    self.toast_overlay.add_toast(t);
+                } else {
+                    schedule_reboot_tonight(&self.toast_overlay);
                 }
             }
 
@@ -2418,6 +2465,73 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
             Err(e) => {
                 tracing::error!("{} could not run `bootc install reset`: {}", label, e);
                 format!("{label} could not start: {e}")
+            }
+        };
+
+        let _ = tx.send(summary);
+    });
+
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        match rx.try_recv() {
+            Ok(summary) => {
+                let t = adw::Toast::new(&summary);
+                t.set_timeout(6);
+                toast_overlay.add_toast(t);
+                gtk::glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => gtk::glib::ControlFlow::Break,
+        }
+    });
+}
+
+/// Schedule a host reboot at 02:00 (next occurrence) via `pkexec shutdown -r`.
+/// User can cancel with `sudo shutdown -c` if they change their mind.
+///
+/// `shutdown -r 02:00` accepts an HH:MM time string and reboots at the next
+/// time the clock crosses that. If it's currently before 02:00 the reboot is
+/// today; if after, it's tomorrow morning — both readings of "tonight" are
+/// reasonable. We toast either way so the user knows it landed.
+fn schedule_reboot_tonight(toast_overlay: &adw::ToastOverlay) {
+    // adw::ToastOverlay is GObject-but-not-Send, so we run shutdown(8) on a
+    // std::thread and pipe the summary back via mpsc that's drained on the
+    // GLib main loop (where the overlay is touchable). Same shape as
+    // run_bootc_install_reset above.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let toast_overlay = toast_overlay.clone();
+
+    std::thread::spawn(move || {
+        let result = if crate::update_worker::is_flatpak() {
+            Command::new("flatpak-spawn")
+                .args(["--host", "pkexec", "shutdown", "-r", "02:00"])
+                .output()
+        } else {
+            Command::new("pkexec")
+                .args(["shutdown", "-r", "02:00"])
+                .output()
+        };
+
+        let summary = match result {
+            Ok(out) if out.status.success() => {
+                tracing::info!("Restart scheduled for 02:00 via shutdown -r");
+                "Restart scheduled for 02:00 — `sudo shutdown -c` to cancel".to_string()
+            }
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr_tail = String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("")
+                    .to_string();
+                tracing::error!(
+                    "Failed to schedule reboot: shutdown exited {}: {}",
+                    code, stderr_tail
+                );
+                format!("Couldn't schedule restart (exit {code}): {stderr_tail}")
+            }
+            Err(e) => {
+                tracing::error!("Failed to invoke shutdown: {}", e);
+                format!("Couldn't schedule restart: {e}")
             }
         };
 
