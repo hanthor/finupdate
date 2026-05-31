@@ -2133,50 +2133,30 @@ fn get_cached_bootc_status() -> Option<Value> {
 }
 
 fn detect_bootc_image_info() -> Option<(String, String, String)> {
-    // Precedence: mock_identity (test override) → FINUPDATE_IMAGE env var →
-    // bootc status --json → /etc/os-release fallback.
+    // Delegate to the UpdaterService. current_image() already encapsulates the
+    // full precedence chain (mock_identity → FINUPDATE_IMAGE → bootc status →
+    // os-release) inside RegistryClient::detect_with_settings, so this site
+    // just transforms the resulting ImageRef into the (title, registry_uri,
+    // selected_tag) triple the UI is shaped around.
+    //
+    // We block on the async call because every caller here runs on the GTK
+    // thread, which is not a tokio runtime. The actual I/O it kicks off (a
+    // bootc-status subprocess) is the same one the legacy implementation did
+    // synchronously, so there's no change in user-perceived latency.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    let image = rt
+        .block_on(async { crate::service::global().current_image().await.ok() })?;
 
-    if let Some(mock) = Settings::load().mock_identity.as_ref() {
-        let (registry, org, image, stream) = parse_image_ref_parts(&mock.full_ref())?;
-        let title = format!("{}/{}", org, image);
-        let registry_uri = format!("{}/{}/{}", registry, org, image);
-        let selected_tag = stream
-            .rsplit('-')
-            .next()
-            .unwrap_or(&stream)
-            .to_string();
-        println!("[debug] mock_identity override: title='{}' registry_uri='{}' tag='{}'", title, registry_uri, selected_tag);
-        return Some((title, registry_uri, selected_tag));
-    }
-
-    // Allow env var override for demo/debug: FINUPDATE_IMAGE=quay.io/org/image:tag
-    if let Ok(override_ref) = std::env::var("FINUPDATE_IMAGE") {
-        if !override_ref.is_empty() {
-            let (registry, org, image, tag) = parse_image_ref_parts(&override_ref)?;
-            let title = format!("{}/{}", org, image);
-            let registry_uri = format!("{}/{}/{}", registry, org, image);
-            println!("[debug] FINUPDATE_IMAGE override: title='{}' registry_uri='{}' tag='{}'", title, registry_uri, tag);
-            return Some((title, registry_uri, tag));
-        }
-    }
-
-    let json = get_cached_bootc_status()?;
-    let image_ref = json
-        .pointer("/status/booted/image/image/image")
-        .or_else(|| json.pointer("/status/booted/image/image"))
-        .and_then(|v| v.as_str())?;
-
-    println!("[debug] bootc image_ref = {}", image_ref);
-    let (registry, org, image, stream) = parse_image_ref_parts(image_ref)?;
-    let title = format!("{}/{}", org, image);
-    let registry_uri = format!("{}/{}/{}", registry, org, image);
-    let selected_tag = stream
-        .rsplit('-')
-        .next()
-        .unwrap_or(&stream)
-        .to_string();
-
-    println!("[debug] bootc detected title='{}' registry_uri='{}' selected_tag='{}'", title, registry_uri, selected_tag);
+    let title = format!("{}/{}", image.org, image.image);
+    let registry_uri = format!("{}/{}/{}", image.registry, image.org, image.image);
+    let selected_tag = strip_date_suffix(&image.tag).unwrap_or(image.tag);
+    println!(
+        "[debug] service::current_image: title='{}' registry_uri='{}' tag='{}'",
+        title, registry_uri, selected_tag
+    );
     Some((title, registry_uri, selected_tag))
 }
 
@@ -2201,21 +2181,6 @@ fn read_bootc_image_info_config() -> Option<BootcImageInfoConfig> {
     }?;
 
     serde_json::from_str(&content).ok()
-}
-
-fn parse_image_ref_parts(image_ref: &str) -> Option<(String, String, String, String)> {
-    let (without_tag, tag) = image_ref.rsplit_once(':')?;
-    let parts: Vec<&str> = without_tag.splitn(3, '/').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let registry = parts[0].to_string();
-    let org = parts[1].to_string();
-    let image = parts[2].to_string();
-    let stream = strip_date_suffix(tag).unwrap_or_else(|| tag.to_string());
-
-    Some((registry, org, image, stream))
 }
 
 fn strip_date_suffix(tag: &str) -> Option<String> {
@@ -2990,49 +2955,6 @@ mod tests {
         // parse_dated_tag with stream==""; strip_date_suffix only handles
         // prefixed forms.
         assert_eq!(strip_date_suffix("20260527"), None);
-    }
-
-    // ── parse_image_ref_parts ────────────────────────────────────────────
-
-    #[test]
-    fn parse_image_ref_parts_full_dated() {
-        let r = parse_image_ref_parts("ghcr.io/ublue-os/bluefin:stable-daily-43.20260527");
-        assert_eq!(
-            r,
-            Some((
-                "ghcr.io".to_string(),
-                "ublue-os".to_string(),
-                "bluefin".to_string(),
-                "stable-daily-43".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_image_ref_parts_undated_tag_passes_through() {
-        let r = parse_image_ref_parts("ghcr.io/projectbluefin/dakota:latest");
-        assert_eq!(
-            r,
-            Some((
-                "ghcr.io".to_string(),
-                "projectbluefin".to_string(),
-                "dakota".to_string(),
-                "latest".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_image_ref_parts_rejects_missing_tag() {
-        assert!(parse_image_ref_parts("ghcr.io/ublue-os/bluefin").is_none());
-    }
-
-    #[test]
-    fn parse_image_ref_parts_rejects_two_components() {
-        // Only "registry/image:tag" without an org segment — splitn(3) yields
-        // 2 parts, which the impl rejects to avoid mis-categorising the
-        // registry as the org.
-        assert!(parse_image_ref_parts("ublue-os/bluefin:stable").is_none());
     }
 
     // ── parse_image_ref_fields ───────────────────────────────────────────

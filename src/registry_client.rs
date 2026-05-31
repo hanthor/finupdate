@@ -312,8 +312,9 @@ impl RegistryClient {
     ///
     /// Precedence:
     /// 1. `Settings::mock_identity` (test override — no subprocess, no network).
-    /// 2. `bootc status --json` (most reliable on a real host).
-    /// 3. `/etc/os-release` fallback (Flatpak-friendly via flatpak-spawn).
+    /// 2. `FINUPDATE_IMAGE` env var (demo/debug override from a terminal).
+    /// 3. `bootc status --json` (most reliable on a real host).
+    /// 4. `/etc/os-release` fallback (Flatpak-friendly via flatpak-spawn).
     pub async fn detect() -> Option<Self> {
         Self::detect_with_settings(&crate::settings::Settings::load()).await
     }
@@ -332,6 +333,22 @@ impl RegistryClient {
                 mock.registry, mock.org, mock.image, stream
             );
             return Some(Self::new(&mock.registry, &mock.org, &mock.image, &stream));
+        }
+
+        // FINUPDATE_IMAGE=registry/org/image:tag — quick-and-dirty override
+        // when developing from a terminal. Same precedence as the legacy
+        // status_view::detect_bootc_image_info path so the env var still works
+        // after the UI migrates to the service.
+        if let Ok(override_ref) = std::env::var("FINUPDATE_IMAGE") {
+            if !override_ref.is_empty() {
+                if let Some(client) = parse_image_ref(&override_ref) {
+                    println!(
+                        "[debug] RegistryClient::detect_with_settings() FINUPDATE_IMAGE = {}",
+                        override_ref
+                    );
+                    return Some(client);
+                }
+            }
         }
 
         // Try bootc status --json for the most reliable answer.
