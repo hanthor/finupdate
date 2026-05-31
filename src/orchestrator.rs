@@ -185,6 +185,14 @@ pub async fn run(
 /// file is named with a `finupdate-runner-` prefix so the polkit rules
 /// (`/etc/polkit-1/rules.d/49-finupdate.rules`) match it by name.
 fn build_runner_command(system_only: bool) -> Command {
+    if let Ok(mock_path) = std::env::var("FINUPDATE_TEST_MOCK_RUNNER") {
+        let mut cmd = Command::new(mock_path);
+        if system_only {
+            cmd.env("FINUPDATE_SYSTEM_ONLY", "1");
+        }
+        return cmd;
+    }
+
     // When system_only is true, the runner script skips flatpak/brew/distrobox
     // and only refreshes the bootc image. pkexec strips most env vars by
     // default, so we pass FINUPDATE_SYSTEM_ONLY *through* pkexec via the
@@ -394,5 +402,172 @@ mod tests {
             UpdateEvent::ModuleFinished(Module::System, ModuleStatus::Failed(-1)) => {}
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_integration_with_mock_process() {
+        use std::io::Write;
+        let mut mock_script = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            mock_script,
+            "#!/bin/sh\n\
+             echo '===MODULE:system==='\n\
+             echo 'System output line 1'\n\
+             echo '===MODULE:system:done:0==='\n\
+             echo '===MODULE:flatpak==='\n\
+             echo '===MODULE:flatpak:done:77==='\n\
+             echo '===DONE==='\n\
+             exit 0"
+        ).unwrap();
+        
+        let path = mock_script.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+        
+        let mut events = vec![];
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        
+        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+
+        assert!(!events.is_empty());
+        
+        let mut has_started = false;
+        let mut has_output = false;
+        let mut has_finished = false;
+        let mut has_complete = false;
+        
+        for ev in events {
+            match ev {
+                UpdateEvent::ModuleStarted(Module::System) => has_started = true,
+                UpdateEvent::Output(ref line) if line == "System output line 1" => has_output = true,
+                UpdateEvent::ModuleFinished(Module::System, ModuleStatus::Success) => has_finished = true,
+                UpdateEvent::Complete => has_complete = true,
+                _ => {}
+            }
+        }
+        
+        assert!(has_started, "Missing ModuleStarted(System)");
+        assert!(has_output, "Missing System output line 1");
+        assert!(has_finished, "Missing ModuleFinished(System, Success)");
+        assert!(has_complete, "Missing Complete");
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_integration_cancellation() {
+        use std::io::Write;
+        let mut mock_script = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            mock_script,
+            "#!/bin/sh\n\
+             echo '===MODULE:system==='\n\
+             sleep 10\n\
+             exit 0"
+        ).unwrap();
+        
+        let path = mock_script.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+        
+        if let Some(UpdateEvent::ModuleStarted(Module::System)) = rx.recv().await {
+            let _ = cancel_tx.send(());
+        } else {
+            panic!("Expected ModuleStarted(System)");
+        }
+        
+        let mut got_error = false;
+        while let Some(ev) = rx.recv().await {
+            if let UpdateEvent::Error(msg) = ev {
+                assert!(msg.contains("cancelled"));
+                got_error = true;
+            }
+        }
+        
+        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        assert!(got_error);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_integration_exit_77_uptodate() {
+        use std::io::Write;
+        let mut mock_script = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            mock_script,
+            "#!/bin/sh\n\
+             exit 77"
+        ).unwrap();
+        
+        let path = mock_script.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+        
+        let mut got_uptodate = false;
+        while let Some(ev) = rx.recv().await {
+            if let UpdateEvent::UpToDate = ev {
+                got_uptodate = true;
+            }
+        }
+        
+        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        assert!(got_uptodate);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_integration_exit_error() {
+        use std::io::Write;
+        let mut mock_script = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            mock_script,
+            "#!/bin/sh\n\
+             exit 5"
+        ).unwrap();
+        
+        let path = mock_script.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let mut rx = run(cancel_rx).await;
+        
+        let mut got_error = false;
+        while let Some(ev) = rx.recv().await {
+            if let UpdateEvent::Error(msg) = ev {
+                assert!(msg.contains("exit code 5") || msg.contains("exited with code 5"));
+                got_error = true;
+            }
+        }
+        
+        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        assert!(got_error);
     }
 }

@@ -98,6 +98,11 @@ test-strict-count families="":
 test:
     toolbox run --container {{ toolbox }} cargo test --all-targets
 
+# Run unit tests and generate HTML code coverage reports using cargo-llvm-cov (natively)
+coverage:
+    cargo llvm-cov --all-features --html --workspace
+
+
 # Build and install the Flatpak (full integration build)
 flatpak:
     flatpak run org.flatpak.Builder \

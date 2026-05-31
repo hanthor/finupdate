@@ -22,7 +22,7 @@ use std::collections::HashMap;
 // ── Public data types ─────────────────────────────────────────────────────────
 
 /// Metadata for a single dated image build available for rebasing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImageVersion {
     /// Calendar date the image was built (UTC, YYYYMMDD from the tag).
     pub date: NaiveDate,
@@ -57,7 +57,7 @@ pub enum RegistryError {
 /// (dakota-nvidia and other Project Bluefin images) we substitute a human-
 /// friendly `"Build YYYY-MM-DD"` label so the dropdown isn't full of 40-char
 /// hex hashes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AvailableTag {
     pub display: String,
     pub raw: String,
@@ -486,6 +486,12 @@ impl RegistryClient {
     /// same value so larger `max` actually surfaces more results rather
     /// than capping at the old hardcoded CANDIDATE_CAP=8.
     pub async fn fetch_versions(&self, max: usize) -> Result<Vec<ImageVersion>, RegistryError> {
+        let cache_record_key = cache_key(&self.registry, &self.org, &self.image, &self.stream, &format!("versions_{}", max));
+        if let Some(cached) = load_registry_cache::<Vec<ImageVersion>>(&cache_record_key) {
+            tracing::info!("Using cached versions for {}/{}/{}:{}", self.registry, self.org, self.image, self.stream);
+            return Ok(cached);
+        }
+
         let token = self.get_token().await?;
         let client = self.client.clone();
 
@@ -611,6 +617,7 @@ impl RegistryClient {
             .collect();
 
         versions.sort_by_key(|v| v.date);
+        save_registry_cache(&cache_record_key, &versions);
         Ok(versions)
     }
 
@@ -668,6 +675,12 @@ impl RegistryClient {
     /// concurrency cap. Bounded by `tag_cap` total entries (default 30) so
     /// the dropdown stays manageable on long-lived registries.
     pub async fn fetch_available_tags(&self) -> Result<Vec<AvailableTag>, RegistryError> {
+        let cache_record_key = cache_key(&self.registry, &self.org, &self.image, &self.stream, "available_tags");
+        if let Some(cached) = load_registry_cache::<Vec<AvailableTag>>(&cache_record_key) {
+            tracing::info!("Using cached tags for {}/{}/{}", self.registry, self.org, self.image);
+            return Ok(cached);
+        }
+
         let token = self.get_token().await?;
         let tags_url = format!(
             "https://{}/v2/{}/{}/tags/list?n=1000",
@@ -736,6 +749,7 @@ impl RegistryClient {
                 raw: sha,
             });
         }
+        save_registry_cache(&cache_record_key, &result);
         Ok(result)
     }
 
@@ -1025,6 +1039,61 @@ fn strip_date_suffix(tag: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RegistryCacheRecord<T> {
+    timestamp: u64,
+    data: T,
+}
+
+fn registry_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home).join(".cache")
+        });
+    base.join("finupdate").join("registry-cache")
+}
+
+fn cache_key(registry: &str, org: &str, image: &str, stream: &str, suffix: &str) -> String {
+    format!("{}_{}_{}_{}_{}", registry, org, image, stream, suffix)
+        .replace('/', "_")
+        .replace(':', "_")
+}
+
+fn load_registry_cache<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
+    let path = registry_cache_dir().join(key);
+    let data = std::fs::read(path).ok()?;
+    let record: RegistryCacheRecord<T> = serde_json::from_slice(&data).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now >= record.timestamp && now - record.timestamp < 3600 {
+        Some(record.data)
+    } else {
+        None
+    }
+}
+
+fn save_registry_cache<T: serde::Serialize>(key: &str, data: &T) {
+    let dir = registry_cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let record = RegistryCacheRecord {
+        timestamp: now,
+        data,
+    };
+    if let Ok(serialized) = serde_json::to_vec(&record) {
+        let _ = std::fs::write(dir.join(key), serialized);
+    }
 }
 
 #[cfg(test)]
@@ -1421,5 +1490,32 @@ mod tests {
             "ghcr.io/ublue-os/bluefin-dx/extras:stable-daily.20260222",
         ).unwrap();
         assert_eq!(c.image(), "bluefin-dx/extras");
+    }
+
+    #[test]
+    fn test_registry_cache_roundtrip() {
+        let key = "test_cache_key_xyz";
+        let tags = vec![
+            AvailableTag {
+                display: "Latest Build".to_string(),
+                raw: "latest".to_string(),
+            },
+            AvailableTag {
+                display: "Stable".to_string(),
+                raw: "stable".to_string(),
+            },
+        ];
+        
+        let path = registry_cache_dir().join(key);
+        let _ = std::fs::remove_file(&path);
+        
+        assert!(load_registry_cache::<Vec<AvailableTag>>(key).is_none());
+        
+        save_registry_cache(key, &tags);
+        
+        let loaded = load_registry_cache::<Vec<AvailableTag>>(key).unwrap();
+        assert_eq!(loaded, tags);
+        
+        let _ = std::fs::remove_file(&path);
     }
 }

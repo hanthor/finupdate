@@ -1532,9 +1532,6 @@ fn derive_initial_toggle_state(
     (dx, nvidia)
 }
 
-// feature_display_name / feature_subtitle moved to service::feature_display_name
-// and the FamilyInfo.features list carries them per Feature. Kept the comment
-// here as a forwarding pointer for archeologists.
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
