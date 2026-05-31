@@ -303,6 +303,93 @@ def assert_history_count(context, n, app_id, seconds):
     )
 
 
+# ── Rebase calendar helpers ───────────────────────────────────────────────
+# The rebase dialog renders a 7×6 calendar of integer-labeled buttons. Days
+# with a published image are sensitive; other days (no version, or future) are
+# insensitive. Tests can't predict which date will be available because that
+# depends on what GHCR returns at runtime, so we provide a step that finds the
+# first sensitive day button and clicks it.
+
+@step('Click any available day in the rebase calendar')
+def click_any_available_day(context):
+    """Click the first sensitive day button in the rebase dialog's calendar.
+
+    Day buttons are gtk::Button with integer labels "1".."31" and the CSS
+    class `day-btn`. Available days are sensitive; unavailable / future days
+    are insensitive. We scan the AT-SPI tree for push buttons with an integer
+    name in [1, 31] that are currently sensitive, and click the first one.
+
+    Fails noisily with a diagnostic dump of what calendar buttons were visible
+    so a flaky run is debuggable.
+    """
+    app = context.finupdate.instance
+
+    def is_sensitive_day(node):
+        if node.roleName != "push button":
+            return False
+        name = (node.name or "").strip()
+        if not name.isdigit():
+            return False
+        n = int(name)
+        if n < 1 or n > 31:
+            return False
+        try:
+            return bool(node.sensitive)
+        except Exception:
+            return False
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            buttons = app.findChildren(is_sensitive_day)
+            if buttons:
+                buttons[0].click()
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    # Diagnostic: what day buttons did we see at all?
+    seen = []
+    try:
+        def collect(node):
+            if node.roleName == "push button":
+                name = (node.name or "").strip()
+                if name.isdigit():
+                    sens = "sensitive" if getattr(node, "sensitive", False) else "insensitive"
+                    seen.append(f"{name} ({sens})")
+            return False
+        app.findChildren(collect)
+    except Exception:
+        pass
+    summary = ", ".join(seen[:40]) if seen else "(no day buttons found)"
+    assert False, f"No sensitive day buttons in rebase calendar. Saw: {summary}"
+
+
+@step('Click button whose label starts with "{prefix}" in "{app_id}"')
+def click_button_with_prefix(context, prefix, app_id):
+    """Click the first push button whose name starts with `prefix`.
+
+    Useful for buttons whose label depends on runtime state — the rebase
+    dialog's "Rebase to Mar 18…" button label varies by the selected date.
+    """
+    app = getattr(context, app_id).instance
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            matches = app.findChildren(
+                lambda n: n.roleName == "push button"
+                and (n.name or "").startswith(prefix)
+            )
+            if matches:
+                matches[0].click()
+                return
+        except Exception:
+            pass
+        time.sleep(0.3)
+    assert False, f"No push button starting with {prefix!r} found in {app_id}"
+
+
 # ── Diagnostics ───────────────────────────────────────────────────────────
 
 @step('Dump AT-SPI tree of "{app_id}" to artifact')

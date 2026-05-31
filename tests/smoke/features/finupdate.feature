@@ -368,6 +368,26 @@ Feature: Finupdate smoke tests
     * Wait until "images" appears in "finupdate" within 5 seconds
     * Application "finupdate" is running
 
+  # ── End-to-end rollback: dialog → pick day → confirm → simulated success ──
+  # Mock identity puts dry_run=true AND dev_mode=true, so confirming the
+  # rebase routes through run_rebase_simulated, NOT a real `bootc switch`.
+  # The flow proves the whole rollback UI state machine plumbs through:
+  # accelerator → dialog opens → version history fetched from live GHCR →
+  # day button selectable → confirmation alert → simulated success page.
+
+  @live @mock_identity @rollback @end_to_end
+  Scenario: Dry-run rollback flow completes through the simulated success page
+    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
+    * Wait until "bluefin" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control><Shift>r"
+    * Wait until "Version" appears in "finupdate" within 30 seconds
+    * Click any available day in the rebase calendar
+    * Click button whose label starts with "Rebase to" in "finupdate"
+    * Wait until "Rebase System" appears in "finupdate" within 5 seconds
+    * Left click "Rebase" "button" in "finupdate"
+    * Wait until "simulated" appears in "finupdate" within 10 seconds
+    * Application "finupdate" is running
+
   @dev_mode @pin
   Scenario: Pin functionality available for image versions
     * Wait until "Image history" appears in "finupdate" within 5 seconds
