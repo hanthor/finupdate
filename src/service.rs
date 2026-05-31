@@ -344,11 +344,9 @@ impl UpdaterService for BootcUpdaterService {
         let Some(image) = self.registry.detect_booted_image().await else {
             return Ok(None);
         };
-        let Some(fam) = crate::registry_client::Family::best_match(
-            &image.org,
-            &image.image,
-            &image.tag,
-        ) else {
+        let Some(fam) =
+            crate::registry_client::Family::best_match(&image.org, &image.image, &image.tag)
+        else {
             return Ok(None);
         };
         let features = fam
@@ -599,9 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_image_returns_booted_from_registry() {
-        let reg = Arc::new(
-            FixtureRegistry::new().with_booted(dakota_ref()),
-        );
+        let reg = Arc::new(FixtureRegistry::new().with_booted(dakota_ref()));
         let svc = BootcUpdaterService::with_registry(reg.clone());
         let got = svc.current_image().await.unwrap();
         assert_eq!(got, dakota_ref());
@@ -622,11 +618,13 @@ mod tests {
 
     #[tokio::test]
     async fn current_family_matches_dakota() {
-        let reg = Arc::new(
-            FixtureRegistry::new().with_booted(dakota_ref()),
-        );
+        let reg = Arc::new(FixtureRegistry::new().with_booted(dakota_ref()));
         let svc = BootcUpdaterService::with_registry(reg);
-        let fam = svc.current_family().await.unwrap().expect("dakota in KNOWN");
+        let fam = svc
+            .current_family()
+            .await
+            .unwrap()
+            .expect("dakota in KNOWN");
         assert_eq!(fam.name, "Bluefin Dakota");
         assert_eq!(fam.base_image, "dakota");
         // Dakota has a single feature: nvidia (per the trimmed KNOWN_FAMILIES).
@@ -644,7 +642,11 @@ mod tests {
             tag: "stable".to_string(),
         }));
         let svc = BootcUpdaterService::with_registry(reg);
-        let fam = svc.current_family().await.unwrap().expect("bluefin in KNOWN");
+        let fam = svc
+            .current_family()
+            .await
+            .unwrap()
+            .expect("bluefin in KNOWN");
         assert_eq!(fam.name, "Bluefin Stable");
         // Should include at least nvidia, open, dx (alphabetical from
         // Family::available_features).
@@ -681,9 +683,21 @@ mod tests {
         let reg = Arc::new(FixtureRegistry::new().with_versions(
             &img,
             vec![
-                dummy_version("2026-02-10", "0.1", "ghcr.io/projectbluefin/dakota:latest.20260210"),
-                dummy_version("2026-02-12", "0.3", "ghcr.io/projectbluefin/dakota:latest.20260212"),
-                dummy_version("2026-02-11", "0.2", "ghcr.io/projectbluefin/dakota:latest.20260211"),
+                dummy_version(
+                    "2026-02-10",
+                    "0.1",
+                    "ghcr.io/projectbluefin/dakota:latest.20260210",
+                ),
+                dummy_version(
+                    "2026-02-12",
+                    "0.3",
+                    "ghcr.io/projectbluefin/dakota:latest.20260212",
+                ),
+                dummy_version(
+                    "2026-02-11",
+                    "0.2",
+                    "ghcr.io/projectbluefin/dakota:latest.20260211",
+                ),
             ],
         ));
         let svc = BootcUpdaterService::with_registry(reg);
@@ -741,7 +755,9 @@ mod tests {
             base_image: "bluefin".to_string(),
             features: vec![],
         };
-        let r = svc.resolve_target(&family, &["nvidia".to_string()]).unwrap();
+        let r = svc
+            .resolve_target(&family, &["nvidia".to_string()])
+            .unwrap();
         assert_eq!(r.image, "bluefin-nvidia");
     }
 
@@ -767,7 +783,9 @@ mod tests {
             base_image: "dakota".to_string(),
             features: vec![],
         };
-        let r = svc.resolve_target(&family, &["nvidia".to_string()]).unwrap();
+        let r = svc
+            .resolve_target(&family, &["nvidia".to_string()])
+            .unwrap();
         assert_eq!(r.image, "dakota-nvidia");
         // dakota-dx is a ghost variant, must not resolve.
         assert!(svc.resolve_target(&family, &["dx".to_string()]).is_none());

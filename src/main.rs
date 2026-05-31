@@ -11,12 +11,12 @@
 //! - libadwaita styles are loaded before any widgets are created
 
 mod app;
-mod sbom_diff;
 mod config;
 pub mod dbus_progress;
 mod gpu;
 mod orchestrator;
 mod registry_client;
+mod sbom_diff;
 mod service;
 mod settings;
 mod ui;

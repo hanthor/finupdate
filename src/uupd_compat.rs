@@ -169,7 +169,17 @@ pub async fn write_config(config: &UupdConfig) -> anyhow::Result<()> {
 
     let staging_str = staging.to_string_lossy().to_string();
 
-    let args = ["install", "-o", "root", "-g", "root", "-m", "0644", &staging_str, CONFIG_PATH];
+    let args = [
+        "install",
+        "-o",
+        "root",
+        "-g",
+        "root",
+        "-m",
+        "0644",
+        &staging_str,
+        CONFIG_PATH,
+    ];
 
     let status = if is_flatpak() {
         tokio::process::Command::new("flatpak-spawn")
@@ -300,7 +310,15 @@ mod tests {
     #[test]
     fn other_states_yield_none() {
         // These are real systemctl states that aren't user-actionable.
-        for state in ["static", "masked", "alias", "indirect", "linked", "generated", ""] {
+        for state in [
+            "static",
+            "masked",
+            "alias",
+            "indirect",
+            "linked",
+            "generated",
+            "",
+        ] {
             assert_eq!(parse_timer_state(state), None, "state={state}");
         }
     }

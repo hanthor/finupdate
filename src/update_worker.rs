@@ -33,7 +33,10 @@ pub enum UpdateEvent {
     /// A module has started running.
     ModuleStarted(crate::orchestrator::Module),
     /// A module has finished with a status.
-    ModuleFinished(crate::orchestrator::Module, crate::orchestrator::ModuleStatus),
+    ModuleFinished(
+        crate::orchestrator::Module,
+        crate::orchestrator::ModuleStatus,
+    ),
 }
 
 /// What the simulated update run should end with.
@@ -116,22 +119,30 @@ async fn simulate_update(tx: &mpsc::UnboundedSender<UpdateEvent>, scenario: Simu
 
     macro_rules! line {
         ($msg:expr) => {{
-            if tx.send(UpdateEvent::Output($msg.to_string())).is_err() { return; }
+            if tx.send(UpdateEvent::Output($msg.to_string())).is_err() {
+                return;
+            }
             sleep(Duration::from_millis(300)).await;
         }};
         ($msg:expr, $delay:expr) => {{
-            if tx.send(UpdateEvent::Output($msg.to_string())).is_err() { return; }
+            if tx.send(UpdateEvent::Output($msg.to_string())).is_err() {
+                return;
+            }
             sleep(Duration::from_millis($delay)).await;
         }};
     }
     macro_rules! module_start {
         ($m:expr) => {{
-            if tx.send(UpdateEvent::ModuleStarted($m)).is_err() { return; }
+            if tx.send(UpdateEvent::ModuleStarted($m)).is_err() {
+                return;
+            }
         }};
     }
     macro_rules! module_done {
         ($m:expr, $s:expr) => {{
-            if tx.send(UpdateEvent::ModuleFinished($m, $s)).is_err() { return; }
+            if tx.send(UpdateEvent::ModuleFinished($m, $s)).is_err() {
+                return;
+            }
         }};
     }
 
@@ -155,7 +166,9 @@ async fn simulate_update(tx: &mpsc::UnboundedSender<UpdateEvent>, scenario: Simu
         line!("[DRY RUN] Would execute: $ pkexec bootc upgrade", 300);
         line!("bootc upgrade failed (simulated)", 400);
         module_done!(Module::System, ModuleStatus::Failed(1));
-        let _ = tx.send(UpdateEvent::Error("[DEV MODE] Simulated system module failure".to_string()));
+        let _ = tx.send(UpdateEvent::Error(
+            "[DEV MODE] Simulated system module failure".to_string(),
+        ));
         return;
     }
 

@@ -355,8 +355,7 @@ mod tests {
 
     #[test]
     fn detect_module_start_recognises_flatpak() {
-        let idx =
-            detect_module_start("module_name=Flatpak module_state=running").expect("matched");
+        let idx = detect_module_start("module_name=Flatpak module_state=running").expect("matched");
         assert_eq!(MODULES[idx].0, "flatpak");
     }
 

@@ -268,7 +268,11 @@ fn start_version_fetch(
                         dev_mode,
                         current_family.clone(),
                         selected_features.clone(),
-                        if is_expanded { None } else { Some(reload_fn.clone()) },
+                        if is_expanded {
+                            None
+                        } else {
+                            Some(reload_fn.clone())
+                        },
                     );
                     stack.set_visible_child_name("loaded");
                 }
@@ -1035,8 +1039,7 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
             // tokio mpsc bridges the async readers to a sync channel the GTK
             // thread can poll. Each parsed BootcProgress flows: stdout/stderr
             // reader → tokio channel → forwarder → std::sync::mpsc → GTK.
-            let (tokio_tx, mut tokio_rx) =
-                tokio::sync::mpsc::unbounded_channel::<BootcProgress>();
+            let (tokio_tx, mut tokio_rx) = tokio::sync::mpsc::unbounded_channel::<BootcProgress>();
             let prog_tx_std_inner = prog_tx_std.clone();
             let forward = tokio::spawn(async move {
                 while let Some(p) = tokio_rx.recv().await {
@@ -1325,8 +1328,7 @@ fn populate_family_switches(
         // open with their current configuration represented, not with
         // everything OFF. Without this the dialog implies that rebasing
         // would *downgrade* to the base image.
-        let (initial_dx, initial_nvidia) =
-            derive_initial_toggle_state(&family, image_opt.as_ref());
+        let (initial_dx, initial_nvidia) = derive_initial_toggle_state(&family, image_opt.as_ref());
         target_row.set_subtitle(
             image_opt
                 .as_ref()
@@ -1343,8 +1345,10 @@ fn populate_family_switches(
         // one, but the rebase dialog only exposes the two switches users
         // think about.
         let supports_dx = family.features.iter().any(|f| f.id == "dx");
-        let supports_nvidia =
-            family.features.iter().any(|f| f.id == "nvidia" || f.id == "open");
+        let supports_nvidia = family
+            .features
+            .iter()
+            .any(|f| f.id == "nvidia" || f.id == "open");
 
         let dx_state = Rc::new(Cell::new(initial_dx));
         let nvidia_state = Rc::new(Cell::new(initial_nvidia));
@@ -1356,17 +1360,14 @@ fn populate_family_switches(
             let dx_state = dx_state.clone();
             let nvidia_state = nvidia_state.clone();
             move || {
-                let (feats, target) = resolve_dx_nvidia(
-                    &family,
-                    dx_state.get(),
-                    nvidia_state.get(),
-                );
+                let (feats, target) =
+                    resolve_dx_nvidia(&family, dx_state.get(), nvidia_state.get());
                 *selected_features.borrow_mut() = feats;
                 match target {
                     Some(t) => target_row.set_subtitle(&format!("{} (resolved)", t.image)),
-                    None => target_row.set_subtitle(
-                        "(combination doesn't match any published image)",
-                    ),
+                    None => {
+                        target_row.set_subtitle("(combination doesn't match any published image)")
+                    }
                 }
             }
         };
@@ -1477,7 +1478,11 @@ fn resolve_dx_nvidia(
     nvidia_on: bool,
 ) -> (Vec<String>, Option<service::ImageRef>) {
     let svc = service::global();
-    let base: Vec<String> = if dx_on { vec!["dx".to_string()] } else { vec![] };
+    let base: Vec<String> = if dx_on {
+        vec!["dx".to_string()]
+    } else {
+        vec![]
+    };
 
     if nvidia_on {
         // Prefer the -open variant (current for Bluefin / Bluefin LTS).
@@ -1516,10 +1521,7 @@ fn derive_initial_toggle_state(
     let Some(image) = image else {
         return (false, false);
     };
-    let Some(suffix) = image
-        .image
-        .strip_prefix(&format!("{}-", family.base_image))
-    else {
+    let Some(suffix) = image.image.strip_prefix(&format!("{}-", family.base_image)) else {
         // Bare base image (no suffix) or completely unrelated image name.
         return (false, false);
     };
@@ -1531,7 +1533,6 @@ fn derive_initial_toggle_state(
     let nvidia = parts.contains(&"nvidia") || parts.contains(&"open");
     (dx, nvidia)
 }
-
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1577,7 +1578,6 @@ fn run_rebase_simulated(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog
         stack.set_visible_child_name("done");
     });
 }
-
 
 fn days_in_month(date: NaiveDate) -> u32 {
     let next = if date.month() == 12 {
@@ -1688,7 +1688,10 @@ mod tests {
             Some(&fam),
             &["nvidia".to_string()],
         );
-        assert_eq!(r, "ghcr.io/ublue-os/bluefin-nvidia:stable-daily-43.20260527");
+        assert_eq!(
+            r,
+            "ghcr.io/ublue-os/bluefin-nvidia:stable-daily-43.20260527"
+        );
     }
 
     #[test]
@@ -1896,20 +1899,38 @@ mod tests {
     #[test]
     fn progress_parses_layer_ratio() {
         let r = parse_bootc_progress("Layer 3/12 sha256:abc...");
-        assert_eq!(r, Some(BootcProgress::Fraction { current: 3, total: 12 }));
+        assert_eq!(
+            r,
+            Some(BootcProgress::Fraction {
+                current: 3,
+                total: 12
+            })
+        );
     }
 
     #[test]
     fn progress_parses_pulled_ratio_phrasing() {
         let r = parse_bootc_progress("Pulled 8/8 layers");
-        assert_eq!(r, Some(BootcProgress::Fraction { current: 8, total: 8 }));
+        assert_eq!(
+            r,
+            Some(BootcProgress::Fraction {
+                current: 8,
+                total: 8
+            })
+        );
     }
 
     #[test]
     fn progress_extracts_ratio_anywhere_in_line() {
         // Containers-image style: "Copying blob abc 5/12 (...) ETA 30s"
         let r = parse_bootc_progress("Copying blob abc 5/12 12.3 MiB / 30 MiB");
-        assert_eq!(r, Some(BootcProgress::Fraction { current: 5, total: 12 }));
+        assert_eq!(
+            r,
+            Some(BootcProgress::Fraction {
+                current: 5,
+                total: 12
+            })
+        );
     }
 
     #[test]
@@ -1937,7 +1958,9 @@ mod tests {
         let r = parse_bootc_progress("Pulling manifest from ghcr.io/...");
         assert_eq!(
             r,
-            Some(BootcProgress::Status("Pulling new image layers…".to_string()))
+            Some(BootcProgress::Status(
+                "Pulling new image layers…".to_string()
+            ))
         );
     }
 
@@ -1955,7 +1978,13 @@ mod tests {
         // "Pulling 4/8 layers" — first word matches a status, but the ratio
         // is the more useful signal; ensure we don't lose it.
         let r = parse_bootc_progress("Pulling 4/8 layers");
-        assert_eq!(r, Some(BootcProgress::Fraction { current: 4, total: 8 }));
+        assert_eq!(
+            r,
+            Some(BootcProgress::Fraction {
+                current: 4,
+                total: 8
+            })
+        );
     }
 
     #[test]

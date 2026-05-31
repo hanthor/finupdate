@@ -130,7 +130,10 @@ pub enum AppMsg {
     /// A module has started running.
     ModuleStarted(crate::orchestrator::Module),
     /// A module has finished.
-    ModuleFinished(crate::orchestrator::Module, crate::orchestrator::ModuleStatus),
+    ModuleFinished(
+        crate::orchestrator::Module,
+        crate::orchestrator::ModuleStatus,
+    ),
     /// The subprocess exited successfully.
     UpdateComplete,
     /// The subprocess reported that the system is already up to date (exit 77).
@@ -443,54 +446,52 @@ impl SimpleComponent for App {
                 input_sender.emit(AppMsg::PreflightResult(PreflightStatus::UpdateAvailable));
             });
         } else {
-
-        // Defer preflight check until the GLib main loop is running to avoid
-        // racing with component initialization (the thread could finish before
-        // the relm4 message loop processes the first idle).
-        let input_sender = sender.input_sender().clone();
-        gtk::glib::idle_add_local_once(move || {
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime");
-                rt.block_on(async move {
-                    // Use `pkexec bootc upgrade --check` to detect pending updates.
-                    // Exit 0 = update available, 77 = up to date, other = unknown.
-                    let mut cmd = if std::path::Path::new("/.flatpak-info").exists() {
-                        let mut c = tokio::process::Command::new("flatpak-spawn");
-                        c.args(["--host", "pkexec", "bootc", "upgrade", "--check"]);
-                        c
-                    } else {
-                        let mut c = tokio::process::Command::new("pkexec");
-                        c.args(["bootc", "upgrade", "--check"]);
-                        c
-                    };
-                    // Add a 15-second timeout to prevent hanging on slow/unavailable systems.
-                    let timeout = std::time::Duration::from_secs(15);
-                    let status = tokio::select! {
-                        result = cmd.status() => {
-                            match result {
-                                Ok(s) => Some(s),
-                                Err(_) => None,
+            // Defer preflight check until the GLib main loop is running to avoid
+            // racing with component initialization (the thread could finish before
+            // the relm4 message loop processes the first idle).
+            let input_sender = sender.input_sender().clone();
+            gtk::glib::idle_add_local_once(move || {
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create tokio runtime");
+                    rt.block_on(async move {
+                        // Use `pkexec bootc upgrade --check` to detect pending updates.
+                        // Exit 0 = update available, 77 = up to date, other = unknown.
+                        let mut cmd = if std::path::Path::new("/.flatpak-info").exists() {
+                            let mut c = tokio::process::Command::new("flatpak-spawn");
+                            c.args(["--host", "pkexec", "bootc", "upgrade", "--check"]);
+                            c
+                        } else {
+                            let mut c = tokio::process::Command::new("pkexec");
+                            c.args(["bootc", "upgrade", "--check"]);
+                            c
+                        };
+                        // Add a 15-second timeout to prevent hanging on slow/unavailable systems.
+                        let timeout = std::time::Duration::from_secs(15);
+                        let status = tokio::select! {
+                            result = cmd.status() => {
+                                match result {
+                                    Ok(s) => Some(s),
+                                    Err(_) => None,
+                                }
                             }
-                        }
-                        _ = tokio::time::sleep(timeout) => None,
-                    };
+                            _ = tokio::time::sleep(timeout) => None,
+                        };
 
-                    let result = match status {
-                        Some(s) => match s.code() {
-                            Some(0) => PreflightStatus::UpdateAvailable,
-                            Some(77) => PreflightStatus::UpToDate,
-                            _ => PreflightStatus::Unknown,
-                        },
-                        None => PreflightStatus::Unknown,
-                    };
-                    input_sender.emit(AppMsg::PreflightResult(result));
+                        let result = match status {
+                            Some(s) => match s.code() {
+                                Some(0) => PreflightStatus::UpdateAvailable,
+                                Some(77) => PreflightStatus::UpToDate,
+                                _ => PreflightStatus::Unknown,
+                            },
+                            None => PreflightStatus::Unknown,
+                        };
+                        input_sender.emit(AppMsg::PreflightResult(result));
+                    });
                 });
             });
-        });
-
         } // end if/else for mock_identity preflight short-circuit
 
         ComponentParts { model, widgets }
@@ -540,7 +541,8 @@ impl SimpleComponent for App {
                 tracing::info!("Starting system update via uupd");
                 self.state = AppState::Updating;
                 self.log_lines.clear();
-                self.progress_dbus.update("updating", 0.0, "Starting update…");
+                self.progress_dbus
+                    .update("updating", 0.0, "Starting update…");
 
                 // Update header subtitle to indicate activity.
                 self.update_subtitle();
@@ -573,7 +575,10 @@ impl SimpleComponent for App {
                                 ?sim_scenario,
                                 "Developer mode active — running simulated update"
                             );
-                            println!("[debug] app: developer mode update run start, scenario={:?}", sim_scenario);
+                            println!(
+                                "[debug] app: developer mode update run start, scenario={:?}",
+                                sim_scenario
+                            );
                             run_simulated(sim_scenario, cancel_rx).await
                         } else {
                             println!("[debug] app: starting real update worker");
@@ -610,7 +615,8 @@ impl SimpleComponent for App {
             }
 
             AppMsg::OpenCheckDialog => {
-                self.progress_dbus.update("checking", 0.0, "Checking for updates…");
+                self.progress_dbus
+                    .update("checking", 0.0, "Checking for updates…");
                 if let Some(root) = self.status_view.widget().root() {
                     if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
                         let result_sender = sender.input_sender().clone();
@@ -672,20 +678,24 @@ impl SimpleComponent for App {
                 };
                 let progress = (module_count as f64 / 4.0).min(0.95);
                 self.progress_dbus.set_progress(progress);
-                self.progress_dbus.set_message(&format!("Updating {}…", key));
-                self.status_view.emit(StatusViewInput::ModuleStarted(module));
+                self.progress_dbus
+                    .set_message(&format!("Updating {}…", key));
+                self.status_view
+                    .emit(StatusViewInput::ModuleStarted(module));
             }
 
             AppMsg::ModuleFinished(module, status) => {
                 tracing::debug!("Module finished: {} {:?}", module.key(), status);
-                self.status_view.emit(StatusViewInput::ModuleFinished(module, status));
+                self.status_view
+                    .emit(StatusViewInput::ModuleFinished(module, status));
             }
 
             AppMsg::UpdateComplete => {
                 tracing::info!("System update completed successfully");
                 self.state = AppState::Complete;
                 self.cancel_tx = None;
-                self.progress_dbus.update("complete", 1.0, "Update complete");
+                self.progress_dbus
+                    .update("complete", 1.0, "Update complete");
                 self.update_subtitle();
                 self.status_view
                     .emit(StatusViewInput::StateChanged(AppState::Complete));
@@ -858,14 +868,9 @@ impl SimpleComponent for App {
                     if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
                         let s1 = sender.input_sender().clone();
                         let s2 = sender.input_sender().clone();
-                        show_preferences(
-                            window,
-                            self.settings.clone(),
-                            s1,
-                            move |updated| {
-                                s2.emit(AppMsg::SettingsChanged(updated));
-                            },
-                        );
+                        show_preferences(window, self.settings.clone(), s1, move |updated| {
+                            s2.emit(AppMsg::SettingsChanged(updated));
+                        });
                     }
                 }
             }
@@ -918,16 +923,16 @@ impl SimpleComponent for App {
             }
 
             AppMsg::GoBack => {
-                self.status_view.emit(StatusViewInput::ShowPage("main".to_string()));
+                self.status_view
+                    .emit(StatusViewInput::ShowPage("main".to_string()));
             }
 
             AppMsg::ShowWhatsNew => {
                 // Forward to status_view as a SelectChangelogVersion with the
                 // currently-displayed selected tag. status_view re-renders the
                 // changelog page and switches the stack to it.
-                self.status_view.emit(StatusViewInput::SelectChangelogVersion(
-                    String::new(),
-                ));
+                self.status_view
+                    .emit(StatusViewInput::SelectChangelogVersion(String::new()));
             }
 
             AppMsg::DismissBanner => {

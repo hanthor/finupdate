@@ -132,7 +132,9 @@ fn build_updates_group(
         let s = shared.borrow();
         adw::SwitchRow::builder()
             .title("Include App Updates")
-            .subtitle("Refresh Flatpaks, Homebrew, and Distrobox containers alongside the bootc image")
+            .subtitle(
+                "Refresh Flatpaks, Homebrew, and Distrobox containers alongside the bootc image",
+            )
             .active(s.include_app_updates)
             .build()
     };
@@ -341,10 +343,7 @@ fn build_system_group(
 
     // Image Source — navigates the main StatusView stack to the source page,
     // then closes the Advanced dialog so the user sees the subpage.
-    let source_row = make_row(
-        "Image Source",
-        "Registry, tag, and signature policy",
-    );
+    let source_row = make_row("Image Source", "Registry, tag, and signature policy");
     {
         let s = sender.clone();
         let d = dialog.clone();
@@ -383,7 +382,9 @@ fn build_system_group(
     // CSS class (red label) the same way the old main-page row did.
     let reset_group = adw::PreferencesGroup::builder()
         .title("Reset")
-        .description("Reversible: powerwash keeps your files. Destructive: factory reset erases everything.")
+        .description(
+            "Reversible: powerwash keeps your files. Destructive: factory reset erases everything.",
+        )
         .build();
 
     let powerwash_row = make_row(
@@ -571,7 +572,11 @@ fn build_uupd_config_subpage() -> adw::NavigationPage {
     }
     mod_group.add(&system_row);
 
-    let flatpak_row = module_switch_row("Flatpak", "Sandboxed applications", !config.borrow().modules.flatpak.disable);
+    let flatpak_row = module_switch_row(
+        "Flatpak",
+        "Sandboxed applications",
+        !config.borrow().modules.flatpak.disable,
+    );
     {
         let config = config.clone();
         flatpak_row.connect_active_notify(move |row| {
@@ -580,7 +585,11 @@ fn build_uupd_config_subpage() -> adw::NavigationPage {
     }
     mod_group.add(&flatpak_row);
 
-    let brew_row = module_switch_row("Brew", "Homebrew packages", !config.borrow().modules.brew.disable);
+    let brew_row = module_switch_row(
+        "Brew",
+        "Homebrew packages",
+        !config.borrow().modules.brew.disable,
+    );
     {
         let config = config.clone();
         brew_row.connect_active_notify(move |row| {

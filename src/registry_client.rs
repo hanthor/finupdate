@@ -302,10 +302,18 @@ impl RegistryClient {
         }
     }
 
-    pub fn registry(&self) -> &str { &self.registry }
-    pub fn org(&self) -> &str { &self.org }
-    pub fn image(&self) -> &str { &self.image }
-    pub fn stream(&self) -> &str { &self.stream }
+    pub fn registry(&self) -> &str {
+        &self.registry
+    }
+    pub fn org(&self) -> &str {
+        &self.org
+    }
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+    pub fn stream(&self) -> &str {
+        &self.stream
+    }
 
     /// Detect the current image stream from the running system.
     ///
@@ -365,7 +373,10 @@ impl RegistryClient {
         }
         // Fallback: parse os-release
         let fallback = Self::detect_from_os_release();
-        println!("[debug] RegistryClient::detect() fallback os-release = {:?}", fallback.as_ref().map(|c| c.stream.clone()));
+        println!(
+            "[debug] RegistryClient::detect() fallback os-release = {:?}",
+            fallback.as_ref().map(|c| c.stream.clone())
+        );
         fallback
     }
 
@@ -375,7 +386,10 @@ impl RegistryClient {
         } else {
             "bootc status --json"
         };
-        println!("[debug] RegistryClient::detect_from_bootc() running {}", cmd_name);
+        println!(
+            "[debug] RegistryClient::detect_from_bootc() running {}",
+            cmd_name
+        );
         let output = if crate::update_worker::is_flatpak() {
             tokio::process::Command::new("flatpak-spawn")
                 .args(["--host", "bootc", "status", "--json"])
@@ -390,7 +404,10 @@ impl RegistryClient {
                 .ok()?
         };
 
-        println!("[debug] RegistryClient::detect_from_bootc() exit = {:?}", output.status);
+        println!(
+            "[debug] RegistryClient::detect_from_bootc() exit = {:?}",
+            output.status
+        );
         if !output.status.success() {
             return None;
         }
@@ -459,7 +476,10 @@ impl RegistryClient {
             }
 
             if let (Some(img), Some(ver)) = (image_id, version_id) {
-                let org = if img.contains("dakota") || img.contains("bluefin") || img.contains("aurora") {
+                let org = if img.contains("dakota")
+                    || img.contains("bluefin")
+                    || img.contains("aurora")
+                {
                     "projectbluefin"
                 } else {
                     "ublue-os"
@@ -486,9 +506,21 @@ impl RegistryClient {
     /// same value so larger `max` actually surfaces more results rather
     /// than capping at the old hardcoded CANDIDATE_CAP=8.
     pub async fn fetch_versions(&self, max: usize) -> Result<Vec<ImageVersion>, RegistryError> {
-        let cache_record_key = cache_key(&self.registry, &self.org, &self.image, &self.stream, &format!("versions_{}", max));
+        let cache_record_key = cache_key(
+            &self.registry,
+            &self.org,
+            &self.image,
+            &self.stream,
+            &format!("versions_{}", max),
+        );
         if let Some(cached) = load_registry_cache::<Vec<ImageVersion>>(&cache_record_key) {
-            tracing::info!("Using cached versions for {}/{}/{}:{}", self.registry, self.org, self.image, self.stream);
+            tracing::info!(
+                "Using cached versions for {}/{}/{}:{}",
+                self.registry,
+                self.org,
+                self.image,
+                self.stream
+            );
             return Ok(cached);
         }
 
@@ -551,9 +583,7 @@ impl RegistryClient {
                 .cloned()
                 .collect();
             if !sha_tags.is_empty() {
-                let probed = self
-                    .probe_sha_tag_dates(&sha_tags, &token, &client)
-                    .await;
+                let probed = self.probe_sha_tag_dates(&sha_tags, &token, &client).await;
                 candidate_tags.extend(probed);
                 candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
             }
@@ -675,9 +705,20 @@ impl RegistryClient {
     /// concurrency cap. Bounded by `tag_cap` total entries (default 30) so
     /// the dropdown stays manageable on long-lived registries.
     pub async fn fetch_available_tags(&self) -> Result<Vec<AvailableTag>, RegistryError> {
-        let cache_record_key = cache_key(&self.registry, &self.org, &self.image, &self.stream, "available_tags");
+        let cache_record_key = cache_key(
+            &self.registry,
+            &self.org,
+            &self.image,
+            &self.stream,
+            "available_tags",
+        );
         if let Some(cached) = load_registry_cache::<Vec<AvailableTag>>(&cache_record_key) {
-            tracing::info!("Using cached tags for {}/{}/{}", self.registry, self.org, self.image);
+            tracing::info!(
+                "Using cached tags for {}/{}/{}",
+                self.registry,
+                self.org,
+                self.image
+            );
             return Ok(cached);
         }
 
@@ -738,10 +779,16 @@ impl RegistryClient {
 
         let mut result: Vec<AvailableTag> = Vec::new();
         for t in stream_tags {
-            result.push(AvailableTag { display: t.clone(), raw: t });
+            result.push(AvailableTag {
+                display: t.clone(),
+                raw: t,
+            });
         }
         for (_date, t) in dated.into_iter().take(30) {
-            result.push(AvailableTag { display: t.clone(), raw: t });
+            result.push(AvailableTag {
+                display: t.clone(),
+                raw: t,
+            });
         }
         for (date, sha) in dated_sha {
             result.push(AvailableTag {
@@ -1104,9 +1151,7 @@ mod tests {
 
     #[test]
     fn is_sha_only_tag_accepts_40_hex() {
-        assert!(is_sha_only_tag(
-            "fc308c8515de8b2f134bc0cbe756cc738c4870e1"
-        ));
+        assert!(is_sha_only_tag("fc308c8515de8b2f134bc0cbe756cc738c4870e1"));
     }
 
     #[test]
@@ -1123,9 +1168,7 @@ mod tests {
     fn is_sha_only_tag_rejects_uppercase() {
         // GHCR commit shas are lowercase hex; reject uppercase to avoid
         // false matches on whatever else might sneak into a tag list.
-        assert!(!is_sha_only_tag(
-            "FC308C8515DE8B2F134BC0CBE756CC738C4870E1"
-        ));
+        assert!(!is_sha_only_tag("FC308C8515DE8B2F134BC0CBE756CC738C4870E1"));
     }
 
     #[test]
@@ -1400,7 +1443,10 @@ mod tests {
             bluefin.select_image_for_features(&["nvidia"]),
             Some("bluefin-nvidia")
         );
-        assert_eq!(bluefin.select_image_for_features(&["dx"]), Some("bluefin-dx"));
+        assert_eq!(
+            bluefin.select_image_for_features(&["dx"]),
+            Some("bluefin-dx")
+        );
         // Two features, order-independent.
         assert_eq!(
             bluefin.select_image_for_features(&["dx", "nvidia"]),
@@ -1423,9 +1469,11 @@ mod tests {
         // "open" alone (without nvidia) doesn't map to a published image.
         assert!(bluefin.select_image_for_features(&["open"]).is_none());
         // "dx" + "framework" isn't a real combination.
-        assert!(bluefin
-            .select_image_for_features(&["dx", "framework"])
-            .is_none());
+        assert!(
+            bluefin
+                .select_image_for_features(&["dx", "framework"])
+                .is_none()
+        );
     }
 
     #[test]
@@ -1486,9 +1534,8 @@ mod tests {
     #[test]
     fn parse_image_ref_handles_nested_image_path() {
         // Some registries use multi-segment image paths.
-        let c = parse_image_ref(
-            "ghcr.io/ublue-os/bluefin-dx/extras:stable-daily.20260222",
-        ).unwrap();
+        let c =
+            parse_image_ref("ghcr.io/ublue-os/bluefin-dx/extras:stable-daily.20260222").unwrap();
         assert_eq!(c.image(), "bluefin-dx/extras");
     }
 
@@ -1505,17 +1552,17 @@ mod tests {
                 raw: "stable".to_string(),
             },
         ];
-        
+
         let path = registry_cache_dir().join(key);
         let _ = std::fs::remove_file(&path);
-        
+
         assert!(load_registry_cache::<Vec<AvailableTag>>(key).is_none());
-        
+
         save_registry_cache(key, &tags);
-        
+
         let loaded = load_registry_cache::<Vec<AvailableTag>>(key).unwrap();
         assert_eq!(loaded, tags);
-        
+
         let _ = std::fs::remove_file(&path);
     }
 }

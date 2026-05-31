@@ -17,11 +17,11 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::app::{AppState, PreflightStatus};
+use crate::registry_client::ImageVersion;
 use crate::settings::Settings;
 use crate::ui::log_view::{LogView, LogViewInput};
 use crate::ui::segmented_progress::{SegmentedProgress, same_segment};
 use crate::ui::update_list::{UpdateList, UpdateListInput};
-use crate::registry_client::ImageVersion;
 
 /// Mock deployment representation for the collapsible version history list.
 #[derive(Debug, Clone)]
@@ -101,7 +101,10 @@ pub enum StatusViewInput {
     /// A module has started running (from orchestrator).
     ModuleStarted(crate::orchestrator::Module),
     /// A module has finished (from orchestrator).
-    ModuleFinished(crate::orchestrator::Module, crate::orchestrator::ModuleStatus),
+    ModuleFinished(
+        crate::orchestrator::Module,
+        crate::orchestrator::ModuleStatus,
+    ),
 }
 
 /// Output messages the StatusView sends to its parent.
@@ -298,9 +301,10 @@ impl StatusView {
         } else {
             self.hero_action_btn.set_visible(false);
             self.hero_schedule_btn.set_visible(false);
-            self.status_pill.set_visible(
-                !matches!(self.preflight_status, PreflightStatus::UpdateAvailable),
-            );
+            self.status_pill.set_visible(!matches!(
+                self.preflight_status,
+                PreflightStatus::UpdateAvailable
+            ));
         }
 
         // ── Banner group ──────────────────────────────────────────────────
@@ -378,17 +382,20 @@ impl StatusView {
         // 2. Find the selected version details
         let mut real_version: Option<&ImageVersion> = None;
         if !self.registry_versions.is_empty() {
-            real_version = self.registry_versions.iter().find(|v| v.version == self.changelog_version);
+            real_version = self
+                .registry_versions
+                .iter()
+                .find(|v| v.version == self.changelog_version);
         }
 
         let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         header_box.set_margin_top(12);
-        
+
         let info_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         info_box.set_hexpand(true);
 
         let tag_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        
+
         let tag_code = gtk::Label::builder()
             .label(&format!("{}:{}", self.registry_uri, version))
             .halign(gtk::Align::Start)
@@ -399,7 +406,9 @@ impl StatusView {
         // Pills in header
         let is_update = if let Some(v) = real_version {
             let booted_tag = read_selected_tag();
-            v.version != booted_tag && !self.reboot_pending && matches!(self.preflight_status, PreflightStatus::UpdateAvailable)
+            v.version != booted_tag
+                && !self.reboot_pending
+                && matches!(self.preflight_status, PreflightStatus::UpdateAvailable)
         } else {
             false
         };
@@ -446,9 +455,20 @@ impl StatusView {
         let summary_str = if let Some(v) = real_version {
             let booted_tag = read_selected_tag();
             if v.version == booted_tag {
-                format!("Currently booted. Kernel {} · stable point release.", v.kernel)
+                format!(
+                    "Currently booted. Kernel {} · stable point release.",
+                    v.kernel
+                )
             } else {
-                format!("Image build. Kernel {} · git commit {}.", v.kernel, if v.revision.len() >= 7 { &v.revision[0..7] } else { &v.revision })
+                format!(
+                    "Image build. Kernel {} · git commit {}.",
+                    v.kernel,
+                    if v.revision.len() >= 7 {
+                        &v.revision[0..7]
+                    } else {
+                        &v.revision
+                    }
+                )
             }
         } else {
             "".to_string()
@@ -497,9 +517,7 @@ impl StatusView {
         grid.set_row_spacing(8);
 
         let stack_items: Vec<(&str, String, bool)> = if let Some(v) = real_version {
-            vec![
-                ("Kernel", v.kernel.clone(), false),
-            ]
+            vec![("Kernel", v.kernel.clone(), false)]
         } else {
             vec![]
         };
@@ -511,7 +529,7 @@ impl StatusView {
             pill_box.set_margin_end(2);
             pill_box.set_margin_top(2);
             pill_box.set_margin_bottom(2);
-            
+
             let lbl_name = gtk::Label::builder()
                 .label(name)
                 .halign(gtk::Align::Start)
@@ -520,12 +538,8 @@ impl StatusView {
                 .margin_bottom(8)
                 .build();
             lbl_name.add_css_class("body");
-            
-            let lbl_ver_str = if bumped {
-                format!("{} ↑", ver)
-            } else {
-                ver
-            };
+
+            let lbl_ver_str = if bumped { format!("{} ↑", ver) } else { ver };
             let lbl_ver = gtk::Label::builder()
                 .label(&lbl_ver_str)
                 .halign(gtk::Align::End)
@@ -541,10 +555,10 @@ impl StatusView {
             } else {
                 lbl_ver.add_css_class("dim-label");
             }
-            
+
             pill_box.append(&lbl_name);
             pill_box.append(&lbl_ver);
-            
+
             grid.append(&pill_box);
         }
         self.changelog_box.append(&grid);
@@ -554,10 +568,18 @@ impl StatusView {
 
         if let Some(ref diff) = self.sbom_diff {
             for pkg in &diff.upgraded {
-                upgrades_list.push((pkg.name.clone(), pkg.old_version.clone(), pkg.new_version.clone()));
+                upgrades_list.push((
+                    pkg.name.clone(),
+                    pkg.old_version.clone(),
+                    pkg.new_version.clone(),
+                ));
             }
             for pkg in &diff.added {
-                upgrades_list.push((pkg.name.clone(), "(added)".to_string(), pkg.new_version.clone()));
+                upgrades_list.push((
+                    pkg.name.clone(),
+                    "(added)".to_string(),
+                    pkg.new_version.clone(),
+                ));
             }
             for pkg in &diff.removed {
                 removals_list.push(pkg.clone());
@@ -580,28 +602,26 @@ impl StatusView {
             list_upgrades.add_css_class("card");
 
             for (pkg, from, to) in upgrades_list {
-                let row = adw::ActionRow::builder()
-                    .title(&pkg)
-                    .build();
-                
+                let row = adw::ActionRow::builder().title(&pkg).build();
+
                 let val_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                
+
                 let from_lbl = gtk::Label::new(Some(&from));
                 from_lbl.add_css_class("dim-label");
                 from_lbl.add_css_class("monospace");
                 from_lbl.add_css_class("caption");
-                
+
                 let arr_lbl = gtk::Label::new(Some("→"));
                 arr_lbl.add_css_class("dim-label");
-                
+
                 let to_lbl = gtk::Label::new(Some(&to));
                 to_lbl.add_css_class("monospace");
                 to_lbl.add_css_class("caption");
-                
+
                 val_box.append(&from_lbl);
                 val_box.append(&arr_lbl);
                 val_box.append(&to_lbl);
-                
+
                 row.add_suffix(&val_box);
                 list_upgrades.append(&row);
             }
@@ -624,9 +644,7 @@ impl StatusView {
             list_removals.add_css_class("card");
 
             for pkg in removals_list {
-                let row = adw::ActionRow::builder()
-                    .title(&pkg)
-                    .build();
+                let row = adw::ActionRow::builder().title(&pkg).build();
                 let dash_lbl = gtk::Label::new(Some("−"));
                 dash_lbl.add_css_class("error");
                 row.add_prefix(&dash_lbl);
@@ -673,7 +691,7 @@ impl StatusView {
 
                 let msg_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
                 msg_box.set_hexpand(true);
-                
+
                 let msg_lbl = gtk::Label::builder()
                     .label(&msg)
                     .halign(gtk::Align::Start)
@@ -706,20 +724,16 @@ impl StatusView {
                         let parent = row_for_gesture
                             .root()
                             .and_then(|r| r.downcast::<gtk::Window>().ok());
-                        launcher.launch(
-                            parent.as_ref(),
-                            gtk::gio::Cancellable::NONE,
-                            |result| {
-                                if let Err(e) = result {
-                                    tracing::warn!("Couldn't open commit URL: {}", e);
-                                }
-                            },
-                        );
+                        launcher.launch(parent.as_ref(), gtk::gio::Cancellable::NONE, |result| {
+                            if let Err(e) = result {
+                                tracing::warn!("Couldn't open commit URL: {}", e);
+                            }
+                        });
                     });
                     row_box.add_controller(gesture);
                     row_box.set_cursor_from_name(Some("pointer"));
                 }
-                
+
                 list_commits.append(&row_box);
             }
             self.changelog_box.append(&list_commits);
@@ -1108,9 +1122,7 @@ impl SimpleComponent for StatusView {
         // Network → Wi-Fi properties and Online Accounts subpages.
         let source_page = adw::PreferencesPage::new();
         let source_group = adw::PreferencesGroup::builder()
-            .description(
-                "Where this device pulls its OS image from. Changes apply on next update.",
-            )
+            .description("Where this device pulls its OS image from. Changes apply on next update.")
             .build();
 
         // Registry URL — adw::EntryRow with show_apply_button=true gives us
@@ -1225,8 +1237,14 @@ impl SimpleComponent for StatusView {
         // running on the GTK thread does all the widget mutations.
         // adw::* widgets are GObject (not Send), so they MUST be touched
         // from the GTK thread only.
-        let slot: std::sync::Arc<std::sync::Mutex<Option<(Option<crate::service::FamilyInfo>, Option<crate::service::ImageRef>)>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot: std::sync::Arc<
+            std::sync::Mutex<
+                Option<(
+                    Option<crate::service::FamilyInfo>,
+                    Option<crate::service::ImageRef>,
+                )>,
+            >,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
         {
             let slot = slot.clone();
             std::thread::spawn(move || {
@@ -1250,9 +1268,7 @@ impl SimpleComponent for StatusView {
         let registry_entry_for_timer = registry_entry_row.clone();
         let registry_uri_initial = initial_registry_uri.clone();
         gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            let Some((family_opt, image_opt)) =
-                slot.lock().ok().and_then(|mut g| g.take())
-            else {
+            let Some((family_opt, image_opt)) = slot.lock().ok().and_then(|mut g| g.take()) else {
                 return gtk::glib::ControlFlow::Continue;
             };
 
@@ -1313,10 +1329,7 @@ impl SimpleComponent for StatusView {
                     if let Some(target) = resolved {
                         let parts: Vec<&str> = registry_uri.split('/').collect();
                         if parts.len() >= 2 {
-                            entry.set_text(&format!(
-                                "{}/{}/{}",
-                                parts[0], parts[1], target.image
-                            ));
+                            entry.set_text(&format!("{}/{}/{}", parts[0], parts[1], target.image));
                         }
                     }
                 }
@@ -1372,15 +1385,11 @@ impl SimpleComponent for StatusView {
         let changelog_v_buttons = Vec::new();
 
         let changelog_box = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        
-        let changelog_version_label = gtk::Label::builder()
-            .halign(gtk::Align::Start)
-            .build();
+
+        let changelog_version_label = gtk::Label::builder().halign(gtk::Align::Start).build();
         changelog_version_label.add_css_class("title-3");
-        
-        let changelog_date_label = gtk::Label::builder()
-            .halign(gtk::Align::Start)
-            .build();
+
+        let changelog_date_label = gtk::Label::builder().halign(gtk::Align::Start).build();
         changelog_date_label.add_css_class("caption");
         changelog_date_label.add_css_class("dim-label");
 
@@ -1518,7 +1527,11 @@ impl SimpleComponent for StatusView {
 
         toast_overlay.set_child(Some(&updating_content));
 
-        spawn_changelog_fetch(initial_registry_uri.clone(), initial_selected_tag.clone(), sender.clone());
+        spawn_changelog_fetch(
+            initial_registry_uri.clone(),
+            initial_selected_tag.clone(),
+            sender.clone(),
+        );
 
         let initial_selected_tag_3 = initial_selected_tag.clone();
         let model = StatusView {
@@ -1590,7 +1603,9 @@ impl SimpleComponent for StatusView {
             model.expanded_deployment_id.as_deref(),
             &sender,
         );
-        model.images_count_label.set_label(&format!("{} images", model.deployments.len()));
+        model
+            .images_count_label
+            .set_label(&format!("{} images", model.deployments.len()));
         model.rebuild_changelog_page(&sender);
 
         for btn in &model.changelog_v_buttons {
@@ -1650,7 +1665,8 @@ impl SimpleComponent for StatusView {
                             self.expanded_deployment_id.as_deref(),
                             &sender,
                         );
-                        self.images_count_label.set_label(&format!("{} images", self.deployments.len()));
+                        self.images_count_label
+                            .set_label(&format!("{} images", self.deployments.len()));
                     }
                     AppState::Error(_) => {
                         self.update_start = None;
@@ -1730,7 +1746,8 @@ impl SimpleComponent for StatusView {
                 // notify handler by using `block_signal`-style: just check
                 // whether the desired state matches current first.
                 if self.auto_update_switch.is_active() != new_settings.auto_updates {
-                    self.auto_update_switch.set_active(new_settings.auto_updates);
+                    self.auto_update_switch
+                        .set_active(new_settings.auto_updates);
                 }
             }
 
@@ -1755,7 +1772,8 @@ impl SimpleComponent for StatusView {
                     tracing::warn!(
                         "Reboot Tonight suppressed (dry_run={}, dev_mode={}). \
                          Would have called: pkexec shutdown -r 02:00",
-                        settings.dry_run, settings.dev_mode
+                        settings.dry_run,
+                        settings.dev_mode
                     );
                     let t = adw::Toast::new("Restart scheduled for 02:00 (dry-run)");
                     t.set_timeout(4);
@@ -1831,13 +1849,22 @@ impl SimpleComponent for StatusView {
                 };
                 self.tag_row.set_subtitle(desc);
 
-                let name = self.registry_uri.split('/').last().unwrap_or(&self.registry_uri);
-                self.registry_row_sub.set_label(&format!("{}:{}", name, self.selected_tag));
+                let name = self
+                    .registry_uri
+                    .split('/')
+                    .last()
+                    .unwrap_or(&self.registry_uri);
+                self.registry_row_sub
+                    .set_label(&format!("{}:{}", name, self.selected_tag));
 
                 let toast = adw::Toast::new(&format!("Tag set to :{}", tag));
                 self.toast_overlay.add_toast(toast);
 
-                spawn_changelog_fetch(self.registry_uri.clone(), self.selected_tag.clone(), sender.clone());
+                spawn_changelog_fetch(
+                    self.registry_uri.clone(),
+                    self.selected_tag.clone(),
+                    sender.clone(),
+                );
             }
 
             StatusViewInput::TogglePin(action) => {
@@ -1853,9 +1880,13 @@ impl SimpleComponent for StatusView {
                         self.expanded_deployment_id.as_deref(),
                         &sender,
                     );
-                    self.images_count_label.set_label(&format!("{} images", self.deployments.len()));
+                    self.images_count_label
+                        .set_label(&format!("{} images", self.deployments.len()));
                 } else if action == "powerwash" {
-                    let window = self.stack.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+                    let window = self
+                        .stack
+                        .root()
+                        .and_then(|r| r.downcast::<gtk::Window>().ok());
                     let mut builder = adw::MessageDialog::builder()
                         .title("Powerwash?")
                         .heading("Powerwash this device?")
@@ -1864,13 +1895,13 @@ impl SimpleComponent for StatusView {
                         builder = builder.transient_for(w);
                     }
                     let dialog = builder.build();
-                    
+
                     dialog.add_response("cancel", "Cancel");
                     dialog.add_response("powerwash", "Powerwash");
                     dialog.set_default_response(Some("cancel"));
                     dialog.set_close_response("cancel");
                     dialog.set_response_appearance("powerwash", adw::ResponseAppearance::Suggested);
-                    
+
                     let toast_overlay = self.toast_overlay.clone();
                     let settings_snapshot = Settings::load();
                     dialog.connect_response(None, move |dlg, response| {
@@ -1890,7 +1921,8 @@ impl SimpleComponent for StatusView {
                                     settings_snapshot.dry_run,
                                     settings_snapshot.dev_mode
                                 );
-                                let toast = adw::Toast::new("Powerwash staged (dry-run, no commands run)");
+                                let toast =
+                                    adw::Toast::new("Powerwash staged (dry-run, no commands run)");
                                 toast_overlay.add_toast(toast);
                             } else {
                                 run_powerwash(&toast_overlay);
@@ -1900,8 +1932,11 @@ impl SimpleComponent for StatusView {
                     });
                     dialog.present();
                 } else if action == "factory" {
-                    let window = self.stack.root().and_then(|r| r.downcast::<gtk::Window>().ok());
-                    
+                    let window = self
+                        .stack
+                        .root()
+                        .and_then(|r| r.downcast::<gtk::Window>().ok());
+
                     let entry = gtk::Entry::builder()
                         .placeholder_text("reset")
                         .margin_top(12)
@@ -1918,7 +1953,7 @@ impl SimpleComponent for StatusView {
                         builder = builder.transient_for(w);
                     }
                     let dialog = builder.build();
-                    
+
                     dialog.add_response("cancel", "Cancel");
                     dialog.add_response("reset", "Factory Reset");
                     dialog.set_default_response(Some("cancel"));
@@ -1981,12 +2016,16 @@ impl SimpleComponent for StatusView {
                         self.expanded_deployment_id.as_deref(),
                         &sender,
                     );
-                    self.images_count_label.set_label(&format!("{} images", self.deployments.len()));
+                    self.images_count_label
+                        .set_label(&format!("{} images", self.deployments.len()));
                 }
             }
 
             StatusViewInput::RollbackTo(d) => {
-                let window = self.stack.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+                let window = self
+                    .stack
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
                 let mut builder = adw::MessageDialog::builder()
                     .title("Roll back?")
                     .heading(format!("Roll back to {}?", d.tag))
@@ -1998,13 +2037,13 @@ impl SimpleComponent for StatusView {
                     builder = builder.transient_for(w);
                 }
                 let dialog = builder.build();
-                
+
                 dialog.add_response("cancel", "Cancel");
                 dialog.add_response("rollback", "Roll back");
                 dialog.set_default_response(Some("cancel"));
                 dialog.set_close_response("cancel");
                 dialog.set_response_appearance("rollback", adw::ResponseAppearance::Suggested);
-                
+
                 let dialog_sender = sender.input_sender().clone();
                 dialog.connect_response(None, move |dlg, response| {
                     if response == "rollback" {
@@ -2049,10 +2088,7 @@ impl SimpleComponent for StatusView {
                     let t0 = std::time::Instant::now();
                     self.changelog_version = target;
                     self.rebuild_changelog_page(&sender);
-                    tracing::debug!(
-                        "changelog: rebuild took {}ms",
-                        t0.elapsed().as_millis()
-                    );
+                    tracing::debug!("changelog: rebuild took {}ms", t0.elapsed().as_millis());
                 }
                 self.stack.set_visible_child_name("changelog");
                 let _ = sender.output(StatusViewOutput::PageChanged("changelog".to_string()));
@@ -2083,11 +2119,8 @@ impl SimpleComponent for StatusView {
                 // upstream registry accumulates daily tags.
                 const HISTORY_MAX: usize = 8;
 
-                let local_tags: std::collections::HashSet<&str> = self
-                    .deployments
-                    .iter()
-                    .map(|d| d.tag.as_str())
-                    .collect();
+                let local_tags: std::collections::HashSet<&str> =
+                    self.deployments.iter().map(|d| d.tag.as_str()).collect();
                 let mut merged = self.deployments.clone();
                 // Walk versions newest-first (they're sorted ascending by date)
                 // so the cap drops oldest, not newest.
@@ -2100,12 +2133,19 @@ impl SimpleComponent for StatusView {
                         merged.push(MockDeployment {
                             id: format!("remote-{}", v.version),
                             state: "remote".to_string(),
-                            title: self.image_info.clone().unwrap_or_else(|| "System Image".to_string()),
+                            title: self
+                                .image_info
+                                .clone()
+                                .unwrap_or_else(|| "System Image".to_string()),
                             image: self.registry_uri.clone(),
                             tag: v.version.clone(),
                             digest: v.revision.clone(),
                             deployed: format!("Available · {}", date_str),
-                            deployed_full: format!("Built: {} · {}", date_str, v.created.format("%H:%M UTC")),
+                            deployed_full: format!(
+                                "Built: {} · {}",
+                                date_str,
+                                v.created.format("%H:%M UTC")
+                            ),
                             size: "—".to_string(),
                             kernel: v.kernel.clone(),
                             package_count: 0,
@@ -2121,7 +2161,8 @@ impl SimpleComponent for StatusView {
                     self.expanded_deployment_id.as_deref(),
                     &sender,
                 );
-                self.images_count_label.set_label(&format!("{} images", self.deployments.len()));
+                self.images_count_label
+                    .set_label(&format!("{} images", self.deployments.len()));
             }
 
             StatusViewInput::AvailableTagsLoaded(tags) => {
@@ -2169,9 +2210,10 @@ impl SimpleComponent for StatusView {
                     self.seg_progress.set_module_active(key);
                 }
                 self.active_module = Some(key);
-                self.update_list.emit(UpdateListInput::ProcessLine(
-                    format!("Starting module: {}", key)
-                ));
+                self.update_list.emit(UpdateListInput::ProcessLine(format!(
+                    "Starting module: {}",
+                    key
+                )));
             }
 
             StatusViewInput::ModuleFinished(module, status) => {
@@ -2410,9 +2452,7 @@ fn get_cached_bootc_status() -> Option<Value> {
             .args(["--host", "bootc", "status", "--json"])
             .output()
     } else {
-        Command::new("bootc")
-            .args(["status", "--json"])
-            .output()
+        Command::new("bootc").args(["status", "--json"]).output()
     };
 
     let output = output_result.ok()?;
@@ -2442,8 +2482,7 @@ fn detect_bootc_image_info() -> Option<(String, String, String)> {
         .enable_all()
         .build()
         .ok()?;
-    let image = rt
-        .block_on(async { crate::service::global().current_image().await.ok() })?;
+    let image = rt.block_on(async { crate::service::global().current_image().await.ok() })?;
 
     let title = format!("{}/{}", image.org, image.image);
     let registry_uri = format!("{}/{}/{}", image.registry, image.org, image.image);
@@ -2540,12 +2579,23 @@ fn get_last_update_time() -> Option<String> {
 
 fn parse_image_ref_fields(img_ref: &str) -> (String, String, String) {
     if img_ref.is_empty() {
-        return ("Unknown".to_string(), "latest".to_string(), "unknown".to_string());
+        return (
+            "Unknown".to_string(),
+            "latest".to_string(),
+            "unknown".to_string(),
+        );
     }
     let (without_tag, tag) = img_ref.rsplit_once(':').unwrap_or((img_ref, "latest"));
     let parts: Vec<&str> = without_tag.split('/').collect();
-    let name = parts.last().map(|s| s.to_string()).unwrap_or_else(|| without_tag.to_string());
-    let org = if parts.len() >= 2 { parts[parts.len() - 2].to_string() } else { "unknown".to_string() };
+    let name = parts
+        .last()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| without_tag.to_string());
+    let org = if parts.len() >= 2 {
+        parts[parts.len() - 2].to_string()
+    } else {
+        "unknown".to_string()
+    };
     (name, tag.to_string(), org)
 }
 
@@ -2555,12 +2605,29 @@ fn get_real_deployments_from_json(json: &Value) -> Option<Vec<MockDeployment>> {
     let booted_kernel = get_host_kernel();
 
     // 1. Staged deployment
-    if let Some(staged) = status.get("staged").and_then(|v| if v.is_null() { None } else { Some(v) }) {
-        let img_ref = staged.pointer("/image/image/image").or_else(|| staged.pointer("/image/image")).and_then(|v| v.as_str()).unwrap_or("");
-        let digest = staged.pointer("/image/imageDigest").and_then(|v| v.as_str()).unwrap_or("");
-        let timestamp = staged.pointer("/image/timestamp").and_then(|v| v.as_str()).unwrap_or("");
+    if let Some(staged) = status
+        .get("staged")
+        .and_then(|v| if v.is_null() { None } else { Some(v) })
+    {
+        let img_ref = staged
+            .pointer("/image/image/image")
+            .or_else(|| staged.pointer("/image/image"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let digest = staged
+            .pointer("/image/imageDigest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let timestamp = staged
+            .pointer("/image/timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let (name, tag, org) = parse_image_ref_fields(img_ref);
-        let date_str = if timestamp.len() >= 10 { &timestamp[0..10] } else { "recently" };
+        let date_str = if timestamp.len() >= 10 {
+            &timestamp[0..10]
+        } else {
+            "recently"
+        };
 
         ds.push(MockDeployment {
             id: "d-staged".to_string(),
@@ -2580,13 +2647,33 @@ fn get_real_deployments_from_json(json: &Value) -> Option<Vec<MockDeployment>> {
     }
 
     // 2. Booted deployment
-    if let Some(booted) = status.get("booted").and_then(|v| if v.is_null() { None } else { Some(v) }) {
-        let img_ref = booted.pointer("/image/image/image").or_else(|| booted.pointer("/image/image")).and_then(|v| v.as_str()).unwrap_or("");
-        let digest = booted.pointer("/image/imageDigest").and_then(|v| v.as_str()).unwrap_or("");
-        let timestamp = booted.pointer("/image/timestamp").and_then(|v| v.as_str()).unwrap_or("");
-        let pinned = booted.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
+    if let Some(booted) = status
+        .get("booted")
+        .and_then(|v| if v.is_null() { None } else { Some(v) })
+    {
+        let img_ref = booted
+            .pointer("/image/image/image")
+            .or_else(|| booted.pointer("/image/image"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let digest = booted
+            .pointer("/image/imageDigest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let timestamp = booted
+            .pointer("/image/timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let pinned = booted
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let (name, tag, org) = parse_image_ref_fields(img_ref);
-        let date_str = if timestamp.len() >= 10 { &timestamp[0..10] } else { "recently" };
+        let date_str = if timestamp.len() >= 10 {
+            &timestamp[0..10]
+        } else {
+            "recently"
+        };
 
         ds.push(MockDeployment {
             id: "d-current".to_string(),
@@ -2606,13 +2693,33 @@ fn get_real_deployments_from_json(json: &Value) -> Option<Vec<MockDeployment>> {
     }
 
     // 3. Rollback deployment
-    if let Some(rollback) = status.get("rollback").and_then(|v| if v.is_null() { None } else { Some(v) }) {
-        let img_ref = rollback.pointer("/image/image/image").or_else(|| rollback.pointer("/image/image")).and_then(|v| v.as_str()).unwrap_or("");
-        let digest = rollback.pointer("/image/imageDigest").and_then(|v| v.as_str()).unwrap_or("");
-        let timestamp = rollback.pointer("/image/timestamp").and_then(|v| v.as_str()).unwrap_or("");
-        let pinned = rollback.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false);
+    if let Some(rollback) = status
+        .get("rollback")
+        .and_then(|v| if v.is_null() { None } else { Some(v) })
+    {
+        let img_ref = rollback
+            .pointer("/image/image/image")
+            .or_else(|| rollback.pointer("/image/image"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let digest = rollback
+            .pointer("/image/imageDigest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let timestamp = rollback
+            .pointer("/image/timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let pinned = rollback
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let (name, tag, org) = parse_image_ref_fields(img_ref);
-        let date_str = if timestamp.len() >= 10 { &timestamp[0..10] } else { "recently" };
+        let date_str = if timestamp.len() >= 10 {
+            &timestamp[0..10]
+        } else {
+            "recently"
+        };
 
         ds.push(MockDeployment {
             id: "d-rollback".to_string(),
@@ -2656,7 +2763,9 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
     if current.dry_run || current.dev_mode {
         tracing::warn!(
             "{} aborted at the last moment — settings now show dry_run={} dev_mode={}",
-            label, current.dry_run, current.dev_mode
+            label,
+            current.dry_run,
+            current.dev_mode
         );
         let abort_toast = adw::Toast::new(&format!("{label} aborted (settings now in dry-run)"));
         abort_toast.set_timeout(4);
@@ -2664,7 +2773,9 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
         return;
     }
 
-    let toast = adw::Toast::new(&format!("{label} starting… (running `bootc install reset`)"));
+    let toast = adw::Toast::new(&format!(
+        "{label} starting… (running `bootc install reset`)"
+    ));
     toast.set_timeout(4);
     toast_overlay.add_toast(toast);
 
@@ -2776,7 +2887,8 @@ fn schedule_reboot_tonight(toast_overlay: &adw::ToastOverlay) {
                     .to_string();
                 tracing::error!(
                     "Failed to schedule reboot: shutdown exited {}: {}",
-                    code, stderr_tail
+                    code,
+                    stderr_tail
                 );
                 format!("Couldn't schedule restart (exit {code}): {stderr_tail}")
             }
@@ -2955,29 +3067,29 @@ fn rebuild_history_list(
     while let Some(child) = list_box.first_child() {
         list_box.remove(&child);
     }
-    
+
     for d in deployments {
         let row_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        
+
         let row_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row_header.set_margin_start(16);
         row_header.set_margin_end(16);
         row_header.set_margin_top(12);
         row_header.set_margin_bottom(12);
-        
+
         let indicator = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let indicator_class = match d.state.as_str() {
             "current" => "deploy-indicator-current",
             "staged" => "deploy-indicator-staged",
-            "remote" => "deploy-indicator-staged",  // available to pull
+            "remote" => "deploy-indicator-staged", // available to pull
             _ => "deploy-indicator-archive",
         };
         indicator.add_css_class(indicator_class);
         row_header.append(&indicator);
-        
+
         let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
         text_box.set_hexpand(true);
-        
+
         let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name_label = gtk::Label::builder()
             .label(&d.title)
@@ -2985,7 +3097,7 @@ fn rebuild_history_list(
             .build();
         name_label.add_css_class("heading");
         title_box.append(&name_label);
-        
+
         if d.state == "current" {
             let pill = gtk::Label::new(Some("Booted"));
             pill.add_css_class("success");
@@ -3009,19 +3121,26 @@ fn rebuild_history_list(
             title_box.append(&pill);
         }
         text_box.append(&title_box);
-        
-        let digest_short = if d.digest.len() >= 12 { &d.digest[0..12] } else { &d.digest };
+
+        let digest_short = if d.digest.len() >= 12 {
+            &d.digest[0..12]
+        } else {
+            &d.digest
+        };
         let submeta_label = gtk::Label::builder()
-            .label(&format!("{}:{}  ·  {}…  ·  {}", d.image, d.tag, digest_short, d.deployed))
+            .label(&format!(
+                "{}:{}  ·  {}…  ·  {}",
+                d.image, d.tag, digest_short, d.deployed
+            ))
             .halign(gtk::Align::Start)
             .build();
         submeta_label.add_css_class("caption");
         submeta_label.add_css_class("dim-label");
         text_box.append(&submeta_label);
         row_header.append(&text_box);
-        
+
         let actions_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        
+
         let pin_btn = gtk::Button::builder()
             .icon_name("pin-symbolic")
             .tooltip_text(if d.pinned { "Unpin" } else { "Pin" })
@@ -3038,7 +3157,7 @@ fn rebuild_history_list(
         if d.state != "remote" {
             actions_box.append(&pin_btn);
         }
-        
+
         if d.state == "remote" {
             let pull_btn = gtk::Button::builder()
                 .icon_name("document-save-symbolic")
@@ -3063,49 +3182,54 @@ fn rebuild_history_list(
             });
             actions_box.append(&rb_btn);
         }
-        
+
         let is_expanded = expanded_id == Some(&d.id);
-        let chevron_icon = if is_expanded { "go-up-symbolic" } else { "go-down-symbolic" };
-        let chev_btn = gtk::Button::builder()
-            .icon_name(chevron_icon)
-            .build();
+        let chevron_icon = if is_expanded {
+            "go-up-symbolic"
+        } else {
+            "go-down-symbolic"
+        };
+        let chev_btn = gtk::Button::builder().icon_name(chevron_icon).build();
         chev_btn.add_css_class("flat");
-        
+
         let toggle_sender = sender.input_sender().clone();
         let toggle_id = d.id.clone();
         let text_click_sender = sender.input_sender().clone();
         let text_click_id = d.id.clone();
-        
+
         let gesture = gtk::GestureClick::new();
         gesture.connect_pressed(move |_, _, _, _| {
-            text_click_sender.emit(StatusViewInput::TogglePin(format!("expand:{}", text_click_id)));
+            text_click_sender.emit(StatusViewInput::TogglePin(format!(
+                "expand:{}",
+                text_click_id
+            )));
         });
         text_box.add_controller(gesture);
-        
+
         chev_btn.connect_clicked(move |_| {
             toggle_sender.emit(StatusViewInput::TogglePin(format!("expand:{}", toggle_id)));
         });
         actions_box.append(&chev_btn);
-        
+
         row_header.append(&actions_box);
         row_container.append(&row_header);
-        
+
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
         revealer.set_transition_duration(200);
         revealer.set_reveal_child(is_expanded);
-        
+
         let detail_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
         detail_box.set_margin_start(56);
         detail_box.set_margin_end(24);
         detail_box.set_margin_top(8);
         detail_box.set_margin_bottom(16);
-        
+
         let grid = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(16)
             .build();
-        
+
         let fields = [
             ("Image", d.image.as_str()),
             ("Tag", d.tag.as_str()),
@@ -3113,7 +3237,7 @@ fn rebuild_history_list(
             ("Deployed", d.deployed_full.as_str()),
             ("Kernel", d.kernel.as_str()),
         ];
-        
+
         for (row_idx, &(label, val)) in fields.iter().enumerate() {
             let lbl = gtk::Label::builder()
                 .label(label)
@@ -3121,25 +3245,25 @@ fn rebuild_history_list(
                 .build();
             lbl.add_css_class("caption");
             lbl.add_css_class("dim-label");
-            
+
             let val_lbl = gtk::Label::builder()
                 .label(val)
                 .halign(gtk::Align::Start)
                 .build();
             val_lbl.add_css_class("caption");
             val_lbl.add_css_class("monospace");
-            
+
             grid.attach(&lbl, 0, row_idx as i32, 1, 1);
             grid.attach(&val_lbl, 1, row_idx as i32, 1, 1);
         }
-        
+
         let pkg_lbl = gtk::Label::builder()
             .label("Packages")
             .halign(gtk::Align::Start)
             .build();
         pkg_lbl.add_css_class("caption");
         pkg_lbl.add_css_class("dim-label");
-        
+
         let pkg_val = gtk::Label::builder()
             .label(format!("{} installed", d.package_count))
             .halign(gtk::Align::Start)
@@ -3148,14 +3272,14 @@ fn rebuild_history_list(
         pkg_val.add_css_class("monospace");
         grid.attach(&pkg_lbl, 0, fields.len() as i32, 1, 1);
         grid.attach(&pkg_val, 1, fields.len() as i32, 1, 1);
-        
+
         let sig_lbl = gtk::Label::builder()
             .label("Signature")
             .halign(gtk::Align::Start)
             .build();
         sig_lbl.add_css_class("caption");
         sig_lbl.add_css_class("dim-label");
-        
+
         let sig_val = gtk::Label::builder()
             .label(format!("✓ Verified  ·  {}", d.signer))
             .halign(gtk::Align::Start)
@@ -3164,11 +3288,11 @@ fn rebuild_history_list(
         sig_val.add_css_class("success");
         grid.attach(&sig_lbl, 0, (fields.len() + 1) as i32, 1, 1);
         grid.attach(&sig_val, 1, (fields.len() + 1) as i32, 1, 1);
-        
+
         detail_box.append(&grid);
-        
+
         let bottom_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        
+
         if d.state == "remote" {
             let pull_btn = gtk::Button::builder()
                 .label("Pull this image")
@@ -3193,11 +3317,9 @@ fn rebuild_history_list(
             });
             bottom_actions.append(&rb_btn);
         }
-        
+
         if d.state != "current" && d.state != "remote" {
-            let def_btn = gtk::Button::builder()
-                .label("Set as default boot")
-                .build();
+            let def_btn = gtk::Button::builder().label("Set as default boot").build();
             let def_sender = sender.input_sender().clone();
             let def_d = d.clone();
             def_btn.connect_clicked(move |_| {
@@ -3205,10 +3327,8 @@ fn rebuild_history_list(
             });
             bottom_actions.append(&def_btn);
         }
-        
-        let ch_btn = gtk::Button::builder()
-            .label("View changelog")
-            .build();
+
+        let ch_btn = gtk::Button::builder().label("View changelog").build();
         ch_btn.add_css_class("flat");
         let ch_sender = sender.input_sender().clone();
         let ch_tag = d.tag.clone();
@@ -3216,14 +3336,14 @@ fn rebuild_history_list(
             ch_sender.emit(StatusViewInput::SelectChangelogVersion(ch_tag.clone()));
         });
         bottom_actions.append(&ch_btn);
-        
+
         detail_box.append(&bottom_actions);
         revealer.set_child(Some(&detail_box));
         row_container.append(&revealer);
-        
+
         let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
         row_container.append(&sep);
-        
+
         list_box.append(&row_container);
     }
 }
@@ -3259,7 +3379,10 @@ fn spawn_changelog_fetch(
 
         rt.block_on(async move {
             let total_start = std::time::Instant::now();
-            println!("[debug] changelog: starting fetch for registry_uri={}", registry_uri);
+            println!(
+                "[debug] changelog: starting fetch for registry_uri={}",
+                registry_uri
+            );
 
             // Build an ImageRef from registry_uri + selected_tag for the
             // service-layer calls. The stream-level tag (strip the date
@@ -3268,8 +3391,8 @@ fn spawn_changelog_fetch(
             // list_available_tags.
             let parts: Vec<&str> = registry_uri.split('/').collect();
             if parts.len() >= 3 {
-                let stream = strip_date_suffix(&selected_tag)
-                    .unwrap_or_else(|| selected_tag.clone());
+                let stream =
+                    strip_date_suffix(&selected_tag).unwrap_or_else(|| selected_tag.clone());
                 let image_ref = crate::service::ImageRef {
                     registry: parts[0].to_string(),
                     org: parts[1].to_string(),
@@ -3324,10 +3447,7 @@ fn spawn_changelog_fetch(
             let t_github = std::time::Instant::now();
             if let Some((org, repo)) = parse_org_repo(&registry_uri) {
                 let url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
-                println!(
-                    "[debug] changelog: phase=github_commits url={}",
-                    url
-                );
+                println!("[debug] changelog: phase=github_commits url={}", url);
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(10))
                     .user_agent("Finupdate/0.1.0")
@@ -3404,11 +3524,8 @@ fn spawn_changelog_fetch(
                         "[debug] sbom_diff: deferred fetch booted_ref={} target_ref={}",
                         booted_ref, target_ref
                     );
-                    if let Some(diff) = crate::sbom_diff::fetch_and_diff_sboms(
-                        booted_ref,
-                        target_ref,
-                    )
-                    .await
+                    if let Some(diff) =
+                        crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
                     {
                         sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
                     }
@@ -3526,10 +3643,7 @@ LOGO=bluefin
 
     #[test]
     fn os_release_missing_key_returns_none() {
-        assert_eq!(
-            parse_os_release_field(SAMPLE_OS_RELEASE, "BUILD_ID"),
-            None
-        );
+        assert_eq!(parse_os_release_field(SAMPLE_OS_RELEASE, "BUILD_ID"), None);
     }
 
     #[test]
@@ -3538,7 +3652,10 @@ LOGO=bluefin
         let content = "ID=fedora\nVARIANT=\"\"\nLOGO=fedora\n";
         assert_eq!(parse_os_release_field(content, "VARIANT"), None);
         // But ID still wins.
-        assert_eq!(parse_os_release_field(content, "ID"), Some("fedora".to_string()));
+        assert_eq!(
+            parse_os_release_field(content, "ID"),
+            Some("fedora".to_string())
+        );
     }
 
     #[test]
@@ -3546,7 +3663,10 @@ LOGO=bluefin
         // os-release CAN have duplicate keys in pathological cases — first
         // occurrence wins (matches the read order).
         let content = "ID=first\nID=second\n";
-        assert_eq!(parse_os_release_field(content, "ID"), Some("first".to_string()));
+        assert_eq!(
+            parse_os_release_field(content, "ID"),
+            Some("first".to_string())
+        );
     }
 
     // ── strip_date_suffix ────────────────────────────────────────────────
@@ -3695,7 +3815,8 @@ LOGO=bluefin
 
     #[test]
     fn deployments_parses_booted_and_rollback() {
-        let json: Value = serde_json::from_str(r#"{
+        let json: Value = serde_json::from_str(
+            r#"{
             "status": {
                 "booted": {
                     "image": {
@@ -3712,7 +3833,9 @@ LOGO=bluefin
                     }
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let deps = get_real_deployments_from_json(&json).expect("parses");
         let states: Vec<&str> = deps.iter().map(|d| d.state.as_str()).collect();
         assert!(states.contains(&"current"), "states: {states:?}");
@@ -3725,7 +3848,8 @@ LOGO=bluefin
         // The function emits in fixed order: staged, current, previous. So
         // even though staged represents "the next boot", it appears first
         // in the result vector. Verify that ordering.
-        let json: Value = serde_json::from_str(r#"{
+        let json: Value = serde_json::from_str(
+            r#"{
             "status": {
                 "staged": {
                     "image": {
@@ -3742,7 +3866,9 @@ LOGO=bluefin
                     }
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let deps = get_real_deployments_from_json(&json).expect("parses");
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].state, "staged");

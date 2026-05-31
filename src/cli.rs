@@ -56,7 +56,9 @@ fn main() -> ExitCode {
 
     service::init(service::BootcUpdaterService::new());
 
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| "help".to_string());
+    let cmd = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "help".to_string());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -268,9 +270,7 @@ async fn cmd_changelog(target_tag: Option<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-async fn fetch_recent_commits(
-    url: &str,
-) -> Result<Vec<(String, String, String)>, reqwest::Error> {
+async fn fetch_recent_commits(url: &str) -> Result<Vec<(String, String, String)>, reqwest::Error> {
     #[derive(serde::Deserialize)]
     struct GithubCommit {
         sha: String,

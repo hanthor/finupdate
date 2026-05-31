@@ -495,8 +495,7 @@ pub fn show_update_check_dialog(
                                 }
                                 let _ = line_tx.send(CheckEvent::ModuleComplete(key));
                             }
-                            ModuleStatus::UpToDate
-                            | ModuleStatus::Skipped => {
+                            ModuleStatus::UpToDate | ModuleStatus::Skipped => {
                                 let _ = line_tx.send(CheckEvent::ModuleComplete(key));
                             }
                             ModuleStatus::Failed(code) => {
@@ -631,7 +630,10 @@ mod tests {
 
     #[test]
     fn extract_recognises_brew() {
-        assert_eq!(extract_module_key_from_line("module_name=Brew"), Some("brew"));
+        assert_eq!(
+            extract_module_key_from_line("module_name=Brew"),
+            Some("brew")
+        );
     }
 
     #[test]
