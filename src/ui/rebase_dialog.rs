@@ -829,19 +829,31 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     stack.add_named(&progress_page, Some("rebasing"));
     stack.set_visible_child_name("rebasing");
 
-    // Animate the pulse + elapsed clock until the operation completes.
+    // The bar pulses until we see a parseable Fraction event from bootc; from
+    // that point on we drive `set_fraction` directly and stop pulsing. A flag
+    // shared with the pulse timer lets the progress consumer disable it.
     let start = std::time::Instant::now();
     let bar_clone = progress_bar.clone();
     let label_clone = elapsed_label.clone();
+    let known_fraction: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let known_fraction_pulse = known_fraction.clone();
     let pulse_handle: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     let pulse_handle_store = pulse_handle.clone();
     let id = glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        bar_clone.pulse();
+        if !known_fraction_pulse.get() {
+            bar_clone.pulse();
+        }
         let secs = start.elapsed().as_secs();
         label_clone.set_text(&format!("Elapsed: {}:{:02}", secs / 60, secs % 60));
         glib::ControlFlow::Continue
     });
     *pulse_handle_store.borrow_mut() = Some(id);
+
+    // Cross-thread channel for streaming BootcProgress events from the
+    // subprocess reader (background thread) to the GTK main loop where the
+    // ProgressBar lives. std::sync::mpsc is enough here — we drain it from a
+    // glib timeout below.
+    let (prog_tx_std, prog_rx_std) = std::sync::mpsc::channel::<BootcProgress>();
 
     let result_slot: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let result_bg = result_slot.clone();
@@ -853,9 +865,47 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
             .expect("tokio runtime");
 
         rt.block_on(async move {
-            let result = run_bootc_switch(&full_ref).await;
+            // tokio mpsc bridges the async readers to a sync channel the GTK
+            // thread can poll. Each parsed BootcProgress flows: stdout/stderr
+            // reader → tokio channel → forwarder → std::sync::mpsc → GTK.
+            let (tokio_tx, mut tokio_rx) =
+                tokio::sync::mpsc::unbounded_channel::<BootcProgress>();
+            let prog_tx_std_inner = prog_tx_std.clone();
+            let forward = tokio::spawn(async move {
+                while let Some(p) = tokio_rx.recv().await {
+                    let _ = prog_tx_std_inner.send(p);
+                }
+            });
+            let result = run_bootc_switch(&full_ref, tokio_tx).await;
+            let _ = forward.await;
             *result_bg.lock().unwrap() = Some(result);
         });
+    });
+
+    let progress_page_for_status = progress_page.clone();
+    let bar_for_progress = progress_bar.clone();
+    let known_fraction_for_progress = known_fraction.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+        // Drain everything currently in the queue so a burst of layer events
+        // doesn't lag behind. We don't break on Empty — that just means no
+        // new events yet, keep the timer going.
+        loop {
+            match prog_rx_std.try_recv() {
+                Ok(BootcProgress::Fraction { current, total }) => {
+                    known_fraction_for_progress.set(true);
+                    let frac = (current as f64) / (total as f64);
+                    bar_for_progress.set_fraction(frac.clamp(0.0, 1.0));
+                }
+                Ok(BootcProgress::Status(s)) => {
+                    progress_page_for_status.set_description(Some(&s));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break;
+                }
+            }
+        }
+        glib::ControlFlow::Continue
     });
 
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
@@ -912,26 +962,135 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     });
 }
 
-async fn run_bootc_switch(full_ref: &str) -> Result<(), String> {
-    let status = if is_flatpak() {
+/// One progress update parsed from a single `bootc switch` output line.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BootcProgress {
+    /// Layer-count fraction (e.g. "Layer 3/12" → 3/12 = 0.25).
+    Fraction { current: u32, total: u32 },
+    /// A human-readable status label to show under the progress bar
+    /// (e.g. "Pulling…", "Importing…", "Staging deployment…").
+    Status(String),
+}
+
+/// Parse a single line of `bootc switch` output for progress signal.
+///
+/// `bootc` doesn't have a stable machine-readable progress format, so this
+/// is best-effort against the patterns we observe:
+///   - `Layer N/M ...`            → Fraction
+///   - `Pulled N/M layers`        → Fraction
+///   - `N of M layers pulled`     → Fraction (alternative phrasing)
+///   - lines starting with `Pulling` / `Fetching` / `Importing` /
+///     `Staging` / `Writing`     → Status (so the page description tracks
+///     the current high-level phase even when we can't extract a fraction)
+///
+/// Returns `None` for any line that doesn't match — the caller treats those
+/// as "no signal, keep the bar pulsing" rather than letting them disrupt the
+/// last-known progress.
+fn parse_bootc_progress(line: &str) -> Option<BootcProgress> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Look for any "N/M" token where both sides are integers and N <= M.
+    // bootc's output uses this for layer pulls. We don't require an explicit
+    // "Layer" prefix because the wording has drifted across releases.
+    for token in trimmed.split_ascii_whitespace() {
+        if let Some((a, b)) = token.split_once('/') {
+            if let (Ok(current), Ok(total)) = (a.parse::<u32>(), b.parse::<u32>()) {
+                if total > 0 && current <= total && total <= 1_000 {
+                    return Some(BootcProgress::Fraction { current, total });
+                }
+            }
+        }
+    }
+
+    // Fall back to phase-label detection. First word match is enough.
+    let first_word = trimmed
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(|c: char| !c.is_alphabetic());
+    let phase = match first_word.to_ascii_lowercase().as_str() {
+        "pulling" => Some("Pulling new image layers…"),
+        "fetching" => Some("Fetching image…"),
+        "importing" => Some("Importing layers…"),
+        "staging" => Some("Staging deployment…"),
+        "writing" => Some("Writing deployment…"),
+        "deploying" => Some("Deploying…"),
+        _ => None,
+    };
+    phase.map(|s| BootcProgress::Status(s.to_string()))
+}
+
+/// Spawn `bootc switch`, stream stdout+stderr line-by-line, parse progress,
+/// and forward each parsed event to the caller via `progress_tx`. Returns the
+/// final result.
+///
+/// Splitting capture+parse out of `run_rebase` keeps the UI plumbing (timeouts,
+/// widget updates) free of subprocess details, and lets us unit-test
+/// [`parse_bootc_progress`] separately.
+async fn run_bootc_switch(
+    full_ref: &str,
+    progress_tx: tokio::sync::mpsc::UnboundedSender<BootcProgress>,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = if is_flatpak() {
         tokio::process::Command::new("flatpak-spawn")
             .args(["--host", "pkexec", "bootc", "switch", full_ref])
-            .status()
-            .await
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
     } else {
         tokio::process::Command::new("pkexec")
             .args(["bootc", "switch", full_ref])
-            .status()
-            .await
-    };
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    }
+    .map_err(|e| format!("Failed to spawn bootc switch: {}", e))?;
 
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!(
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let tx_out = progress_tx.clone();
+    let stdout_task = tokio::spawn(async move {
+        if let Some(stdout) = stdout {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(prog) = parse_bootc_progress(&line) {
+                    let _ = tx_out.send(prog);
+                }
+            }
+        }
+    });
+    let tx_err = progress_tx;
+    let stderr_task = tokio::spawn(async move {
+        if let Some(stderr) = stderr {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(prog) = parse_bootc_progress(&line) {
+                    let _ = tx_err.send(prog);
+                }
+            }
+        }
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for bootc switch: {}", e))?;
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
             "bootc switch exited with code {}",
-            s.code().unwrap_or(-1)
-        )),
-        Err(e) => Err(format!("Failed to run bootc switch: {}", e)),
+            status.code().unwrap_or(-1)
+        ))
     }
 }
 
@@ -1563,6 +1722,83 @@ mod tests {
         let (dx, nvidia) = derive_initial_toggle_state(&bluefin_stable_info(), Some(&img));
         assert!(!dx);
         assert!(!nvidia);
+    }
+
+    // ── parse_bootc_progress ─────────────────────────────────────────────
+    // Pins the bootc-switch stdout/stderr parsing so the layer-by-layer
+    // progress bar keeps working when bootc's output format drifts (or so we
+    // notice when it does).
+
+    #[test]
+    fn progress_parses_layer_ratio() {
+        let r = parse_bootc_progress("Layer 3/12 sha256:abc...");
+        assert_eq!(r, Some(BootcProgress::Fraction { current: 3, total: 12 }));
+    }
+
+    #[test]
+    fn progress_parses_pulled_ratio_phrasing() {
+        let r = parse_bootc_progress("Pulled 8/8 layers");
+        assert_eq!(r, Some(BootcProgress::Fraction { current: 8, total: 8 }));
+    }
+
+    #[test]
+    fn progress_extracts_ratio_anywhere_in_line() {
+        // Containers-image style: "Copying blob abc 5/12 (...) ETA 30s"
+        let r = parse_bootc_progress("Copying blob abc 5/12 12.3 MiB / 30 MiB");
+        assert_eq!(r, Some(BootcProgress::Fraction { current: 5, total: 12 }));
+    }
+
+    #[test]
+    fn progress_rejects_zero_total() {
+        // 0/0 isn't a valid fraction; ignore so we don't divide by zero later.
+        assert_eq!(parse_bootc_progress("0/0 something"), None);
+    }
+
+    #[test]
+    fn progress_rejects_inverted_ratio() {
+        // current > total is nonsense — likely matched something unrelated
+        // like a file size; bail rather than show "150% complete".
+        assert_eq!(parse_bootc_progress("Copying 100/5 something"), None);
+    }
+
+    #[test]
+    fn progress_rejects_huge_denominator() {
+        // Byte counts ("12345/67890 bytes") would set the bar bouncing all
+        // over. Cap total at 1000 — no bootc image has that many layers.
+        assert_eq!(parse_bootc_progress("123/45678 bytes"), None);
+    }
+
+    #[test]
+    fn progress_returns_status_for_pulling_lines() {
+        let r = parse_bootc_progress("Pulling manifest from ghcr.io/...");
+        assert_eq!(
+            r,
+            Some(BootcProgress::Status("Pulling new image layers…".to_string()))
+        );
+    }
+
+    #[test]
+    fn progress_returns_status_for_staging_lines() {
+        let r = parse_bootc_progress("Staging deployment for switch");
+        assert_eq!(
+            r,
+            Some(BootcProgress::Status("Staging deployment…".to_string()))
+        );
+    }
+
+    #[test]
+    fn progress_prefers_fraction_over_status_when_both_match() {
+        // "Pulling 4/8 layers" — first word matches a status, but the ratio
+        // is the more useful signal; ensure we don't lose it.
+        let r = parse_bootc_progress("Pulling 4/8 layers");
+        assert_eq!(r, Some(BootcProgress::Fraction { current: 4, total: 8 }));
+    }
+
+    #[test]
+    fn progress_ignores_unrelated_lines() {
+        assert_eq!(parse_bootc_progress(""), None);
+        assert_eq!(parse_bootc_progress("   "), None);
+        assert_eq!(parse_bootc_progress("info: starting bootc switch"), None);
     }
 
     #[test]
