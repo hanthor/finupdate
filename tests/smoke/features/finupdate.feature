@@ -397,23 +397,10 @@ Feature: Finupdate smoke tests
     * Key combo: "<Control>BackSpace"
     * Application "finupdate" is running
 
-  @live @mock_identity @buttons @powerwash @command_log
-  Scenario: Ctrl+Alt+P opens the Powerwash confirmation dialog
-    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
-    * Wait until "bluefin" appears in "finupdate" within 15 seconds
-    * Key combo: "<Control><Alt>p"
-    * Wait until "Powerwash" appears in "finupdate" within 5 seconds
-    * Key combo: "Escape"
-    * Application "finupdate" is running
-
-  @live @mock_identity @buttons @factory_reset @command_log
-  Scenario: Ctrl+Alt+F opens the Factory Reset confirmation dialog
-    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
-    * Wait until "bluefin" appears in "finupdate" within 15 seconds
-    * Key combo: "<Control><Alt>f"
-    * Wait until "Factory reset" appears in "finupdate" within 5 seconds
-    * Key combo: "Escape"
-    * Application "finupdate" is running
+  # Ctrl+Alt+P and Ctrl+Alt+F (Powerwash / Factory Reset) accelerators were
+  # deliberately removed — destructive actions don't get keyboard shortcuts.
+  # Reach them via the Advanced dialog only; coverage moved to the @advanced
+  # scenarios below.
 
   # ── Tab-navigability smoke ────────────────────────────────────────────
   # Verify the home page is reachable via Tab (the keyboard-only focus
@@ -434,6 +421,62 @@ Feature: Finupdate smoke tests
     * Key combo: "Tab"
     * Application "finupdate" is running
     * Item "Check" "button" is "showing" in "finupdate"
+
+  # ── Advanced dialog: panel actions are reachable ─────────────────────────
+  # The Advanced dialog (Ctrl+,) is the only entry point to panel-specific
+  # actions after the macOS-minimal main-page redesign. These scenarios open
+  # the dialog and assert each labelled row is enumerated, proving the
+  # System / Reset groups built by ui::preferences::build_system_group are
+  # accessible to AT-SPI.
+
+  @live @mock_identity @advanced @panel_actions
+  Scenario: Advanced dialog System group lists every navigational row
+    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
+    * Wait until "bluefin" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
+    * Wait until "Image Source" appears in "finupdate" within 5 seconds
+    * Wait until "Image History" appears in "finupdate" within 5 seconds
+    * Wait until "Rebase to Previous Version" appears in "finupdate" within 5 seconds
+
+  @live @mock_identity @advanced @reset_actions
+  Scenario: Advanced dialog Reset group lists Powerwash and Factory Reset
+    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
+    * Wait until "bluefin" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
+    * Wait until "Powerwash" appears in "finupdate" within 5 seconds
+    * Wait until "Factory Reset" appears in "finupdate" within 5 seconds
+
+  # ── Hero action button: Install drives the full update state machine ────
+  # The Hero row's "Install" button replaces the in-banner Install per the
+  # macOS-Tahoe-inspired layout. Click it and the state machine should
+  # transition Idle → Updating → (simulated) Complete. dry_run + dev_mode
+  # from mock_identity short-circuit run_simulated, so no real worker runs.
+
+  @live @mock_identity @hero @install_button
+  Scenario: Clicking the Hero Install button kicks off the simulated update
+    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
+    * Wait until "bluefin" appears in "finupdate" within 15 seconds
+    * Activate "Install" "button" in "finupdate"
+    * Wait until "installing" appears in "finupdate" within 15 seconds
+
+  # ── Non-dev-mode live test: real preflight + dry_run-guarded actions ───
+  # dev_mode=false, dry_run=true. The check button hits the actual host
+  # (Flatpak / Homebrew / Distrobox queries via uupd-compat). The Powerwash
+  # row in the Advanced dialog activates the real handler, which sees
+  # dry_run=true and short-circuits to a toast instead of running
+  # `flatpak uninstall` / `distrobox rm`. Proves the real-mode UI path is
+  # wired correctly without touching the user's apps.
+
+  @real @integration @non_destructive @advanced @powerwash_dry
+  Scenario: Powerwash row in Advanced dialog dry-runs cleanly in real mode
+    * Application "finupdate" is in real mode (developer mode disabled)
+    * Wait until "Check" "button" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control>comma"
+    * Wait until "Advanced" "dialog" appears in "finupdate"
+    * Wait until "Powerwash" appears in "finupdate" within 5 seconds
+    * Application "finupdate" is running
 
   # ── Clean shutdown ──────────────────────────────────────────────────────
 
