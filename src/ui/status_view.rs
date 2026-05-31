@@ -68,12 +68,10 @@ pub enum StatusViewInput {
     CopyLog,
     /// Navigate stack to a page name
     ShowPage(String),
-    /// Start registry URI editing
-    EditRegistryUri,
-    /// Save registry URI
+    /// Save registry URI — fired by the EntryRow's `apply` signal (Enter
+    /// or built-in ✓ button). Edit/Cancel variants were removed when the
+    /// manual Change/Save/Cancel toggle was replaced with EntryRow.
     SaveRegistryUri(String),
-    /// Cancel registry URI editing
-    CancelRegistryUri,
     /// Select tag in Image Source
     SelectTag(String),
     /// Toggle pinned status of history deployment
@@ -175,9 +173,11 @@ pub struct StatusView {
     /// Whether an update has been staged and needs a reboot.
     reboot_pending: bool,
 
-    // Redesigned settings & subpage state variables
+    // Redesigned settings & subpage state variables.
+    // `registry_editing` and `reg_edit_btn` were removed when the manual
+    // Change/Save/Cancel toggle was replaced by adw::EntryRow's built-in
+    // apply-button affordance.
     registry_uri: String,
-    registry_editing: bool,
     selected_tag: String,
     deployments: Vec<MockDeployment>,
     expanded_deployment_id: Option<String>,
@@ -186,13 +186,13 @@ pub struct StatusView {
     github_commits: Vec<(String, String, String)>,
     sbom_diff: Option<crate::sbom_diff::SbomDiffResult>,
 
-    // Redesigned settings UI widget references for dynamic updates
-    registry_label: gtk::Label,
+    // Image Source subpage widget references for dynamic updates.
+    // EntryRow keeps `text` always-editable (Apply on Enter / button click),
+    // ComboRow holds the tag selection via a StringList model.
+    registry_entry_row: adw::EntryRow,
     registry_row_sub: gtk::Label,
-    registry_edit_box: gtk::Box,
-    registry_entry: gtk::Entry,
-    tag_combo: gtk::ComboBoxText,
-    tag_row: adw::ActionRow,
+    tag_row: adw::ComboRow,
+    tag_model: gtk::StringList,
     history_list_box: gtk::ListBox,
     images_count_label: gtk::Label,
     changelog_box: gtk::Box,
@@ -206,7 +206,6 @@ pub struct StatusView {
 
     // Dialog rollback state
     rollback_target: Option<MockDeployment>,
-    reg_edit_btn: gtk::Button,
     changelog_v_buttons: Vec<gtk::Button>,
 }
 
@@ -1047,94 +1046,42 @@ impl SimpleComponent for StatusView {
         settings_card.add(&auto_row);
         idle_page.add(&settings_card);
 
-        // ── Image Source Subpage ──────────────────────────────────────────
-        // Kept on ScrolledWindow+Clamp because the inline registry-edit row
-        // is a free-form gtk::Box (Entry + Save + Cancel) which can't live in
-        // an adw::PreferencesGroup. The idle and history pages are migrated
-        // to PreferencesPage; this one stays with manual chrome for now.
-        let source_page = gtk::ScrolledWindow::new();
-        source_page.set_hscrollbar_policy(gtk::PolicyType::Never);
-        source_page.set_vexpand(true);
-        let source_clamp = adw::Clamp::new();
-        source_clamp.set_maximum_size(600);
-        let source_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        source_content.set_margin_start(24);
-        source_content.set_margin_end(24);
-        source_content.set_margin_top(24);
-        source_content.set_margin_bottom(24);
-        source_clamp.set_child(Some(&source_content));
-        source_page.set_child(Some(&source_clamp));
-
-        let source_desc = gtk::Label::new(Some(
-            "Where this device pulls its OS image from. Changes apply on next update.",
-        ));
-        source_desc.add_css_class("dim-label");
-        source_desc.add_css_class("caption");
-        source_desc.set_margin_bottom(12);
-        source_content.append(&source_desc);
-
-        let source_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
+        // ── Image Source Subpage (HIG-aligned) ────────────────────────────
+        // adw::PreferencesPage + PreferencesGroup with canonical Adwaita
+        // editing widgets: adw::EntryRow for the registry URL (always-
+        // editable inline, Apply button on Enter), adw::ComboRow for the
+        // tag picker (modern replacement for the deprecated ComboBoxText).
+        // This is the same pattern gnome-control-center uses on its
+        // Network → Wi-Fi properties and Online Accounts subpages.
+        let source_page = adw::PreferencesPage::new();
+        let source_group = adw::PreferencesGroup::builder()
+            .description(
+                "Where this device pulls its OS image from. Changes apply on next update.",
+            )
             .build();
-        source_list.add_css_class("boxed-list");
 
-        // Registry row
-        let reg_row = adw::ActionRow::builder()
+        // Registry URL — adw::EntryRow with show_apply_button=true gives us
+        // a built-in ✓ apply button as suffix that fires the `apply` signal
+        // on Enter or click. Drops the entire Edit/Save/Cancel toggle dance.
+        let registry_entry_row = adw::EntryRow::builder()
             .title("Registry")
+            .text(&initial_registry_uri)
+            .show_apply_button(true)
             .build();
-        let registry_label = gtk::Label::new(Some(&initial_registry_uri));
-        registry_label.add_css_class("monospace");
-        registry_label.add_css_class("caption");
-        let reg_edit_btn = gtk::Button::with_label("Change");
-        reg_edit_btn.add_css_class("flat");
-        reg_edit_btn.add_css_class("accent");
-        let edit_sender = sender.input_sender().clone();
-        reg_edit_btn.connect_clicked(move |_| {
-            edit_sender.emit(StatusViewInput::EditRegistryUri);
-        });
-        reg_row.add_suffix(&registry_label);
-        reg_row.add_suffix(&reg_edit_btn);
-        source_list.append(&reg_row);
-
-        // Registry Edit Input row
-        let registry_entry = gtk::Entry::builder()
-            .placeholder_text(&initial_registry_uri)
-            .build();
-        registry_entry.add_css_class("entry");
-        registry_entry.set_hexpand(true);
-        let reg_save_btn = gtk::Button::with_label("Save");
-        reg_save_btn.add_css_class("suggested-action");
-        let reg_entry_clone = registry_entry.clone();
         let save_sender = sender.input_sender().clone();
-        reg_save_btn.connect_clicked(move |_| {
-            save_sender.emit(StatusViewInput::SaveRegistryUri(reg_entry_clone.text().to_string()));
+        registry_entry_row.connect_apply(move |row| {
+            save_sender.emit(StatusViewInput::SaveRegistryUri(row.text().to_string()));
         });
-        let reg_cancel_btn = gtk::Button::with_label("Cancel");
-        reg_cancel_btn.add_css_class("flat");
-        let cancel_sender = sender.input_sender().clone();
-        reg_cancel_btn.connect_clicked(move |_| {
-            cancel_sender.emit(StatusViewInput::CancelRegistryUri);
-        });
-        let registry_edit_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        registry_edit_box.set_margin_start(16);
-        registry_edit_box.set_margin_end(16);
-        registry_edit_box.set_margin_top(8);
-        registry_edit_box.set_margin_bottom(8);
-        registry_edit_box.set_visible(false);
-        registry_edit_box.append(&registry_entry);
-        registry_edit_box.append(&reg_cancel_btn);
-        registry_edit_box.append(&reg_save_btn);
-        
-        let edit_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        edit_container.append(&registry_edit_box);
-        source_list.append(&edit_container);
+        source_group.add(&registry_entry_row);
 
-        // Tag row
-        let tag_row = adw::ActionRow::builder()
+        // Tag — adw::ComboRow with a StringList model. Selection notifies
+        // via `selected-item` rather than the deprecated ComboBoxText's
+        // `changed` signal. Reads slightly cleaner and matches the rest of
+        // the app's Adwaita usage.
+        let tag_row = adw::ComboRow::builder()
             .title("Tag")
             .subtitle("Always the newest stable release")
             .build();
-        let tag_combo = gtk::ComboBoxText::new();
         let tags = if let Some(config) = read_bootc_image_info_config() {
             config.tags
         } else {
@@ -1147,30 +1094,31 @@ impl SimpleComponent for StatusView {
                 vec!["latest".to_string()]
             }
         };
-
+        let tag_model = gtk::StringList::new(&[]);
         for t in &tags {
-            tag_combo.append(Some(t), &format!(":{}", t));
+            tag_model.append(t);
         }
-
-        let active_tag = if tags.iter().any(|t| t == &initial_selected_tag) {
-            Some(initial_selected_tag.as_str())
-        } else {
-            tags.first().map(|t| t.as_str())
-        };
-        tag_combo.set_active_id(active_tag);
+        tag_row.set_model(Some(&tag_model));
+        let initial_idx = tags
+            .iter()
+            .position(|t| t == &initial_selected_tag)
+            .unwrap_or(0) as u32;
+        tag_row.set_selected(initial_idx);
+        // Disable until the background fetch fills in real tags.
+        tag_row.set_sensitive(tags.len() > 1);
         let select_sender = sender.input_sender().clone();
-        tag_combo.connect_changed(move |combo| {
-            if let Some(id) = combo.active_id() {
-                select_sender.emit(StatusViewInput::SelectTag(id.to_string()));
+        tag_row.connect_selected_notify(move |row| {
+            if let Some(item) = row.selected_item() {
+                if let Some(s) = item.downcast_ref::<gtk::StringObject>() {
+                    select_sender.emit(StatusViewInput::SelectTag(s.string().to_string()));
+                }
             }
         });
-        tag_combo.set_valign(gtk::Align::Center);
-        // Disable until the background fetch fills in real tags.
-        tag_combo.set_sensitive(tags.len() > 1);
-        tag_row.add_suffix(&tag_combo);
-        source_list.append(&tag_row);
+        source_group.add(&tag_row);
 
-        // Signature row
+        // Signature row (read-only — sigstore policy is set at deployment
+        // time, not via this UI). Plain ActionRow with a colored caption
+        // suffix label, matching control-center About's "property" rows.
         let sig_row = adw::ActionRow::builder()
             .title("Require signed images")
             .subtitle("Only install images signed by the publisher.")
@@ -1180,9 +1128,9 @@ impl SimpleComponent for StatusView {
         sig_badge.add_css_class("caption");
         sig_badge.set_valign(gtk::Align::Center);
         sig_row.add_suffix(&sig_badge);
-        source_list.append(&sig_row);
+        source_group.add(&sig_row);
 
-        source_content.append(&source_list);
+        source_page.add(&source_group);
         root.add_named(&source_page, Some("source"));
 
         // ── Version History Subpage ──────────────────────────────────────
@@ -1401,7 +1349,6 @@ impl SimpleComponent for StatusView {
             reboot_pending: false,
 
             registry_uri: initial_registry_uri.clone(),
-            registry_editing: false,
             selected_tag: initial_selected_tag.clone(),
             deployments: get_sample_deployments(false),
             expanded_deployment_id: None,
@@ -1410,12 +1357,10 @@ impl SimpleComponent for StatusView {
             github_commits: Vec::new(),
             sbom_diff: None,
 
-            registry_label,
+            registry_entry_row: registry_entry_row.clone(),
             registry_row_sub: registry_row_sub.clone(),
-            registry_edit_box: registry_edit_box.clone(),
-            registry_entry: registry_entry.clone(),
-            tag_combo: tag_combo.clone(),
             tag_row: tag_row.clone(),
+            tag_model: tag_model.clone(),
             history_list_box: history_list_box.clone(),
             images_count_label,
             changelog_box: changelog_box.clone(),
@@ -1427,7 +1372,6 @@ impl SimpleComponent for StatusView {
             changelog_commit_box: changelog_commit_box.clone(),
             changelog_install_bar: changelog_install_bar.clone(),
             rollback_target: None,
-            reg_edit_btn: reg_edit_btn.clone(),
             changelog_v_buttons,
         };
 
@@ -1627,35 +1571,31 @@ impl SimpleComponent for StatusView {
                 let _ = sender.output(StatusViewOutput::PageChanged(page));
             }
 
-            StatusViewInput::EditRegistryUri => {
-                self.registry_editing = true;
-                self.registry_edit_box.set_visible(true);
-                self.reg_edit_btn.set_visible(false);
-                self.registry_entry.set_text(&self.registry_uri);
-            }
-
             StatusViewInput::SaveRegistryUri(uri) => {
+                // Fired by adw::EntryRow's `apply` signal — on Enter or click
+                // of the built-in ✓ button. No separate edit/cancel state to
+                // manage; the row is always editable inline.
                 if !uri.trim().is_empty() {
                     self.registry_uri = uri;
-                    self.registry_label.set_label(&self.registry_uri);
-                    
-                    let name = self.registry_uri.split('/').last().unwrap_or(&self.registry_uri);
-                    self.registry_row_sub.set_label(&format!("{}:{}", name, self.selected_tag));
+                    self.registry_entry_row.set_text(&self.registry_uri);
+
+                    let name = self
+                        .registry_uri
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&self.registry_uri);
+                    self.registry_row_sub
+                        .set_label(&format!("{}:{}", name, self.selected_tag));
 
                     let toast = adw::Toast::new("Image source updated");
                     self.toast_overlay.add_toast(toast);
 
-                    spawn_changelog_fetch(self.registry_uri.clone(), self.selected_tag.clone(), sender.clone());
+                    spawn_changelog_fetch(
+                        self.registry_uri.clone(),
+                        self.selected_tag.clone(),
+                        sender.clone(),
+                    );
                 }
-                self.registry_editing = false;
-                self.registry_edit_box.set_visible(false);
-                self.reg_edit_btn.set_visible(true);
-            }
-
-            StatusViewInput::CancelRegistryUri => {
-                self.registry_editing = false;
-                self.registry_edit_box.set_visible(false);
-                self.reg_edit_btn.set_visible(true);
             }
 
             StatusViewInput::SelectTag(tag) => {
@@ -1948,19 +1888,20 @@ impl SimpleComponent for StatusView {
             }
 
             StatusViewInput::AvailableTagsLoaded(tags) => {
-                self.tag_combo.remove_all();
+                // Repopulate the StringList model in-place. ComboRow rebuilds
+                // its dropdown from the model automatically.
+                while self.tag_model.n_items() > 0 {
+                    self.tag_model.remove(0);
+                }
                 for t in &tags {
-                    self.tag_combo.append(Some(t), &format!(":{}", t));
+                    self.tag_model.append(t);
                 }
-                let active = tags
+                let active_idx = tags
                     .iter()
-                    .find(|t| *t == &self.selected_tag)
-                    .or_else(|| tags.first())
-                    .map(|t| t.as_str());
-                if let Some(id) = active {
-                    self.tag_combo.set_active_id(Some(id));
-                }
-                self.tag_combo.set_sensitive(tags.len() > 1);
+                    .position(|t| t == &self.selected_tag)
+                    .unwrap_or(0) as u32;
+                self.tag_row.set_selected(active_idx);
+                self.tag_row.set_sensitive(tags.len() > 1);
             }
 
             StatusViewInput::GithubCommitsLoaded(commits) => {
