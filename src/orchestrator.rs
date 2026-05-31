@@ -76,7 +76,11 @@ pub async fn run(
     let (tx, rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        let mut cmd = build_runner_command();
+        // Honour the user's "Include app updates" toggle (Preferences →
+        // Updates group). When OFF, the runner script skips flatpak / brew /
+        // distrobox and only refreshes the bootc system image.
+        let include_app_updates = crate::settings::Settings::load().include_app_updates;
+        let mut cmd = build_runner_command(!include_app_updates);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -174,7 +178,17 @@ pub async fn run(
 /// a host-visible temp file, then invoke that path with pkexec. The temp
 /// file is named with a `finupdate-runner-` prefix so the polkit rules
 /// (`/etc/polkit-1/rules.d/49-finupdate.rules`) match it by name.
-fn build_runner_command() -> Command {
+fn build_runner_command(system_only: bool) -> Command {
+    // When system_only is true, the runner script skips flatpak/brew/distrobox
+    // and only refreshes the bootc image. pkexec strips most env vars by
+    // default, so we pass FINUPDATE_SYSTEM_ONLY *through* pkexec via the
+    // `env KEY=VAL CMD` idiom rather than relying on env inheritance.
+    let env_prefix = if system_only {
+        "env FINUPDATE_SYSTEM_ONLY=1 "
+    } else {
+        ""
+    };
+
     if is_flatpak() {
         let script_body = std::fs::read_to_string("/app/bin/finupdate-runner")
             .unwrap_or_else(|_| {
@@ -185,14 +199,16 @@ fn build_runner_command() -> Command {
         // on stdin) to a host /tmp file under a polkit-friendly name, then
         // pkexec's the result. Trailing `rm` keeps /tmp tidy. Pipe the script
         // body via env var so we don't need stdin plumbing.
-        let driver = r#"
+        let driver = format!(
+            r#"
 set -e
 TMPFILE=$(mktemp /tmp/finupdate-runner-XXXXXX.sh)
 trap 'rm -f "$TMPFILE"' EXIT
 printf '%s' "$FINUPDATE_RUNNER_BODY" > "$TMPFILE"
 chmod +x "$TMPFILE"
-pkexec "$TMPFILE"
-"#;
+pkexec {env_prefix}"$TMPFILE"
+"#
+        );
         let mut cmd = Command::new("flatpak-spawn");
         cmd.arg("--host")
             .arg(format!("--env=FINUPDATE_RUNNER_BODY={}", script_body))
@@ -204,6 +220,9 @@ pkexec "$TMPFILE"
         // Native build / dev: PATH lookup. `cargo install --path .` or the
         // meson install both put `finupdate-runner` on PATH.
         let mut cmd = Command::new("pkexec");
+        if system_only {
+            cmd.arg("env").arg("FINUPDATE_SYSTEM_ONLY=1");
+        }
         cmd.arg("finupdate-runner");
         cmd
     }

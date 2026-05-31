@@ -38,7 +38,11 @@ pub fn show_preferences(
     let shared = Rc::new(RefCell::new(settings));
 
     let dialog = adw::PreferencesDialog::new();
-    dialog.set_title("Preferences");
+    // Title says "Advanced" rather than "Preferences" because this dialog
+    // now hosts actions (Powerwash, Factory Reset, etc.) in addition to
+    // settings — "Preferences" undersold its role after the main page was
+    // pared back to just Check + Automatic Updates.
+    dialog.set_title("Advanced");
     dialog.set_search_enabled(false);
 
     // ── Page ─────────────────────────────────────────────────────────────
@@ -49,7 +53,10 @@ pub fn show_preferences(
 
     build_updates_group(&page, &shared, &dialog);
     build_network_group(&page, &shared);
-    build_developer_group(&page, &shared);
+    // Developer-mode + simulator are CLI-only now (`finupdate --dev-mode`,
+    // `finupdate --sim=<scenario>`); the toggle no longer appears in this
+    // dialog. The build_developer_group fn is kept around in case dev
+    // testing wants it back, but it isn't called.
 
     dialog.add(&page);
 
@@ -106,6 +113,27 @@ fn build_updates_group(
         });
     }
     group.add(&auto_row);
+
+    // "Include app updates" — when off, the updater only refreshes the bootc
+    // image and skips Flatpak / Homebrew / Distrobox. Default on for parity
+    // with uupd's standard behaviour; off mirrors macOS's "system only"
+    // update split and lets power users manage app updates separately.
+    let apps_row = {
+        let s = shared.borrow();
+        adw::SwitchRow::builder()
+            .title("Include App Updates")
+            .subtitle("Refresh Flatpaks, Homebrew, and Distrobox containers alongside the bootc image")
+            .active(s.include_app_updates)
+            .build()
+    };
+    {
+        let shared = shared.clone();
+        apps_row.connect_active_notify(move |row| {
+            shared.borrow_mut().include_app_updates = row.is_active();
+            shared.borrow().save();
+        });
+    }
+    group.add(&apps_row);
 
     // "Configure automatic updates" — pushes a subpage that edits /etc/uupd/config.json.
     // Only shown when uupd is installed (the config file only matters then).

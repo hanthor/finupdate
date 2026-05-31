@@ -54,6 +54,10 @@ pub enum StatusViewInput {
     PreflightResult(PreflightStatus),
     /// Dismiss the staged reboot banner.
     DismissBanner,
+    /// Hero action button clicked — dispatch to StartUpdate or Reboot based
+    /// on current state. The single inline button does double duty per the
+    /// macOS Tahoe "Install" / "Restart" pattern on the Software Update card.
+    HeroActionClicked,
     /// Copy log to clipboard.
     CopyLog,
     /// Navigate stack to a page name
@@ -128,6 +132,13 @@ pub struct StatusView {
     hero_row: adw::ActionRow,
     /// Status pill shown in the hero row suffix.
     status_pill: gtk::Label,
+    /// Primary action button in the hero row — "Install" or "Restart"
+    /// depending on state, hidden when neither applies. macOS Tahoe-inspired
+    /// layout: put the CTA inline on the hero card.
+    hero_action_btn: gtk::Button,
+    /// (i) info button in the hero row — opens the changelog page. Always
+    /// visible when an image is loaded.
+    hero_info_btn: gtk::Button,
     /// Banner group shown when action is needed.
     update_banner_group: adw::PreferencesGroup,
     /// Banner row with dynamic title/subtitle.
@@ -249,6 +260,35 @@ impl StatusView {
         self.status_pill.set_label(pill_text);
         self.status_pill.add_css_class(pill_class);
 
+        // ── Hero-row action button + info icon ────────────────────────────
+        // Inline-CTA pattern from macOS Tahoe Software Update: action button
+        // sits on the same row as the OS identity, label swaps by state.
+        // - update available → "Install" (.suggested-action)
+        // - reboot pending  → "Restart"  (.suggested-action)
+        // - up-to-date / checking → hidden, status_pill takes the slot
+        //
+        // hero_info_btn (the (i) circle) is always visible — same "more info"
+        // affordance macOS shows next to the version line.
+        self.hero_info_btn.set_visible(true);
+        if self.reboot_pending {
+            self.hero_action_btn.set_label("Restart");
+            self.hero_action_btn.set_visible(true);
+            self.status_pill.set_visible(false);
+        } else if matches!(self.preflight_status, PreflightStatus::UpdateAvailable) {
+            self.hero_action_btn.set_label("Install");
+            self.hero_action_btn.set_visible(true);
+            self.status_pill.set_visible(false);
+        } else {
+            self.hero_action_btn.set_visible(false);
+            self.status_pill.set_visible(true);
+        }
+
+        // ── Banner group (description + Discard, less prominent) ──────────
+        // Kept around the staged-reboot flow because Discard doesn't belong
+        // in the compact hero row. Install / Restart from the banner are
+        // hidden — those now live on the hero. We keep banner_install_btn
+        // and banner_restart_btn invisible permanently so the layout stays
+        // simple; remove their construction next pass if confirmed unused.
         if self.reboot_pending {
             self.update_banner_group.set_visible(true);
             self.banner_title_row.set_title("Reboot to finish updating");
@@ -256,15 +296,15 @@ impl StatusView {
                 .set_subtitle("A new image is staged and will be used on next boot.");
             self.banner_install_btn.set_visible(false);
             self.banner_whats_new_btn.set_visible(false);
-            self.banner_restart_btn.set_visible(true);
+            self.banner_restart_btn.set_visible(false);
             self.banner_discard_btn.set_visible(true);
         } else if matches!(self.preflight_status, PreflightStatus::UpdateAvailable) {
             self.update_banner_group.set_visible(true);
             self.banner_title_row.set_title("Update available");
             self.banner_title_row
                 .set_subtitle("A new system image is ready to install.");
-            self.banner_install_btn.set_visible(true);
-            self.banner_whats_new_btn.set_visible(true);
+            self.banner_install_btn.set_visible(false);
+            self.banner_whats_new_btn.set_visible(false);
             self.banner_restart_btn.set_visible(false);
             self.banner_discard_btn.set_visible(false);
         } else {
@@ -821,52 +861,86 @@ impl SimpleComponent for StatusView {
         hero_icon.add_css_class("accent");
         hero_row.add_prefix(&hero_icon);
 
-        // Status indicator on the hero row — plain colored caption text (no
-        // pill background). gnome-control-center About uses the same idiom:
-        // colored text for state, no pill chrome around it.
+        // macOS Tahoe-inspired layout: action buttons live inline on the hero
+        // row, not in a separate banner. Status text + buttons share the
+        // suffix area; update()'s state machine toggles which controls show.
+        //
+        // Status indicator — plain colored caption text. gnome-control-center
+        // About uses the same idiom for state. Shown when idle / checking /
+        // up-to-date; hidden when action buttons take its place.
         let status_pill = gtk::Label::new(Some("Checking"));
         status_pill.add_css_class("caption");
         status_pill.add_css_class("dim-label");
         status_pill.set_valign(gtk::Align::Center);
         hero_row.add_suffix(&status_pill);
+
+        // (i) info icon button — replaces the old "What's new" text button.
+        // Same affordance as macOS Tahoe Software Update's info circle: a
+        // small round flat button that opens the changelog detail page.
+        let hero_info_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
+        hero_info_btn.add_css_class("flat");
+        hero_info_btn.add_css_class("circular");
+        hero_info_btn.set_tooltip_text(Some("What's new in this version"));
+        hero_info_btn.set_valign(gtk::Align::Center);
+        hero_info_btn.set_visible(false);
+        let initial_selected_tag_2 = initial_selected_tag.clone();
+        let whats_new_sender = sender.input_sender().clone();
+        hero_info_btn.connect_clicked(move |_| {
+            let ver = initial_selected_tag_2.clone();
+            whats_new_sender.emit(StatusViewInput::SelectChangelogVersion(ver));
+        });
+        hero_row.add_suffix(&hero_info_btn);
+
+        // Primary action button — Install when an update is available, Restart
+        // when a deployment is staged for reboot. Same widget, label/handler
+        // swap in update().
+        let hero_action_btn = gtk::Button::with_label("Install");
+        hero_action_btn.add_css_class("suggested-action");
+        hero_action_btn.set_valign(gtk::Align::Center);
+        hero_action_btn.set_visible(false);
+        // Single click handler, state-aware dispatch in update(). Avoids the
+        // bookkeeping of swapping closures when the label flips Install↔Restart.
+        let hero_action_sender = sender.input_sender().clone();
+        hero_action_btn.connect_clicked(move |_| {
+            hero_action_sender.emit(StatusViewInput::HeroActionClicked);
+        });
+        hero_row.add_suffix(&hero_action_btn);
+
         hero_group.add(&hero_row);
         idle_page.add(&hero_group);
 
+        // Banner group (visually distinct second card) is kept for the
+        // descriptive paragraph + Discard action when a deployment is staged
+        // — the things that don't fit in the compact hero suffix area.
         let update_banner_group = adw::PreferencesGroup::new();
         let banner_title_row = adw::ActionRow::builder()
             .title("Update available")
             .subtitle("A new system image is ready to install.")
             .build();
         banner_title_row.set_activatable(false);
-        
-        // Symbolic icon in accent color — no custom rounded background, same
-        // as gnome-control-center's row-prefix icons.
+
         let banner_icon = gtk::Image::from_icon_name("software-update-available-symbolic");
         banner_icon.set_pixel_size(24);
         banner_icon.add_css_class("accent");
         banner_title_row.add_prefix(&banner_icon);
 
-        // Each button is added as a direct suffix (not nested inside a Box) so
-        // it shows up as an individual accessible child of the ActionRow in the
-        // AT-SPI tree. Box-wrapping silently drops children from a11y enumeration.
+        // Keep restart + discard as banner-row suffixes so the staged-reboot
+        // flow keeps its prominent buttons. Install moved to the hero row.
         let banner_whats_new_btn = gtk::Button::with_label("What's new");
         banner_whats_new_btn.add_css_class("flat");
         banner_whats_new_btn.add_css_class("accent");
-        let initial_selected_tag_2 = initial_selected_tag.clone();
-        let whats_new_sender = sender.input_sender().clone();
+        let initial_selected_tag_3 = initial_selected_tag.clone();
+        let whats_new_sender_2 = sender.input_sender().clone();
         banner_whats_new_btn.connect_clicked(move |_| {
-            let ver = initial_selected_tag_2.clone();
-            whats_new_sender.emit(StatusViewInput::SelectChangelogVersion(ver));
+            let ver = initial_selected_tag_3.clone();
+            whats_new_sender_2.emit(StatusViewInput::SelectChangelogVersion(ver));
         });
 
         let banner_install_btn = gtk::Button::with_label("Install");
-        // ActionRow suffix CTA — matches gnome-control-center About "Donate"
-        // button: .suggested-action only, no .pill (rectangle with rounded
-        // corners, not full pill shape).
         banner_install_btn.add_css_class("suggested-action");
-        let install_sender = sender.output_sender().clone();
+        let install_sender_2 = sender.output_sender().clone();
         banner_install_btn.connect_clicked(move |_| {
-            let _ = install_sender.send(StatusViewOutput::StartUpdate);
+            let _ = install_sender_2.send(StatusViewOutput::StartUpdate);
         });
 
         let banner_restart_btn = gtk::Button::with_label("Restart");
@@ -919,93 +993,31 @@ impl SimpleComponent for StatusView {
         });
         auto_row.add_suffix(&auto_update_switch);
 
-        // Registry/Image source row
-        let source_row = adw::ActionRow::builder()
-            .title("Image _source")
-            .activatable(true)
-            .use_underline(true)
-            .build();
-        source_row.set_accessible_role(gtk::AccessibleRole::Button);
-        let source_sub_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let registry_row_sub = gtk::Label::new(Some(&format!("{}:{}", initial_registry_uri, initial_selected_tag)));
+        // ── Main page is intentionally minimal ────────────────────────────
+        // Per user direction (macOS Software Update model): only Check +
+        // Automatic Updates on the main view. Image Source / Image History /
+        // Powerwash / Factory Reset all move to the hamburger menu (still
+        // one click away). Keeps the visual focus on "do I need to update?".
+        //
+        // The widgets below (source_row, history_row, powerwash_row,
+        // factory_row, registry_row_sub, images_count_label) are still
+        // constructed because the model fields reference them and update()
+        // mutates their labels — but they're NOT added to idle_page, so they
+        // never render on the main view. They live as orphaned widgets that
+        // accept set_label calls; cheap and avoids a bigger refactor of the
+        // update() method's text-mutation paths.
+        let registry_row_sub = gtk::Label::new(Some(&format!(
+            "{}:{}",
+            initial_registry_uri, initial_selected_tag
+        )));
         registry_row_sub.add_css_class("dim-label");
-        let source_chev = gtk::Image::from_icon_name("go-next-symbolic");
-        source_chev.add_css_class("dim-label");
-        source_sub_box.append(&registry_row_sub);
-        source_sub_box.append(&source_chev);
-        source_row.add_suffix(&source_sub_box);
-        let source_sender = sender.input_sender().clone();
-        source_row.connect_activated(move |_| {
-            source_sender.emit(StatusViewInput::ShowPage("source".to_string()));
-        });
-
-        // Image history row
-        let history_row = adw::ActionRow::builder()
-            .title("Image _history")
-            .activatable(true)
-            .use_underline(true)
-            .build();
-        history_row.set_accessible_role(gtk::AccessibleRole::Button);
-        let history_sub_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let images_count_label = gtk::Label::new(Some("3 versions"));
         images_count_label.add_css_class("dim-label");
-        let history_chev = gtk::Image::from_icon_name("go-next-symbolic");
-        history_chev.add_css_class("dim-label");
-        history_sub_box.append(&images_count_label);
-        history_sub_box.append(&history_chev);
-        history_row.add_suffix(&history_sub_box);
-        let history_sender = sender.input_sender().clone();
-        history_row.connect_activated(move |_| {
-            history_sender.emit(StatusViewInput::ShowPage("history".to_string()));
-        });
 
         let settings_card = adw::PreferencesGroup::new();
         settings_card.add(&check_row);
         settings_card.add(&auto_row);
-        settings_card.add(&source_row);
-        settings_card.add(&history_row);
         idle_page.add(&settings_card);
-
-        // Reset Card (Powerwash & Factory reset).
-        // accessible_role=Button so dogtail's `.left_click()` sees these as
-        // buttons (the default ListItem role doesn't expose an activate
-        // action). Mirrors the CcListRow pattern from gnome-control-center
-        // (accessible-role: button on every activatable Adw.ActionRow).
-        let powerwash_row = adw::ActionRow::builder()
-            .title("_Powerwash")
-            .subtitle("Reset settings and apps; keep files")
-            .activatable(true)
-            .use_underline(true)
-            .build();
-        powerwash_row.set_accessible_role(gtk::AccessibleRole::Button);
-        let pw_chev = gtk::Image::from_icon_name("go-next-symbolic");
-        pw_chev.add_css_class("dim-label");
-        powerwash_row.add_suffix(&pw_chev);
-        let pw_sender = sender.input_sender().clone();
-        powerwash_row.connect_activated(move |_| {
-            pw_sender.emit(StatusViewInput::TogglePin("powerwash".to_string()));
-        });
-
-        let factory_row = adw::ActionRow::builder()
-            .title("_Factory reset")
-            .subtitle("Erase everything and start fresh")
-            .activatable(true)
-            .use_underline(true)
-            .build();
-        factory_row.set_accessible_role(gtk::AccessibleRole::Button);
-        factory_row.add_css_class("destructive-title");
-        let fact_chev = gtk::Image::from_icon_name("go-next-symbolic");
-        fact_chev.add_css_class("dim-label");
-        factory_row.add_suffix(&fact_chev);
-        let fact_sender = sender.input_sender().clone();
-        factory_row.connect_activated(move |_| {
-            fact_sender.emit(StatusViewInput::TogglePin("factory".to_string()));
-        });
-
-        let reset_card = adw::PreferencesGroup::new();
-        reset_card.add(&powerwash_row);
-        reset_card.add(&factory_row);
-        idle_page.add(&reset_card);
 
         // ── Image Source Subpage ──────────────────────────────────────────
         // Kept on ScrolledWindow+Clamp because the inline registry-edit row
@@ -1343,6 +1355,8 @@ impl SimpleComponent for StatusView {
             idle_page,
             hero_row,
             status_pill,
+            hero_action_btn,
+            hero_info_btn,
             update_banner_group,
             banner_title_row,
             banner_install_btn,
@@ -1531,6 +1545,19 @@ impl SimpleComponent for StatusView {
                 self.reboot_pending = false;
                 self.preflight_status = PreflightStatus::UpToDate;
                 self.refresh_idle_description();
+            }
+
+            StatusViewInput::HeroActionClicked => {
+                // Single-button dispatch: Restart when a deployment is
+                // staged for reboot, otherwise StartUpdate. update() also
+                // hides the button when neither state holds, so we
+                // shouldn't reach this branch in that case — but route
+                // through StartUpdate as the safer fallback.
+                if self.reboot_pending {
+                    let _ = sender.output(StatusViewOutput::Reboot);
+                } else {
+                    let _ = sender.output(StatusViewOutput::StartUpdate);
+                }
             }
 
             StatusViewInput::CopyLog => {

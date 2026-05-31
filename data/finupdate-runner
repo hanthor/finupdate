@@ -13,6 +13,12 @@ set -u
 
 emit() { printf '===%s===\n' "$1"; }
 
+# When FINUPDATE_SYSTEM_ONLY=1 (set by the "Include app updates" toggle in
+# Preferences), skip flatpak / brew / distrobox and only refresh the system
+# image. The marker stream still emits the per-module headers as `skipped`
+# so the orchestrator's state machine doesn't have to special-case this.
+SYSTEM_ONLY="${FINUPDATE_SYSTEM_ONLY:-0}"
+
 # ── System (bootc / rpm-ostree) ───────────────────────────────────────────────
 emit MODULE:system
 if command -v bootc >/dev/null 2>&1; then
@@ -28,7 +34,10 @@ fi
 
 # ── Flatpak ───────────────────────────────────────────────────────────────────
 emit MODULE:flatpak
-if command -v flatpak >/dev/null 2>&1; then
+if [ "$SYSTEM_ONLY" = "1" ]; then
+    echo "flatpak: skipped (system-only mode)"
+    emit MODULE:flatpak:skipped
+elif command -v flatpak >/dev/null 2>&1; then
     flatpak update -y --noninteractive
     emit "MODULE:flatpak:done:$?"
 else
@@ -38,35 +47,43 @@ fi
 
 # ── Homebrew ──────────────────────────────────────────────────────────────────
 emit MODULE:brew
-BREW_BIN=""
-for candidate in \
-    /home/linuxbrew/.linuxbrew/bin/brew \
-    /usr/local/bin/brew \
-    /opt/homebrew/bin/brew; do
-    if [ -x "$candidate" ]; then
-        BREW_BIN="$candidate"
-        break
-    fi
-done
+if [ "$SYSTEM_ONLY" = "1" ]; then
+    echo "brew: skipped (system-only mode)"
+    emit MODULE:brew:skipped
+else
+    BREW_BIN=""
+    for candidate in \
+        /home/linuxbrew/.linuxbrew/bin/brew \
+        /usr/local/bin/brew \
+        /opt/homebrew/bin/brew; do
+        if [ -x "$candidate" ]; then
+            BREW_BIN="$candidate"
+            break
+        fi
+    done
 
-if [ -n "$BREW_BIN" ]; then
-    # brew must run as the real user, not root — find the first human user.
-    BREW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }')
-    if [ -n "$BREW_USER" ]; then
-        su - "$BREW_USER" -c "$BREW_BIN upgrade --quiet"
-        emit "MODULE:brew:done:$?"
+    if [ -n "$BREW_BIN" ]; then
+        # brew must run as the real user, not root — find the first human user.
+        BREW_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }')
+        if [ -n "$BREW_USER" ]; then
+            su - "$BREW_USER" -c "$BREW_BIN upgrade --quiet"
+            emit "MODULE:brew:done:$?"
+        else
+            echo "brew: could not determine non-root user — skipping"
+            emit MODULE:brew:skipped
+        fi
     else
-        echo "brew: could not determine non-root user — skipping"
+        echo "brew: not found — skipping"
         emit MODULE:brew:skipped
     fi
-else
-    echo "brew: not found — skipping"
-    emit MODULE:brew:skipped
 fi
 
 # ── Distrobox ─────────────────────────────────────────────────────────────────
 emit MODULE:distrobox
-if command -v distrobox >/dev/null 2>&1; then
+if [ "$SYSTEM_ONLY" = "1" ]; then
+    echo "distrobox: skipped (system-only mode)"
+    emit MODULE:distrobox:skipped
+elif command -v distrobox >/dev/null 2>&1; then
     distrobox upgrade --all
     emit "MODULE:distrobox:done:$?"
 else

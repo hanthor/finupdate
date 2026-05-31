@@ -222,16 +222,25 @@ impl SimpleComponent for App {
     }
 
     menu! {
+        // Hamburger menu. Per macOS Software Update mental model, the main
+        // page shows only Check + Automatic Updates. Everything else lives
+        // here — one click away but off the primary visual focus.
+        //
+        // Developer-mode and simulator toggles moved out entirely; those are
+        // now CLI args (--dev-mode, --sim=<scenario>) since the GUI menu
+        // shouldn't expose dev-only state to end users.
         main_menu: {
-            "_Preferences" => PreferencesAction,
-            "_Developer Mode" => DeveloperModeAction,
             section! {
-                "Simulate _Success" => SimSuccessAction,
-                "Simulate _Failure" => SimFailureAction,
-                "Simulate Already _Up To Date" => SimUpToDateAction,
+                "Image _Source…" => ShowSourcePageAction,
+                "Image _History…" => ShowHistoryPageAction,
+                "_Rebase to Previous Version…" => RebaseAction,
             },
             section! {
-                "_Rebase to Previous Version…" => RebaseAction,
+                "_Powerwash…" => PowerwashAction,
+                "_Factory Reset…" => FactoryResetAction,
+            },
+            section! {
+                "_Advanced…" => PreferencesAction,
             },
             section! {
                 "_About Finupdate" => AboutAction,
@@ -261,6 +270,10 @@ impl SimpleComponent for App {
                     StatusViewOutput::OpenCheckDialog => AppMsg::OpenCheckDialog,
                     StatusViewOutput::PageChanged(page) => AppMsg::PageChanged(page),
                 });
+        // Capture the sender now so we can wire it into menu-driven actions
+        // below — the controller itself gets moved into the model and won't
+        // be borrowable from action closures otherwise.
+        let status_view_sender = status_view.sender().clone();
 
         let toast_overlay = adw::ToastOverlay::new();
         let header_bar = adw::HeaderBar::new();
@@ -329,17 +342,6 @@ impl SimpleComponent for App {
             })
         };
 
-        // Stateful checkmark toggle for developer mode in the hamburger menu.
-        let dev_mode_action: RelmAction<DeveloperModeAction> = {
-            let sender = sender.input_sender().clone();
-            let initial = model.settings.dev_mode;
-            RelmAction::new_stateful(&initial, move |_, state: &mut bool| {
-                let new_state = !*state;
-                *state = new_state;
-                sender.emit(AppMsg::ToggleDevMode(new_state));
-            })
-        };
-
         let rebase_action: RelmAction<RebaseAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
@@ -347,24 +349,25 @@ impl SimpleComponent for App {
             })
         };
 
-        let sim_success_action: RelmAction<SimSuccessAction> = {
-            let sender = sender.input_sender().clone();
+        // Image Source / Image History menu entries — push the StatusView
+        // stack to the corresponding subpage. Same code path the old in-page
+        // ActionRow used; just driven from the menu now since the rows were
+        // removed from the main page. The sender was captured before
+        // status_view was moved into the model.
+        let source_page_action: RelmAction<ShowSourcePageAction> = {
+            let s = status_view_sender.clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::SetSimScenario(SimulationScenario::Success));
+                s.emit(crate::ui::status_view::StatusViewInput::ShowPage(
+                    "source".to_string(),
+                ));
             })
         };
-
-        let sim_failure_action: RelmAction<SimFailureAction> = {
-            let sender = sender.input_sender().clone();
+        let history_page_action: RelmAction<ShowHistoryPageAction> = {
+            let s = status_view_sender.clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::SetSimScenario(SimulationScenario::Failure));
-            })
-        };
-
-        let sim_uptodate_action: RelmAction<SimUpToDateAction> = {
-            let sender = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::SetSimScenario(SimulationScenario::AlreadyUpToDate));
+                s.emit(crate::ui::status_view::StatusViewInput::ShowPage(
+                    "history".to_string(),
+                ));
             })
         };
 
@@ -373,11 +376,9 @@ impl SimpleComponent for App {
         group.add_action(preferences_action);
         group.add_action(quit_action);
         group.add_action(shortcuts_action);
-        group.add_action(dev_mode_action);
         group.add_action(rebase_action);
-        group.add_action(sim_success_action);
-        group.add_action(sim_failure_action);
-        group.add_action(sim_uptodate_action);
+        group.add_action(source_page_action);
+        group.add_action(history_page_action);
 
         let install_action: RelmAction<InstallAction> = {
             let sender = sender.input_sender().clone();
@@ -1114,9 +1115,6 @@ relm4::new_stateless_action!(PreferencesAction, WindowActionGroup, "preferences"
 relm4::new_stateless_action!(QuitAction, WindowActionGroup, "quit");
 relm4::new_stateless_action!(ShortcutsAction, WindowActionGroup, "show-shortcuts");
 relm4::new_stateless_action!(RebaseAction, WindowActionGroup, "rebase-history");
-relm4::new_stateless_action!(SimSuccessAction, WindowActionGroup, "sim-success");
-relm4::new_stateless_action!(SimFailureAction, WindowActionGroup, "sim-failure");
-relm4::new_stateless_action!(SimUpToDateAction, WindowActionGroup, "sim-uptodate");
 relm4::new_stateless_action!(InstallAction, WindowActionGroup, "install");
 // Banner button & dangerous-action accelerators — see AppMsg variant docs for
 // why these exist (libadwaita ActionRow doesn't expose suffix buttons in the
@@ -1126,7 +1124,9 @@ relm4::new_stateless_action!(RestartAction, WindowActionGroup, "restart");
 relm4::new_stateless_action!(DismissBannerAction, WindowActionGroup, "dismiss-banner");
 relm4::new_stateless_action!(PowerwashAction, WindowActionGroup, "powerwash");
 relm4::new_stateless_action!(FactoryResetAction, WindowActionGroup, "factory-reset");
-relm4::new_stateful_action!(DeveloperModeAction, WindowActionGroup, "dev-mode", (), bool);
+// Subpage-navigation menu entries.
+relm4::new_stateless_action!(ShowSourcePageAction, WindowActionGroup, "show-source");
+relm4::new_stateless_action!(ShowHistoryPageAction, WindowActionGroup, "show-history");
 
 fn inject_app_css() {
     // Minimal CSS layer. Status colours, banner icons, and hero icons now use

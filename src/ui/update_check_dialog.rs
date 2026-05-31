@@ -144,13 +144,16 @@ pub fn show_update_check_dialog(
     subtitle.set_halign(gtk::Align::Start);
     subtitle.set_margin_bottom(16);
 
-    // Progress bar
+    // No top-level progress bar — per-row spinners + check icons already
+    // signal progress, and the user's directive was "one progress bar across
+    // the app" (which lives on the Updating page during install). The
+    // progress_bar widget is still allocated below as an orphan so the
+    // existing update_progress() / s.progress_bar.set_fraction() call sites
+    // don't have to change; it just never reaches a parent container.
     let progress_bar = gtk::ProgressBar::new();
-    progress_bar.set_margin_bottom(20);
 
     content.append(&title_label);
     content.append(&subtitle);
-    content.append(&progress_bar);
 
     // Source rows in a ListBox
     let list_box = gtk::ListBox::new();

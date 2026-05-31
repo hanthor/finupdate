@@ -94,6 +94,18 @@ pub struct Settings {
     /// reboot/rebase.
     #[serde(default)]
     pub dry_run: bool,
+    /// When true (default), the updater also refreshes Flatpaks, Homebrew,
+    /// and Distrobox containers along with the bootc system image. When
+    /// false, only the system image is updated — useful for users who manage
+    /// app updates separately (Software, brew upgrade, etc.). The toggle is
+    /// honoured by the finupdate-runner shell script via the
+    /// `FINUPDATE_SYSTEM_ONLY` env var.
+    #[serde(default = "default_true")]
+    pub include_app_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -111,6 +123,7 @@ impl Default for Settings {
             dev_mode: is_dev_build,
             mock_identity: None,
             dry_run: false,
+            include_app_updates: true,
         }
     }
 }
@@ -211,6 +224,7 @@ mod tests {
                 booted_at: None,
             }),
             dry_run: true,
+            include_app_updates: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
@@ -221,6 +235,17 @@ mod tests {
         assert_eq!(back.dev_mode, original.dev_mode);
         assert_eq!(back.mock_identity, original.mock_identity);
         assert_eq!(back.dry_run, original.dry_run);
+        assert_eq!(back.include_app_updates, original.include_app_updates);
+    }
+
+    #[test]
+    fn settings_include_app_updates_defaults_true_when_missing() {
+        // Existing settings.json files (pre-include_app_updates) should load
+        // unchanged with the new field defaulting to true — keeps current
+        // behaviour for upgraders.
+        let json = r#"{"auto_updates":true,"update_interval":"daily","pause_on_metered":true,"custom_interval_hours":6,"dev_mode":false}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(s.include_app_updates);
     }
 
     #[test]
