@@ -439,7 +439,9 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        unsafe {
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        }
 
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let mut rx = run(cancel_rx).await;
@@ -449,7 +451,9 @@ mod tests {
             events.push(ev);
         }
 
-        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        unsafe {
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        }
 
         assert!(!events.is_empty());
 
@@ -498,7 +502,9 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        unsafe {
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        }
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let mut rx = run(cancel_rx).await;
@@ -517,7 +523,9 @@ mod tests {
             }
         }
 
-        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        unsafe {
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        }
         assert!(got_error);
     }
 
@@ -539,7 +547,9 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        unsafe {
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        }
 
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let mut rx = run(cancel_rx).await;
@@ -551,7 +561,9 @@ mod tests {
             }
         }
 
-        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        unsafe {
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        }
         assert!(got_uptodate);
     }
 
@@ -573,7 +585,9 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        unsafe {
+            std::env::set_var("FINUPDATE_TEST_MOCK_RUNNER", &path);
+        }
 
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let mut rx = run(cancel_rx).await;
@@ -586,7 +600,9 @@ mod tests {
             }
         }
 
-        std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        unsafe {
+            std::env::remove_var("FINUPDATE_TEST_MOCK_RUNNER");
+        }
         assert!(got_error);
     }
 }
