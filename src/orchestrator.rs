@@ -435,7 +435,8 @@ mod tests {
         )
         .unwrap();
 
-        let path = mock_script.path().to_path_buf();
+        let temp_path = mock_script.into_temp_path();
+        let path = temp_path.to_path_buf();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -499,7 +500,8 @@ mod tests {
         )
         .unwrap();
 
-        let path = mock_script.path().to_path_buf();
+        let temp_path = mock_script.into_temp_path();
+        let path = temp_path.to_path_buf();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -545,7 +547,8 @@ mod tests {
         )
         .unwrap();
 
-        let path = mock_script.path().to_path_buf();
+        let temp_path = mock_script.into_temp_path();
+        let path = temp_path.to_path_buf();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -584,7 +587,8 @@ mod tests {
         )
         .unwrap();
 
-        let path = mock_script.path().to_path_buf();
+        let temp_path = mock_script.into_temp_path();
+        let path = temp_path.to_path_buf();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
