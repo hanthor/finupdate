@@ -62,6 +62,9 @@ bench-network ref:
 test-strict-count families="":
     #!/usr/bin/env bash
     set -uo pipefail
+    # qecore leaves GNOME Shell in unsafe_mode after every scenario;
+    # ensure we reset it even if the loop is Ctrl+C'd mid-family.
+    trap 'just _reset-unsafe-mode' EXIT
     list="{{ families }}"
     if [ -z "$list" ]; then
         list="bluefin bluefin-nvidia-open bluefin-dx bluefin-dx-nvidia-open \
@@ -146,18 +149,49 @@ install-polkit:
     sudo chmod 644 /etc/polkit-1/rules.d/49-finupdate.rules
     @echo 
 
+# Reset GNOME Shell's unsafe_mode to false. qecore flips it on at the
+# start of every scenario for AT-SPI introspection, but its teardown
+# doesn't always reliably reset it — leaving the host shell in unsafe
+# mode after a test run (or a crashed scenario). Manual recovery is
+# Alt+F2 → `lg` → `global.context.unsafe_mode = false`; this recipe is
+# the headless equivalent.
+#
+# Uses Eval, which itself requires unsafe_mode — that's fine because
+# we only need to call it WHEN unsafe_mode is already on. Once it's
+# off, further Eval calls would fail; we don't need any more.
+_reset-unsafe-mode:
+    @gdbus call --session --dest org.gnome.Shell \
+        --object-path /org/gnome/Shell \
+        --method org.gnome.Shell.Eval \
+        'global.context.unsafe_mode = false; ""' \
+        > /dev/null 2>&1 || true
+    @echo "✓ GNOME Shell unsafe_mode disabled"
+
 # Run dogtail/behave GUI tests against the *currently installed* Flatpak,
 # inside the current GNOME Wayland session. Requires:
 #   - The Devel Flatpak is installed (`just flatpak` first).
 #   - You're running an active GNOME session (or `qecore-headless` — see gui-test-headless).
 #   - org.gnome.desktop.interface toolkit-accessibility is true.
+#
+# Always resets GNOME Shell unsafe_mode on exit (success or failure) via
+# a bash EXIT trap — qecore leaves the host shell in unsafe mode otherwise.
 gui-test suite="smoke" tags="":
+    #!/usr/bin/env bash
+    set -e
+    trap 'just _reset-unsafe-mode' EXIT
     cd tests/{{ suite }} && behave features/ {{ if tags != "" { "--tags " + tags } else { "" } }}
 
 # Run the GUI tests inside an isolated headless Wayland session via
 # qecore-headless. This is what CI uses; DO NOT run on developer machines.
 # Use `just gui-test` instead to test against your actual GNOME session.
+#
+# The reset trap is here too in case the inner session bleeds back into
+# the host shell — qecore-headless usually isolates fully but the reset
+# is harmless when unsafe_mode is already off.
 _gui-test-headless suite="smoke" tags="":
+    #!/usr/bin/env bash
+    set -e
+    trap 'just _reset-unsafe-mode' EXIT
     qecore-headless --session-type wayland --session-desktop gnome \
         "bash -lc 'cd tests/{{ suite }} && behave features/ {{ if tags != "" { "--tags " + tags } else { "" } }}'"
 
