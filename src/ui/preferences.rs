@@ -355,26 +355,15 @@ fn build_system_group(
     }
     group.add(&source_row);
 
-    // Image History — navigates to the history subpage.
-    let history_row = make_row(
-        "Image History",
-        "Previous deployments and rollback options",
-    );
-    {
-        let s = sender.clone();
-        let d = dialog.clone();
-        history_row.connect_activated(move |_| {
-            s.emit(AppMsg::ShowStatusPage("history".to_string()));
-            d.close();
-        });
-    }
-    group.add(&history_row);
-
-    // Rebase to Previous Version — opens the modal rebase dialog. Closes the
-    // Advanced dialog first so the rebase dialog isn't stacked on top.
+    // Image History & Rollback — unified entry point that opens the rebase
+    // modal. Per user direction the old separate "Image History" subpage
+    // (a list of on-disk deployments) was redundant with the rebase
+    // dialog's calendar of available rollback targets; one row covers both.
+    // The rebase dialog itself surfaces past versions and lets the user
+    // pick one to roll back to.
     let rebase_row = make_row(
-        "Rebase to Previous Version…",
-        "Pick a date and switch the system image",
+        "Image History & Rollback…",
+        "Browse previous builds and roll back the system image",
     );
     {
         let s = sender.clone();

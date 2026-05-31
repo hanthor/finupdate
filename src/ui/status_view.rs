@@ -2131,20 +2131,41 @@ fn read_image_info() -> Option<String> {
 }
 
 fn read_logo_icon_name() -> String {
-    let candidates = ["/run/host/etc/os-release", "/etc/os-release"];
-    for path in &candidates {
+    // Read LOGO= from os-release first — gets us the distro's branded icon
+    // (e.g. "bluefin", "dakota", "fedora-logo") when the icon theme actually
+    // ships it. Fall through to a safe fallback chain if not.
+    let mut candidates: Vec<String> = Vec::new();
+    for path in &["/run/host/etc/os-release", "/etc/os-release"] {
         if let Ok(content) = std::fs::read_to_string(path) {
             for line in content.lines() {
                 if let Some(v) = line.strip_prefix("LOGO=") {
                     let logo = v.trim_matches('"').to_string();
                     if !logo.is_empty() {
-                        return logo;
+                        candidates.push(logo);
                     }
                 }
             }
         }
     }
-    "distributor-logo-symbolic".to_string()
+    // Always-available GNOME fallbacks. `distributor-logo-symbolic` is the
+    // freedesktop spec name; `computer-symbolic` is guaranteed by Adwaita.
+    candidates.push("distributor-logo-symbolic".to_string());
+    candidates.push("computer-symbolic".to_string());
+
+    // Pick the first candidate the icon theme actually has, so we never
+    // render a blank prefix on the hero row. Falls back to the literal
+    // "computer-symbolic" string if no display is available (shouldn't
+    // happen at runtime — GTK requires a display — but keeps the function
+    // total for tests).
+    if let Some(display) = gtk::gdk::Display::default() {
+        let theme = gtk::IconTheme::for_display(&display);
+        for c in &candidates {
+            if theme.has_icon(c) {
+                return c.clone();
+            }
+        }
+    }
+    "computer-symbolic".to_string()
 }
 
 use std::sync::Mutex;
