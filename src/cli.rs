@@ -29,14 +29,18 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 finupdate-cli — headless image queries via the UpdaterService trait.
 
-Usage: finupdate-cli <command>
+Usage: finupdate-cli <command> [args]
 
 Commands:
-  status    Show the currently-booted image
-  family    Show the detected family and available feature toggles
-  versions  List recent dated versions for the booted image
-  tags      List published tags for the booted image's stream
-  help      Print this help
+  status              Show the currently-booted image
+  family              Show the detected family and available feature toggles
+  versions            List recent dated versions for the booted image
+  tags                List published tags for the booted image's stream
+  changelog [tag]     Print recent GitHub commits + SBOM package diff
+                      between the booted image and the named tag (defaults
+                      to the booted tag — useful for previewing what an
+                      Install would actually change).
+  help                Print this help
 
 Environment:
   FINUPDATE_IMAGE   Override detected image (registry/org/image:tag)
@@ -67,6 +71,10 @@ fn main() -> ExitCode {
         "family" => rt.block_on(cmd_family()),
         "versions" => rt.block_on(cmd_versions()),
         "tags" => rt.block_on(cmd_tags()),
+        "changelog" => {
+            let target_tag = std::env::args().nth(2);
+            rt.block_on(cmd_changelog(target_tag))
+        }
         other => {
             eprintln!("finupdate-cli: unknown command '{}'\n", other);
             eprint!("{}", USAGE);
@@ -174,4 +182,118 @@ async fn cmd_tags() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn cmd_changelog(target_tag: Option<String>) -> ExitCode {
+    let svc = service::global();
+    let booted = match svc.current_image().await {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("finupdate-cli: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let target_tag = target_tag.unwrap_or_else(|| booted.tag.clone());
+    println!(
+        "Changelog for {}/{}/{}:",
+        booted.registry, booted.org, booted.image
+    );
+    println!("  booted tag: {}", booted.tag);
+    println!("  target tag: {}", target_tag);
+    println!();
+
+    // GitHub commits (same source the GUI's "What's new" page uses). Recent
+    // 30; users pipe through head if they want fewer.
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/commits",
+        booted.org, booted.image
+    );
+    println!("== Recent commits ({}) ==", url);
+    match fetch_recent_commits(&url).await {
+        Ok(commits) if !commits.is_empty() => {
+            for (sha, message, author) in commits.iter().take(30) {
+                let short = &sha[..sha.len().min(8)];
+                let summary = message.lines().next().unwrap_or("");
+                println!("  {}  {}  ({})", short, summary, author);
+            }
+        }
+        Ok(_) => println!("  (no commits returned)"),
+        Err(e) => println!("  (fetch failed: {})", e),
+    }
+    println!();
+
+    // SBOM diff. Skip if the booted and target tags are identical — there's
+    // nothing to compare.
+    if booted.tag == target_tag {
+        println!("== SBOM diff ==");
+        println!("  (booted == target; no diff to compute)");
+        return ExitCode::SUCCESS;
+    }
+    let booted_ref = format!(
+        "{}/{}/{}:{}",
+        booted.registry, booted.org, booted.image, booted.tag
+    );
+    let target_ref = format!(
+        "{}/{}/{}:{}",
+        booted.registry, booted.org, booted.image, target_tag
+    );
+    println!("== SBOM package diff ({} → {}) ==", booted_ref, target_ref);
+    match sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await {
+        Some(diff) => {
+            if diff.upgraded.is_empty() && diff.added.is_empty() && diff.removed.is_empty() {
+                println!("  (no package changes)");
+            } else {
+                if !diff.upgraded.is_empty() {
+                    println!("  Upgraded ({}):", diff.upgraded.len());
+                    for p in &diff.upgraded {
+                        println!("    {}  {} → {}", p.name, p.old_version, p.new_version);
+                    }
+                }
+                if !diff.added.is_empty() {
+                    println!("  Added ({}):", diff.added.len());
+                    for p in &diff.added {
+                        println!("    {}  {}", p.name, p.new_version);
+                    }
+                }
+                if !diff.removed.is_empty() {
+                    println!("  Removed ({}):", diff.removed.len());
+                    for name in &diff.removed {
+                        println!("    {}", name);
+                    }
+                }
+            }
+        }
+        None => println!("  (couldn't fetch SBOMs — neither image may publish SPDX referrers)"),
+    }
+    ExitCode::SUCCESS
+}
+
+async fn fetch_recent_commits(
+    url: &str,
+) -> Result<Vec<(String, String, String)>, reqwest::Error> {
+    #[derive(serde::Deserialize)]
+    struct GithubCommit {
+        sha: String,
+        commit: CommitDetails,
+    }
+    #[derive(serde::Deserialize)]
+    struct CommitDetails {
+        message: String,
+        author: AuthorDetails,
+    }
+    #[derive(serde::Deserialize)]
+    struct AuthorDetails {
+        name: String,
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("finupdate-cli/0.1.0")
+        .build()
+        .unwrap_or_default();
+    let commits_json: Vec<GithubCommit> = client.get(url).send().await?.json().await?;
+    Ok(commits_json
+        .into_iter()
+        .map(|c| (c.sha, c.commit.message, c.commit.author.name))
+        .collect())
 }

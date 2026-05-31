@@ -235,36 +235,25 @@ impl StatusView {
     }
 
     fn idle_subtitle(&self) -> String {
+        // Per user direction: "Booted 3 days ago" wasn't insightful. Prefer
+        // "VERSION · shaXXXXXXXX" from bootc-status (read_booted_image_summary)
+        // so the user can see exactly which build is on disk. Falls back
+        // through the cached last-update text, then a generic message.
         if self.reboot_pending {
-            "Reboot to update".to_string()
-        } else {
-            self.last_update_text
-                .clone()
-                .unwrap_or_else(|| "Booted 3 days ago".to_string())
+            return "Reboot to update".to_string();
         }
+        read_booted_image_summary()
+            .or_else(|| self.last_update_text.clone())
+            .unwrap_or_else(|| "Current image".to_string())
     }
 
     fn refresh_idle_description(&self) {
         self.hero_row.set_title(&self.hero_title());
-        
-        let tag = if self.reboot_pending {
-            // Try to derive version from the staged deployment
-            self.deployments
-                .iter()
-                .find(|d| d.state == "staged")
-                .map(|d| d.tag.as_str())
-                .unwrap_or(&self.selected_tag)
-        } else {
-            &self.selected_tag
-        };
-        let tag_display = if tag.chars().all(|c| c.is_ascii_digit()) {
-            format!("Version {}  ·  ", tag)
-        } else if tag == "latest" {
-            String::new()
-        } else {
-            format!("{}  ·  ", tag)
-        };
-        self.hero_row.set_subtitle(&format!("{}{}", tag_display, self.idle_subtitle()));
+        // Hero subtitle is the booted image summary (version · sha). The
+        // previous code prefixed it with a tag-display ("latest · " or
+        // "Version 43 · ") which was redundant with the version string in
+        // the summary itself.
+        self.hero_row.set_subtitle(&self.idle_subtitle());
 
         for class in ["accent", "success", "warning", "dim-label"] {
             self.status_pill.remove_css_class(class);
@@ -292,31 +281,34 @@ impl StatusView {
         //
         // hero_info_btn (the (i) circle) is always visible — same "more info"
         // affordance macOS shows next to the version line.
+        // Hero row info button is always visible — it's the "About this
+        // image" affordance (navigates to Image Source), distinct from the
+        // Update Available banner's (i) which shows changelog content.
         self.hero_info_btn.set_visible(true);
+
+        // Hero action buttons (Install / Restart / Restart Tonight) are now
+        // RESERVED for the reboot_pending state per user direction. When an
+        // update is merely available (not yet installed), the action lives
+        // on the banner row below. Hero stays minimal: just identity + (i).
         if self.reboot_pending {
             self.hero_action_btn.set_label("Restart");
             self.hero_action_btn.set_visible(true);
-            // "Restart Tonight" only when there's something staged to boot
-            // into — otherwise it'd just schedule a noop reboot.
             self.hero_schedule_btn.set_visible(true);
-            self.status_pill.set_visible(false);
-        } else if matches!(self.preflight_status, PreflightStatus::UpdateAvailable) {
-            self.hero_action_btn.set_label("Install");
-            self.hero_action_btn.set_visible(true);
-            self.hero_schedule_btn.set_visible(false);
             self.status_pill.set_visible(false);
         } else {
             self.hero_action_btn.set_visible(false);
             self.hero_schedule_btn.set_visible(false);
-            self.status_pill.set_visible(true);
+            self.status_pill.set_visible(
+                !matches!(self.preflight_status, PreflightStatus::UpdateAvailable),
+            );
         }
 
-        // ── Banner group (description + Discard, less prominent) ──────────
-        // Kept around the staged-reboot flow because Discard doesn't belong
-        // in the compact hero row. Install / Restart from the banner are
-        // hidden — those now live on the hero. We keep banner_install_btn
-        // and banner_restart_btn invisible permanently so the layout stays
-        // simple; remove their construction next pass if confirmed unused.
+        // ── Banner group ──────────────────────────────────────────────────
+        // The banner row now carries the Install button + a circular (i)
+        // info button for the changelog, per user direction "the install
+        // button and the light bulb may be moved down to be in the row
+        // with the update available setting". The hero row's (i) goes to
+        // Image Source instead; the banner's (i) goes to the changelog.
         if self.reboot_pending {
             self.update_banner_group.set_visible(true);
             self.banner_title_row.set_title("Reboot to finish updating");
@@ -331,8 +323,8 @@ impl StatusView {
             self.banner_title_row.set_title("Update available");
             self.banner_title_row
                 .set_subtitle("A new system image is ready to install.");
-            self.banner_install_btn.set_visible(false);
-            self.banner_whats_new_btn.set_visible(false);
+            self.banner_install_btn.set_visible(true);
+            self.banner_whats_new_btn.set_visible(true);
             self.banner_restart_btn.set_visible(false);
             self.banner_discard_btn.set_visible(false);
         } else {
@@ -871,17 +863,12 @@ impl SimpleComponent for StatusView {
         let initial_selected_tag = read_selected_tag();
         let initial_last_update = get_last_update_time();
         let auto_updates_enabled = read_auto_updates_enabled();
-        let initial_subtitle = {
-            let tag_str = if initial_selected_tag == "latest" {
-                String::new()
-            } else if !initial_selected_tag.is_empty() {
-                format!("{}  ·  ", initial_selected_tag)
-            } else {
-                String::new()
-            };
-            let update_text = initial_last_update.as_deref().unwrap_or("");
-            format!("{}{}", tag_str, update_text)
-        };
+        // Hero subtitle on first paint: build it from the booted image
+        // summary if available (matches what idle_subtitle() returns once
+        // we hit the first state-update). Same source — bootc-status JSON.
+        let initial_subtitle = read_booted_image_summary()
+            .or_else(|| initial_last_update.clone())
+            .unwrap_or_else(|| "Current image".to_string());
 
         // adw::PreferencesPage gives us HIG-standard scrolling, clamp width,
         // and margins for free — same chrome gnome-control-center uses on its
@@ -916,20 +903,20 @@ impl SimpleComponent for StatusView {
         status_pill.set_valign(gtk::Align::Center);
         hero_row.add_suffix(&status_pill);
 
-        // (i) info icon button — replaces the old "What's new" text button.
-        // Same affordance as macOS Tahoe Software Update's info circle: a
-        // small round flat button that opens the changelog detail page.
+        // Hero (i) info button — opens the Image Source subpage for the
+        // booted image (registry, tag, variant toggles, signature policy).
+        // Distinct from the Update Available row's (i) below, which shows
+        // the "what's new" changelog for the *available* update. Per user
+        // direction: top row's info button is about THIS image, banner
+        // row's is about the update being offered.
         let hero_info_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
         hero_info_btn.add_css_class("flat");
         hero_info_btn.add_css_class("circular");
-        hero_info_btn.set_tooltip_text(Some("What's new in this version"));
+        hero_info_btn.set_tooltip_text(Some("About this image"));
         hero_info_btn.set_valign(gtk::Align::Center);
-        hero_info_btn.set_visible(false);
-        let initial_selected_tag_2 = initial_selected_tag.clone();
-        let whats_new_sender = sender.input_sender().clone();
+        let image_info_sender = sender.input_sender().clone();
         hero_info_btn.connect_clicked(move |_| {
-            let ver = initial_selected_tag_2.clone();
-            whats_new_sender.emit(StatusViewInput::SelectChangelogVersion(ver));
+            image_info_sender.emit(StatusViewInput::ShowPage("source".to_string()));
         });
         hero_row.add_suffix(&hero_info_btn);
 
@@ -982,9 +969,15 @@ impl SimpleComponent for StatusView {
 
         // Keep restart + discard as banner-row suffixes so the staged-reboot
         // flow keeps its prominent buttons. Install moved to the hero row.
-        let banner_whats_new_btn = gtk::Button::with_label("What's new");
+        // (i) circular info button — matches the hero's (i) styling but is
+        // separate semantically: hero (i) = "About this image", banner (i)
+        // = "What's new in this update". Same affordance the macOS Tahoe
+        // Software Update card uses.
+        let banner_whats_new_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
         banner_whats_new_btn.add_css_class("flat");
-        banner_whats_new_btn.add_css_class("accent");
+        banner_whats_new_btn.add_css_class("circular");
+        banner_whats_new_btn.set_tooltip_text(Some("What's new in this update"));
+        banner_whats_new_btn.set_valign(gtk::Align::Center);
         let initial_selected_tag_3 = initial_selected_tag.clone();
         let whats_new_sender_2 = sender.input_sender().clone();
         banner_whats_new_btn.connect_clicked(move |_| {
@@ -2257,39 +2250,66 @@ fn apply_auto_updates_setting(active: bool) {
 /// Read the current OS image name and variant from `/etc/os-release`.
 /// Tries `/run/host/etc/os-release` first for Flatpak compatibility.
 fn read_image_info() -> Option<String> {
+    // Prefer PRETTY_NAME from os-release (e.g. "Bluefin Dakota") — that's
+    // the user-facing name distros publish for display. Falls back to
+    // detect_bootc_image_info's "org/image" title (e.g.
+    // "projectbluefin/dakota") and then to the IMAGE_ID + VARIANT_ID
+    // combo if the os-release files aren't present.
+    if let Some(pretty) = read_os_release_field("PRETTY_NAME") {
+        return Some(pretty);
+    }
+
     if let Some((title, _, _)) = detect_bootc_image_info() {
         return Some(title);
     }
 
-    // /run/host/etc/os-release is populated when the Flatpak has host filesystem access.
-    let candidates = ["/run/host/etc/os-release", "/etc/os-release"];
+    if let Some(id) = read_os_release_field("IMAGE_ID") {
+        if let Some(var) = read_os_release_field("VARIANT_ID") {
+            return Some(format!("{}  ·  {}", id, var));
+        }
+        return Some(id);
+    }
+    None
+}
 
-    for path in &candidates {
+fn read_os_release_field(key: &str) -> Option<String> {
+    let prefix = format!("{}=", key);
+    for path in &["/run/host/etc/os-release", "/etc/os-release"] {
         if let Ok(content) = std::fs::read_to_string(path) {
-            let mut image_id: Option<String> = None;
-            let mut variant_id: Option<String> = None;
-
             for line in content.lines() {
-                if let Some(v) = line.strip_prefix("IMAGE_ID=") {
-                    image_id = Some(v.trim_matches('"').to_string());
-                } else if let Some(v) = line.strip_prefix("VARIANT_ID=") {
-                    variant_id = Some(v.trim_matches('"').to_string());
+                if let Some(v) = line.strip_prefix(prefix.as_str()) {
+                    let val = v.trim_matches('"').to_string();
+                    if !val.is_empty() {
+                        return Some(val);
+                    }
                 }
-            }
-
-            let result = match (image_id, variant_id) {
-                (Some(id), Some(var)) => Some(format!("{}  ·  {}", id, var)),
-                (Some(id), None) => Some(id),
-                _ => None,
-            };
-
-            if result.is_some() {
-                return result;
             }
         }
     }
-
     None
+}
+
+/// Build a short subtitle for the hero row from bootc-status JSON:
+/// "VERSION · sha1234567" when both are available, just one when only one is.
+/// Per user direction this is more informative than "Booted N days ago".
+fn read_booted_image_summary() -> Option<String> {
+    let json = get_cached_bootc_status()?;
+    let booted = json.pointer("/status/booted")?;
+    let version = booted
+        .pointer("/image/version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let digest = booted
+        .pointer("/image/imageDigest")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.strip_prefix("sha256:").or(Some(s)))
+        .map(|s| s.chars().take(8).collect::<String>());
+    match (version, digest) {
+        (Some(v), Some(d)) => Some(format!("{}  ·  sha{}", v, d)),
+        (Some(v), None) => Some(v),
+        (None, Some(d)) => Some(format!("sha{}", d)),
+        _ => None,
+    }
 }
 
 fn read_logo_icon_name() -> String {

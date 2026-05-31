@@ -1,3 +1,8 @@
+// Used by the GUI binary only — finupdate-cli compiles the module but
+// doesn't call into it. Module-level allow to keep the multi-bin
+// warnings list manageable.
+#![allow(dead_code)]
+
 //! SBOM diff — pure-Rust OCI referrer discovery and SPDX parsing.
 //!
 //! Replaces the previous `oras` subprocess approach with `oci-client`.

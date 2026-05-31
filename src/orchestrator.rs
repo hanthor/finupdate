@@ -1,3 +1,9 @@
+// finupdate-cli compiles every module the GUI binary does but only
+// invokes a subset — the unused functions/enums here trip dead-code
+// warnings under that bin even though the GUI bin uses them. Silence
+// the noise at the module level.
+#![allow(dead_code)]
+
 //! Pure-Rust update orchestrator — replaces the host `uupd` binary.
 //!
 //! Invokes `finupdate-runner` (a small shell script bundled in `/app/bin/`)
