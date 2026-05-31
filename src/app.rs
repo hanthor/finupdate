@@ -1004,6 +1004,12 @@ impl App {
 
 /// Show the keyboard shortcuts window.
 fn show_shortcuts_window(window: &adw::ApplicationWindow) {
+    // Must list every accelerator wired in init() above — this dialog is the
+    // only place users can discover the bindings. The GUI test suite relies
+    // on `Ctrl+Shift+R` (rollback scenarios) and `Ctrl+Alt+P` /
+    // `Ctrl+Alt+F` (destructive flows); they're easy to miss without this
+    // overview. Group titles match GNOME HIG: "Application", "Updates",
+    // "System".
     let shortcuts = gtk::ShortcutsWindow::builder()
         .transient_for(window)
         .modal(true)
@@ -1014,21 +1020,52 @@ fn show_shortcuts_window(window: &adw::ApplicationWindow) {
         .visible(true)
         .build();
 
-    let group = gtk::ShortcutsGroup::builder().title("Application").build();
+    let app_group = gtk::ShortcutsGroup::builder().title("Application").build();
+    for (title, accel) in [
+        ("Preferences", "<Primary>comma"),
+        ("Keyboard Shortcuts", "<Primary>question"),
+        ("Quit", "<Primary>q"),
+    ] {
+        app_group.add_shortcut(
+            &gtk::ShortcutsShortcut::builder()
+                .title(title)
+                .accelerator(accel)
+                .build(),
+        );
+    }
+    section.add_group(&app_group);
 
-    let shortcut_quit = gtk::ShortcutsShortcut::builder()
-        .title("Quit")
-        .accelerator("<Primary>q")
-        .build();
+    let updates_group = gtk::ShortcutsGroup::builder().title("Updates").build();
+    for (title, accel) in [
+        ("Install staged update", "<Primary>i"),
+        ("What's new in this update", "<Primary>w"),
+        ("Restart to apply", "<Primary><Shift>b"),
+        ("Dismiss update banner", "<Primary>BackSpace"),
+    ] {
+        updates_group.add_shortcut(
+            &gtk::ShortcutsShortcut::builder()
+                .title(title)
+                .accelerator(accel)
+                .build(),
+        );
+    }
+    section.add_group(&updates_group);
 
-    let shortcut_shortcuts = gtk::ShortcutsShortcut::builder()
-        .title("Keyboard Shortcuts")
-        .accelerator("<Primary>question")
-        .build();
+    let system_group = gtk::ShortcutsGroup::builder().title("System").build();
+    for (title, accel) in [
+        ("Open Rebase / Version History", "<Primary><Shift>r"),
+        ("Powerwash", "<Primary><Alt>p"),
+        ("Factory Reset", "<Primary><Alt>f"),
+    ] {
+        system_group.add_shortcut(
+            &gtk::ShortcutsShortcut::builder()
+                .title(title)
+                .accelerator(accel)
+                .build(),
+        );
+    }
+    section.add_group(&system_group);
 
-    group.add_shortcut(&shortcut_quit);
-    group.add_shortcut(&shortcut_shortcuts);
-    section.add_group(&group);
     shortcuts.add_section(&section);
     shortcuts.set_visible(true);
 }
