@@ -369,6 +369,47 @@ def click_any_available_day(context):
     raise AssertionError(f"No sensitive day buttons in rebase calendar. Saw: {summary}")
 
 
+@step('Count of sensitive day buttons in the rebase calendar is at least {n:d}')
+def assert_rebase_day_count(context, n):
+    """Verify the rebase dialog's calendar has at least N selectable day
+    buttons — proves the live fetch surfaced enough rollback targets to
+    actually be useful (user direction: ≥4, ideally 8). Sensitive = the
+    underlying image version exists; insensitive grey-out cells don't count.
+    """
+    app = context.finupdate.instance
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            buttons = app.findChildren(
+                lambda node: node.roleName == "push button"
+                and (node.name or "").strip().isdigit()
+                and 1 <= int((node.name or "").strip()) <= 31
+                and bool(getattr(node, "sensitive", False))
+            )
+            if len(buttons) >= n:
+                print(f"[debug] rebase calendar: {len(buttons)} sensitive days (need ≥{n})")
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    visible = []
+    try:
+        def collect(node):
+            if node.roleName == "push button":
+                name = (node.name or "").strip()
+                if name.isdigit():
+                    sens = "✓" if getattr(node, "sensitive", False) else "✗"
+                    visible.append(f"{sens}{name}")
+            return False
+        app.findChildren(collect)
+    except Exception:
+        pass
+    raise AssertionError(
+        f"Rebase calendar reached only {len(visible)} day buttons "
+        f"(wanted ≥ {n} sensitive within 30s). Seen: {' '.join(visible[:60])}"
+    )
+
+
 @step('Click button whose label starts with "{prefix}" in "{app_id}"')
 def click_button_with_prefix(context, prefix, app_id):
     """Click the first push button whose name starts with `prefix`.

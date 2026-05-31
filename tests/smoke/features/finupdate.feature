@@ -301,6 +301,44 @@ Feature: Finupdate smoke tests
     * Application "finupdate" is running
     * Key combo: "Escape"
 
+  # Bluefin LTS shares the bluefin image with Bluefin Stable but uses
+  # different streams (lts, lts-hwe, gdx). The image-feature toggles are
+  # still DX + NVIDIA — HWE is a kernel *channel*, not a feature suffix,
+  # so it isn't exposed as a toggle in the rebase dialog (use the tag
+  # picker for that). Verifies the resolver surfaces the right toggles
+  # when the booted stream resolves to LTS.
+  @live @mock_identity @features @lts
+  Scenario: Bluefin LTS rebase dialog exposes DX + NVIDIA switches
+    * Mock identity "ghcr.io/ublue-os/bluefin:lts" is configured
+    * Wait until "bluefin" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control><Shift>r"
+    * Wait until "Developer extras (DX)" appears in "finupdate" within 20 seconds
+    * Wait until "NVIDIA" appears in "finupdate" within 5 seconds
+    * Application "finupdate" is running
+    * Key combo: "Escape"
+
+  # ── Rollback availability: at least N images selectable ────────────────
+  # Pins the practical UX guarantee from the user direction: "I should be
+  # able to roll back to at least four different images, if not eight."
+  # Counts sensitive day buttons in the calendar after the live fetch
+  # completes. Bluefin / Aurora publish daily so 8 is reasonable; Dakota
+  # mixes dated + sha tags and historically struggled to surface 4 until
+  # SHA_PROBE_CAP was raised — this scenario locks that in.
+  @live @mock_identity @rollback @rollback_count
+  Scenario Outline: Rebase calendar surfaces at least <min_count> rollback options for <family>
+    * Mock identity "<full_ref>" is configured
+    * Wait until "<image_name>" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control><Shift>r"
+    * Wait until "Version" appears in "finupdate" within 30 seconds
+    * Count of sensitive day buttons in the rebase calendar is at least <min_count>
+    * Key combo: "Escape"
+
+    Examples:
+      | family   | full_ref                              | image_name | min_count |
+      | bluefin  | ghcr.io/ublue-os/bluefin:stable       | bluefin    |         4 |
+      | aurora   | ghcr.io/ublue-os/aurora:stable        | aurora     |         4 |
+      | dakota   | ghcr.io/projectbluefin/dakota:latest  | dakota     |         4 |
+
   # ── Changelog flow: app stays stable while real GHCR + GitHub data loads ─
   # We don't assert exact rendered strings (the changelog area's AT-SPI
   # exposure is patchy under GTK4) — we assert the home-page anchors stay
@@ -319,6 +357,26 @@ Feature: Finupdate smoke tests
       | family   | full_ref                              | image_name |
       | bluefin  | ghcr.io/ublue-os/bluefin:stable       | bluefin    |
       | aurora   | ghcr.io/ublue-os/aurora:stable        | aurora     |
+      | dakota   | ghcr.io/projectbluefin/dakota:latest  | dakota     |
+
+  # ── Changelog content actually populates ──────────────────────────────
+  # The previous @changelog scenario only verified the app didn't crash
+  # during the fetch. User direction was sharper: prove the change log
+  # has CONTENT — section headings ("Upgraded packages", "Commits") plus
+  # at least one commit row (a short sha appears) — when we navigate to
+  # the changelog page after a live fetch. Open via the (i) info button
+  # on the hero (currently Ctrl+W keyboard equivalent).
+  @live @mock_identity @changelog @content
+  Scenario Outline: Changelog page populates with commits for <family>
+    * Mock identity "<full_ref>" is configured
+    * Wait until "<image_name>" appears in "finupdate" within 15 seconds
+    * Key combo: "<Control>w"
+    * Wait until "Commits" appears in "finupdate" within 45 seconds
+    * Application "finupdate" is running
+
+    Examples:
+      | family   | full_ref                              | image_name |
+      | bluefin  | ghcr.io/ublue-os/bluefin:stable       | bluefin    |
       | dakota   | ghcr.io/projectbluefin/dakota:latest  | dakota     |
 
   # "Previous image versions accessible" rollback scenario removed — it
