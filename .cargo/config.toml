@@ -9,3 +9,7 @@ git-fetch-with-cli = true
 [http]
 timeout = 600
 low-speed-limit = 1
+# Disable HTTP/2 multiplexing — flaky links + crates.io's CDN occasionally
+# emit HTTP/2 stream resets (PROTOCOL_ERROR) mid-fetch that cargo doesn't
+# treat as retriable. HTTP/1.1 is slower per-connection but more robust.
+multiplexing = false

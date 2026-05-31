@@ -30,6 +30,7 @@
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "cc",
             "CARGO_HTTP_TIMEOUT": "600",
             "CARGO_HTTP_LOW_SPEED_LIMIT": "1",
+            "CARGO_HTTP_MULTIPLEXING": "false",
             "CARGO_NET_RETRY": "10",
             "CARGO_NET_GIT_FETCH_WITH_CLI": "true"
         }
