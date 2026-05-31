@@ -1061,9 +1061,17 @@ fn populate_family_switches(
         }
 
         if supports_nvidia {
+            // Adaptive subtitle: if we detect NVIDIA hardware, call that out so
+            // the user understands why this toggle matters for them
+            // specifically. Otherwise show the generic description.
+            let nvidia_subtitle = if crate::gpu::has_nvidia_gpu() {
+                "NVIDIA GPU detected — keep on for hardware-accelerated graphics (open kernel modules preferred)"
+            } else {
+                "Picks the open kernel modules where available, falls back to the proprietary driver"
+            };
             let row = adw::SwitchRow::builder()
                 .title("NVIDIA drivers")
-                .subtitle("Picks the open kernel modules where available, falls back to the proprietary driver")
+                .subtitle(nvidia_subtitle)
                 .active(initial_nvidia)
                 .build();
             // Guard prevents the warn-and-revert path from re-firing this

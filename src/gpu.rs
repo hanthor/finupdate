@@ -12,13 +12,30 @@
 //! sandbox.
 
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Cached result of the lspci probe — the GPU complement of a running system
+/// can't change without a reboot, so once we've answered "is there an NVIDIA
+/// card" the answer is stable for the life of the process.
+///
+/// The rebase dialog's NVIDIA toggle handler calls this on every flip; without
+/// the cache each toggle would spawn an `lspci` (or `flatpak-spawn --host
+/// lspci`) subprocess. With the cache the first toggle pays ~10ms, the rest
+/// are a load from atomic memory.
+static NVIDIA_GPU_CACHE: OnceLock<bool> = OnceLock::new();
 
 /// Return true if `lspci -mm` reports an NVIDIA VGA / 3D controller.
+///
+/// Result is cached for the process lifetime — see [`NVIDIA_GPU_CACHE`].
 ///
 /// Returns false on any kind of failure (lspci missing, exit non-zero,
 /// unparseable output) — the conservative answer for a UI gate is "no
 /// warning" rather than crashing the dialog.
 pub fn has_nvidia_gpu() -> bool {
+    *NVIDIA_GPU_CACHE.get_or_init(detect_nvidia_gpu_uncached)
+}
+
+fn detect_nvidia_gpu_uncached() -> bool {
     let output = if crate::update_worker::is_flatpak() {
         Command::new("flatpak-spawn")
             .args(["--host", "lspci", "-mm"])
