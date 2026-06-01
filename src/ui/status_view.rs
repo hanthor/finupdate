@@ -911,6 +911,19 @@ impl SimpleComponent for StatusView {
         hero_icon.add_css_class("accent");
         hero_row.add_prefix(&hero_icon);
 
+        // "Change" button — opens the rebase dialog to switch to a different image.
+        // Placed in the suffix area next to the other action buttons.
+        let hero_change_btn = gtk::Button::from_icon_name("document-properties-symbolic");
+        hero_change_btn.add_css_class("flat");
+        hero_change_btn.add_css_class("circular");
+        hero_change_btn.set_tooltip_text(Some("Change image variant or stream"));
+        hero_change_btn.set_valign(gtk::Align::Center);
+        let change_sender = sender.input_sender().clone();
+        hero_change_btn.connect_clicked(move |_| {
+            change_sender.emit(StatusViewInput::ShowRebase);
+        });
+        hero_row.add_suffix(&hero_change_btn);
+
         // macOS Tahoe-inspired layout: action buttons live inline on the hero
         // row, not in a separate banner. Status text + buttons share the
         // suffix area; update()'s state machine toggles which controls show.

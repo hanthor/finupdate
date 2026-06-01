@@ -56,6 +56,7 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     // page renders the full base-image history.
     let variant_state = Rc::new(RefCell::new(String::new()));
     let selected_features: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let selected_stream: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let current_family: Rc<RefCell<Option<FamilyInfo>>> = Rc::new(RefCell::new(None));
 
     let variant_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -68,6 +69,14 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     family_label.set_halign(gtk::Align::Start);
     family_label.add_css_class("heading");
     variant_box.append(&family_label);
+
+    // Stream selector (populated once family is detected)
+    let stream_row = adw::ComboBoxRow::builder()
+        .title("Stream")
+        .build();
+    let stream_group = adw::PreferencesGroup::new();
+    stream_group.add(&stream_row);
+    variant_box.append(&stream_group);
 
     // PreferencesGroup hosts the dynamic SwitchRow list. Populated once the
     // initial fetch completes and we know which family we're on.
@@ -170,8 +179,10 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
         &features_group,
         &family_label,
         &target_image_row,
+        &stream_row,
         current_family.clone(),
         selected_features.clone(),
+        selected_stream.clone(),
     );
 
     dialog.present(Some(parent));
@@ -1278,8 +1289,10 @@ fn populate_family_switches(
     features_group: &adw::PreferencesGroup,
     family_label: &gtk::Label,
     target_row: &adw::ActionRow,
+    stream_row: &adw::ComboBoxRow,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
+    selected_stream: Rc<RefCell<String>>,
 ) {
     // Two pieces of state get resolved in the background thread:
     //   - the family the booted image belongs to (drives WHICH toggles show)
@@ -1323,6 +1336,19 @@ fn populate_family_switches(
 
         family_label.set_label(&format!("Family: {}", family.name));
 
+        // Populate stream dropdown with available streams for this family
+        let stream_model = gtk::StringList::new(&[]);
+        for stream in &family.streams {
+           stream_model.append(stream);
+        }
+        stream_row.set_model(Some(&stream_model));
+        
+        // Set default stream to the first one (canonical)
+        if !family.streams.is_empty() {
+           stream_row.set_selected(0);
+           *selected_stream.borrow_mut() = family.streams[0].clone();
+        }
+
         // Derive the initial toggle state from the booted image's suffix so
         // users already on -dx / -nvidia / -dx-nvidia-open see the dialog
         // open with their current configuration represented, not with
@@ -1356,12 +1382,14 @@ fn populate_family_switches(
         let recompute = {
             let family = family.clone();
             let selected_features = selected_features.clone();
+            let selected_stream = selected_stream.clone();
             let target_row = target_row.clone();
             let dx_state = dx_state.clone();
             let nvidia_state = nvidia_state.clone();
             move || {
+                let stream = selected_stream.borrow().clone();
                 let (feats, target) =
-                    resolve_dx_nvidia(&family, dx_state.get(), nvidia_state.get());
+                    resolve_dx_nvidia_with_stream(&family, dx_state.get(), nvidia_state.get(), &stream);
                 *selected_features.borrow_mut() = feats;
                 match target {
                     Some(t) => target_row.set_subtitle(&format!("{} (resolved)", t.image)),
@@ -1455,9 +1483,64 @@ fn populate_family_switches(
             features_group.add(&row);
         }
 
+        // Wire up stream selection to recompute target image
+        let selected_stream_clone = selected_stream.clone();
+        let recompute_clone = recompute.clone();
+        stream_row.connect_selected_notify(move |combo| {
+            if let Some(item) = combo.selected_item() {
+                if let Ok(obj) = item.downcast::<gtk::StringObject>() {
+                    if let Some(stream_str) = obj.string() {
+                        *selected_stream_clone.borrow_mut() = stream_str.to_string();
+                        recompute_clone();
+                    }
+                }
+            }
+        });
+
         *current_family.borrow_mut() = Some(family);
         glib::ControlFlow::Break
     });
+}
+
+/// Compute the selected feature set + target image for the current toggle
+/// state + selected stream. Uses the new resolve_target_with_stream API.
+///
+/// Similar fallback chain as resolve_dx_nvidia: prefers -nvidia-open,
+/// falls back to -nvidia if needed.
+///
+/// Returns (selected_features, resolved_image). The stream is embedded in
+/// the ImageRef's tag field.
+fn resolve_dx_nvidia_with_stream(
+    family: &FamilyInfo,
+    dx_on: bool,
+    nvidia_on: bool,
+    stream: &str,
+) -> (Vec<String>, Option<service::ImageRef>) {
+    let svc = service::global();
+    let base: Vec<String> = if dx_on {
+        vec!["dx".to_string()]
+    } else {
+        vec![]
+    };
+
+    if nvidia_on {
+        // Prefer the -open variant (current for Bluefin / Bluefin LTS).
+        let mut with_open = base.clone();
+        with_open.push("nvidia".to_string());
+        with_open.push("open".to_string());
+        if let Some(img) = svc.resolve_target_with_stream(family, &with_open, stream) {
+            return (with_open, Some(img));
+        }
+        // Fall back to plain -nvidia (Bazzite / Dakota / Bluefin's
+        // pre-migration variant the user might currently be booted on).
+        let mut plain = base.clone();
+        plain.push("nvidia".to_string());
+        let img = svc.resolve_target_with_stream(family, &plain, stream);
+        return (plain, img);
+    }
+
+    let img = svc.resolve_target_with_stream(family, &base, stream);
+    (base, img)
 }
 
 /// Compute the selected feature set + target image for the current toggle
