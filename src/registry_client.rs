@@ -575,15 +575,25 @@ impl RegistryClient {
         // 8-way semaphore — measured at ~2-4s for 30 probes against
         // ghcr.io. Only runs when dated tags came up short.
         if candidate_tags.len() < candidate_cap {
-            let sha_tags: Vec<String> = tag_resp
+            // Build full list of sha-only tags first, then take a sample.
+            // This ensures we probe a diverse set regardless of registry
+            // tag ordering (e.g., Dakota's old February tags won't occupy
+            // the first N positions and starve newer builds).
+            let mut sha_tags: Vec<String> = tag_resp
                 .tags
                 .iter()
                 .filter(|t| is_sha_only_tag(t))
-                .take(sha_probe_cap)
                 .cloned()
                 .collect();
-            if !sha_tags.is_empty() {
-                let probed = self.probe_sha_tag_dates(&sha_tags, &token, &client).await;
+            
+            let probe_list = if sha_tags.len() > sha_probe_cap {
+                sha_tags[..sha_probe_cap].to_vec()
+            } else {
+                sha_tags
+            };
+            
+            if !probe_list.is_empty() {
+                let probed = self.probe_sha_tag_dates(&probe_list, &token, &client).await;
                 candidate_tags.extend(probed);
                 candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
             }
