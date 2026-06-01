@@ -230,9 +230,8 @@ pub struct StatusView {
 impl StatusView {
     fn hero_title(&self) -> String {
         self.image_info.clone().unwrap_or_else(|| {
-            detect_bootc_image_info()
-                .map(|(title, _, _)| title)
-                .or_else(|| read_image_info())
+            read_image_info()
+                .or_else(|| detect_bootc_image_info().map(|(title, _, _)| title))
                 .unwrap_or_else(|| "System Image".to_string())
         })
     }
@@ -913,9 +912,8 @@ impl SimpleComponent for StatusView {
 
         // "Change" button — opens the rebase dialog to switch to a different image.
         // Placed in the suffix area next to the other action buttons.
-        let hero_change_btn = gtk::Button::from_icon_name("document-properties-symbolic");
+        let hero_change_btn = gtk::Button::with_label("Change");
         hero_change_btn.add_css_class("flat");
-        hero_change_btn.add_css_class("circular");
         hero_change_btn.set_tooltip_text(Some("Change image variant or stream"));
         hero_change_btn.set_valign(gtk::Align::Center);
         let change_sender = sender.input_sender().clone();
