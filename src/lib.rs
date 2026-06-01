@@ -8,4 +8,5 @@ pub mod registry_client;
 pub mod sbom_diff;
 pub mod service;
 pub mod settings;
+pub mod update_worker;
 pub mod uupd_compat;
