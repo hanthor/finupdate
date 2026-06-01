@@ -200,10 +200,11 @@ mod cli_tests {
 
     #[test]
     fn test_cli_changelog_different_tag_runs_to_completion() {
-        // The booted tag is "latest-20260527"; we request "latest" — they differ
-        // so the SBOM diff path is exercised.  Network may be unavailable in CI
-        // so we only assert that the binary exits without panicking and produces
-        // the expected headers.
+        // Use a "stable" stream image; the explicit target tag is "latest".
+        // detect_booted_image() stores the STREAM ("stable") as ImageRef.tag,
+        // so stable != latest → the SBOM diff code path is exercised.
+        // Network calls (GitHub API, GHCR SBOM) may fail in CI; the function
+        // handles every error gracefully and always exits with SUCCESS.
         let env = MockEnv::new();
         let exe = get_cli_exe();
 
@@ -211,7 +212,7 @@ mod cli_tests {
             .args(["changelog", "latest"])
             .env(
                 "FINUPDATE_IMAGE",
-                "ghcr.io/projectbluefin/dakota:latest-20260527",
+                "ghcr.io/projectbluefin/dakota:stable-20260527",
             )
             .env("XDG_CONFIG_HOME", &env.config_dir)
             .output()
@@ -219,18 +220,19 @@ mod cli_tests {
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("booted tag: latest-20260527"));
+        // detect_booted_image strips the date suffix so booted.tag == "stable"
+        assert!(stdout.contains("booted tag: stable"));
         assert!(stdout.contains("target tag: latest"));
-        // SBOM section header always appears even if network fails
+        // SBOM section header always appears (even if network fetch fails)
         assert!(stdout.contains("== SBOM package diff"));
     }
 
     #[test]
     fn test_cli_timer_enable() {
         let env = MockEnv::new();
-        // Stub systemctl to succeed; uupd_compat uses `which` + `systemctl`.
-        env.create_mock_bin("which", "/usr/bin/uupd", 0);
-        env.create_mock_bin("systemctl", "", 0);
+        // set_uupd_timer calls `pkexec systemctl enable --now uupd.timer`;
+        // mock pkexec (not systemctl) to make it succeed.
+        env.create_mock_bin("pkexec", "", 0);
 
         let original_path = std::env::var("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
@@ -252,8 +254,8 @@ mod cli_tests {
     #[test]
     fn test_cli_timer_disable() {
         let env = MockEnv::new();
-        env.create_mock_bin("which", "/usr/bin/uupd", 0);
-        env.create_mock_bin("systemctl", "", 0);
+        // set_uupd_timer calls `pkexec systemctl disable --now uupd.timer`.
+        env.create_mock_bin("pkexec", "", 0);
 
         let original_path = std::env::var("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
