@@ -71,6 +71,16 @@ jobs:
           BROADWAY_DISPLAY: ":0"
         run: cargo test --workspace --all-targets
 
+      - name: Run Dakota Image History Regression Tests
+        env:
+          GDK_BACKEND: broadway
+          BROADWAY_DISPLAY: ":0"
+          RUST_LOG: debug
+        run: |
+          # Regression tests for Dakota image history fix (commit de1dc08)
+          # Tests that sha-only tag probing works correctly for recent builds
+          cargo test --test dakota_image_history -- --test-threads=1 --nocapture
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
