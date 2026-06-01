@@ -179,6 +179,9 @@ pub struct FamilyInfo {
     pub name: String,
     pub base_image: String,
     pub features: Vec<Feature>,
+    /// Available streams for this family (e.g. "latest", "stable", "lts", "lts-hwe").
+    /// Used by the rebase UI to offer stream selection. First entry is the default.
+    pub streams: Vec<String>,
 }
 
 /// A switchable feature for the booted family — e.g. NVIDIA, DX, Steam Deck.
@@ -259,10 +262,28 @@ pub trait UpdaterService: Send + Sync {
         &self,
         image: &ImageRef,
     ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError>;
+ 
+    /// Compute the target image ref for a family + selected features + stream.
+    /// Returns None if the combination doesn't match a published image.
+    ///
+    /// # Arguments
+    /// * `family` — the current family (from current_family())
+    /// * `features` — selected feature IDs (e.g. ["nvidia"], ["dx", "nvidia"])
+    /// * `stream` — the tag stream to target (e.g. "latest", "stable", "lts")
+    fn resolve_target_with_stream(
+        &self,
+        family: &FamilyInfo,
+        features: &[String],
+        stream: &str,
+    ) -> Option<ImageRef>;
 
-    /// Compute the target image ref for a family + selected features. Returns
-    /// None if the combination doesn't match a published image.
-    fn resolve_target(&self, family: &FamilyInfo, features: &[String]) -> Option<ImageRef>;
+    /// Compute the target image ref for a family + selected features (legacy).
+    /// Defaults to the family's first (canonical) stream.
+    /// Use resolve_target_with_stream() to specify a different stream.
+    fn resolve_target(&self, family: &FamilyInfo, features: &[String]) -> Option<ImageRef> {
+        let default_stream = family.streams.first().map(|s| s.as_str()).unwrap_or("latest");
+        self.resolve_target_with_stream(family, features, default_stream)
+    }
 
     /// Switch the booted system to a new image. Progress events stream on the
     /// returned receiver; the operation is complete when `Done` or `Failed`
@@ -362,6 +383,7 @@ impl UpdaterService for BootcUpdaterService {
             name: fam.name.to_string(),
             base_image: fam.base_image().to_string(),
             features,
+            streams: fam.streams.to_vec(),
         }))
     }
 
@@ -392,11 +414,32 @@ impl UpdaterService for BootcUpdaterService {
             .find(|f| f.name == family.name)?;
         let want: Vec<&str> = features.iter().map(|s| s.as_str()).collect();
         let target_image = fam.select_image_for_features(&want)?;
+        let default_stream = fam.streams.first().map(|s| s.as_str()).unwrap_or("latest");
         Some(ImageRef {
             registry: "ghcr.io".to_string(),
             org: fam.org.to_string(),
             image: target_image.to_string(),
-            tag: "stable".to_string(),
+            tag: default_stream.to_string(),
+        })
+    }
+
+    fn resolve_target_with_stream(
+        &self,
+        family: &FamilyInfo,
+        features: &[String],
+        stream: &str,
+    ) -> Option<ImageRef> {
+        // Find the matching static Family for the resolution helper.
+        let fam = crate::registry_client::KNOWN_FAMILIES
+            .iter()
+            .find(|f| f.name == family.name)?;
+        let want: Vec<&str> = features.iter().map(|s| s.as_str()).collect();
+        let target_image = fam.select_image_for_features(&want)?;
+        Some(ImageRef {
+            registry: "ghcr.io".to_string(),
+            org: fam.org.to_string(),
+            image: target_image.to_string(),
+            tag: stream.to_string(),
         })
     }
 
