@@ -758,24 +758,30 @@ impl RegistryClient {
         }
 
         // Probe sha tags for build dates so the dropdown shows readable
-        // labels instead of 40-char hashes. Same SHA_PROBE_CAP as
-        // fetch_versions — large enough that dakota's post-Feb-2026
-        // sha-only history actually surfaces.
-        const SHA_PROBE_CAP: usize = 120;
-        if sha_tags.len() > SHA_PROBE_CAP {
-            sha_tags.truncate(SHA_PROBE_CAP);
-        }
-        let dated_sha: Vec<(NaiveDate, String)> = if sha_tags.is_empty() {
+        // labels instead of 40-char hashes. Probe a much larger sample
+        // (all available) so we can sort by date and select the newest ones.
+        // Older truncation at probe time would miss recent daily builds when
+        // the registry returns tags in unspecified order (e.g., Dakota's
+        // February tags could occupy the first N positions).
+        const SHA_PROBE_CAP: usize = 500;
+        let probe_list = if sha_tags.len() > SHA_PROBE_CAP {
+            sha_tags[..SHA_PROBE_CAP].to_vec()
+        } else {
+            sha_tags.clone()
+        };
+        let mut dated_sha: Vec<(NaiveDate, String)> = if probe_list.is_empty() {
             Vec::new()
         } else {
             let client = self.client.clone();
-            self.probe_sha_tag_dates(&sha_tags, &token, &client).await
+            self.probe_sha_tag_dates(&probe_list, &token, &client).await
         };
+
+        // Sort by date to identify the newest builds, regardless of what
+        // order the registry returned them in.
+        dated_sha.sort_by(|a, b| b.0.cmp(&a.0));
 
         stream_tags.sort();
         dated.sort_by(|a, b| b.0.cmp(&a.0));
-        let mut dated_sha = dated_sha;
-        dated_sha.sort_by(|a, b| b.0.cmp(&a.0));
 
         let mut result: Vec<AvailableTag> = Vec::new();
         for t in stream_tags {
