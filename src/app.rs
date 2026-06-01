@@ -1184,8 +1184,7 @@ mod tests {
 
     static INIT: Once = Once::new();
     // Whether the GTK initialisation in this process succeeded.
-    static GTK_OK: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static GTK_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// Try to initialise GTK once.  Returns `true` if it succeeded.
     fn try_init_gtk() -> bool {
