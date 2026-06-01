@@ -4,6 +4,8 @@
 //! (finupdate GUI and finupdate-cli headless). This lib.rs re-exports them
 //! so tests can access the shared logic without depending on the full GUI/CLI stack.
 
+pub mod config;
+pub mod orchestrator;
 pub mod registry_client;
 pub mod sbom_diff;
 pub mod service;

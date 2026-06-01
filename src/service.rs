@@ -387,7 +387,7 @@ impl UpdaterService for BootcUpdaterService {
             name: fam.name.to_string(),
             base_image: fam.base_image().to_string(),
             features,
-            streams: fam.streams.to_vec(),
+            streams: fam.streams.iter().map(|s| s.to_string()).collect(),
         }))
     }
 
@@ -418,7 +418,7 @@ impl UpdaterService for BootcUpdaterService {
             .find(|f| f.name == family.name)?;
         let want: Vec<&str> = features.iter().map(|s| s.as_str()).collect();
         let target_image = fam.select_image_for_features(&want)?;
-        let default_stream = fam.streams.first().map(|s| s.as_str()).unwrap_or("latest");
+        let default_stream = fam.streams.first().copied().unwrap_or("latest");
         Some(ImageRef {
             registry: "ghcr.io".to_string(),
             org: fam.org.to_string(),
@@ -858,6 +858,7 @@ mod tests {
             name: "Bluefin Stable".to_string(),
             base_image: "bluefin".to_string(),
             features: vec![],
+            streams: vec![],
         };
         let r = svc
             .resolve_target(&family, &["nvidia".to_string()])
@@ -872,6 +873,7 @@ mod tests {
             name: "Bluefin Stable".to_string(),
             base_image: "bluefin".to_string(),
             features: vec![],
+            streams: vec![],
         };
         // "open" alone (without nvidia) isn't a published Bluefin image.
         assert!(svc.resolve_target(&family, &["open".to_string()]).is_none());
@@ -886,6 +888,7 @@ mod tests {
             name: "Bluefin Dakota".to_string(),
             base_image: "dakota".to_string(),
             features: vec![],
+            streams: vec![],
         };
         let r = svc
             .resolve_target(&family, &["nvidia".to_string()])
@@ -902,6 +905,7 @@ mod tests {
             name: "Fictional Family".to_string(),
             base_image: "imaginary".to_string(),
             features: vec![],
+            streams: vec![],
         };
         assert!(svc.resolve_target(&family, &[]).is_none());
     }
