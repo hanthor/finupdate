@@ -454,10 +454,59 @@ mod tests {
     use chrono::{NaiveDate, TimeZone};
     use std::sync::Mutex;
 
+    // ── feature_display_name / feature_subtitle ───────────────────────────
+
+    #[test]
+    fn feature_display_name_covers_all_known_keys() {
+        let cases = [
+            ("nvidia", "NVIDIA drivers (proprietary)"),
+            ("open", "NVIDIA open kernel modules"),
+            ("dx", "Developer extras (DX)"),
+            ("hwe", "Hardware-enablement kernel (HWE)"),
+            ("gdx", "GNOME Developer extras (GDX)"),
+            ("deck", "Steam Deck profile"),
+            ("asus", "ASUS ROG tuning"),
+            ("surface", "Microsoft Surface kernel"),
+            ("framework", "Framework laptop tuning"),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(feature_display_name(key), expected, "key={key}");
+        }
+    }
+
+    #[test]
+    fn feature_display_name_unknown_key_returns_generic() {
+        assert_eq!(feature_display_name("unknown-feature"), "Variant feature");
+    }
+
+    #[test]
+    fn feature_subtitle_covers_all_known_keys() {
+        let cases = [
+            ("nvidia", "Use the closed-source NVIDIA driver"),
+            ("open", "Use Mesa's NVK / NVIDIA open-source kernel driver"),
+            ("dx", "Includes container tools, IDEs, and language SDKs"),
+            ("hwe", "Newer kernel + drivers backported for fresh hardware"),
+            ("gdx", "GNOME-focused developer toolchain"),
+            ("deck", "Tuned for Steam Deck hardware (gamescope, Steam shell)"),
+            ("asus", "Kernel patches for ASUS ROG Ally / Strix laptops"),
+            ("surface", "Linux-surface kernel + camera fix-ups"),
+            ("framework", "Power profiles + fingerprint reader support"),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(feature_subtitle(key), expected, "key={key}");
+        }
+    }
+
+    #[test]
+    fn feature_subtitle_unknown_key_returns_generic() {
+        assert_eq!(feature_subtitle("unknown-feature"), "Additional ublue extras");
+    }
+
     // ── ImageRef ─────────────────────────────────────────────────────────
 
     #[test]
     fn image_ref_parse_roundtrip() {
+
         let r = ImageRef::parse("ghcr.io/ublue-os/bluefin:stable-daily-43.20260527").unwrap();
         assert_eq!(r.registry, "ghcr.io");
         assert_eq!(r.org, "ublue-os");

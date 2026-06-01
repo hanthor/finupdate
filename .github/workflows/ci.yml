@@ -75,8 +75,16 @@ jobs:
           GDK_BACKEND: broadway
           BROADWAY_DISPLAY: ":0"
         run: |
-          cargo llvm-cov --all-features --workspace
-          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+          # Measure coverage of the testable non-UI layer.
+          # The GTK ui/ files, app.rs, dbus_progress.rs and main.rs are
+          # deliberately excluded: they require a live display server and
+          # are exercised via the GUI smoke tests rather than unit tests.
+          EXCLUDE='src/ui/|src/app\.rs|src/dbus_progress\.rs|src/main\.rs'
+          cargo llvm-cov --all-features --workspace \
+            --ignore-filename-regex "$EXCLUDE"
+          cargo llvm-cov --all-features --workspace \
+            --ignore-filename-regex "$EXCLUDE" \
+            --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
