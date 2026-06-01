@@ -21,6 +21,7 @@ jobs:
         run: |
           dnf install -y \
             gtk4-devel \
+            gtk4-broadway \
             libadwaita-devel \
             pango-devel \
             cairo-devel \
@@ -53,13 +54,26 @@ jobs:
             -A deprecated \
             -A unused
 
+      - name: Start broadway display server
+        run: |
+          broadwayd :0 &
+          echo "BROADWAY_PID=$!" >> "$GITHUB_ENV"
+          # Give the daemon a moment to bind its socket
+          sleep 1
+
       - name: Run Unit Tests
+        env:
+          GDK_BACKEND: broadway
+          BROADWAY_DISPLAY: ":0"
         run: cargo test --workspace --all-targets
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate Code Coverage
+        env:
+          GDK_BACKEND: broadway
+          BROADWAY_DISPLAY: ":0"
         run: |
           cargo llvm-cov --all-features --workspace
           cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
