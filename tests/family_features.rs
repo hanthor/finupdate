@@ -32,7 +32,10 @@ mod family_feature_selection {
     #[test]
     fn bluefin_stable_nvidia_resolves() {
         let family = find_family("Bluefin Stable");
-        assert_eq!(family.select_image_for_features(&["nvidia"]), Some("bluefin-nvidia"));
+        assert_eq!(
+            family.select_image_for_features(&["nvidia"]),
+            Some("bluefin-nvidia")
+        );
     }
 
     #[test]
@@ -47,7 +50,10 @@ mod family_feature_selection {
     #[test]
     fn bluefin_stable_dx_resolves() {
         let family = find_family("Bluefin Stable");
-        assert_eq!(family.select_image_for_features(&["dx"]), Some("bluefin-dx"));
+        assert_eq!(
+            family.select_image_for_features(&["dx"]),
+            Some("bluefin-dx")
+        );
     }
 
     #[test]
@@ -95,13 +101,19 @@ mod family_feature_selection {
     #[test]
     fn bluefin_lts_nvidia_resolves() {
         let family = find_family("Bluefin LTS");
-        assert_eq!(family.select_image_for_features(&["nvidia"]), Some("bluefin-nvidia"));
+        assert_eq!(
+            family.select_image_for_features(&["nvidia"]),
+            Some("bluefin-nvidia")
+        );
     }
 
     #[test]
     fn bluefin_lts_dx_resolves() {
         let family = find_family("Bluefin LTS");
-        assert_eq!(family.select_image_for_features(&["dx"]), Some("bluefin-dx"));
+        assert_eq!(
+            family.select_image_for_features(&["dx"]),
+            Some("bluefin-dx")
+        );
     }
 
     #[test]
@@ -116,7 +128,10 @@ mod family_feature_selection {
     #[test]
     fn bluefin_lts_gdx_resolves() {
         let family = find_family("Bluefin LTS");
-        assert_eq!(family.select_image_for_features(&["gdx"]), Some("bluefin-gdx"));
+        assert_eq!(
+            family.select_image_for_features(&["gdx"]),
+            Some("bluefin-gdx")
+        );
     }
 
     #[test]
@@ -139,7 +154,10 @@ mod family_feature_selection {
     #[test]
     fn aurora_nvidia_resolves() {
         let family = find_family("Aurora");
-        assert_eq!(family.select_image_for_features(&["nvidia"]), Some("aurora-nvidia"));
+        assert_eq!(
+            family.select_image_for_features(&["nvidia"]),
+            Some("aurora-nvidia")
+        );
     }
 
     #[test]
@@ -188,7 +206,10 @@ mod family_feature_selection {
     #[test]
     fn bazzite_kde_nvidia_resolves() {
         let family = find_family("Bazzite KDE");
-        assert_eq!(family.select_image_for_features(&["nvidia"]), Some("bazzite-nvidia"));
+        assert_eq!(
+            family.select_image_for_features(&["nvidia"]),
+            Some("bazzite-nvidia")
+        );
     }
 
     #[test]
@@ -203,7 +224,10 @@ mod family_feature_selection {
     #[test]
     fn bazzite_kde_deck_resolves() {
         let family = find_family("Bazzite KDE");
-        assert_eq!(family.select_image_for_features(&["deck"]), Some("bazzite-deck"));
+        assert_eq!(
+            family.select_image_for_features(&["deck"]),
+            Some("bazzite-deck")
+        );
     }
 
     #[test]
@@ -218,7 +242,10 @@ mod family_feature_selection {
     #[test]
     fn bazzite_kde_asus_resolves() {
         let family = find_family("Bazzite KDE");
-        assert_eq!(family.select_image_for_features(&["asus"]), Some("bazzite-asus"));
+        assert_eq!(
+            family.select_image_for_features(&["asus"]),
+            Some("bazzite-asus")
+        );
     }
 
     #[test]
@@ -278,7 +305,10 @@ mod family_feature_selection {
     #[test]
     fn dakota_nvidia_resolves() {
         let family = find_family("Bluefin Dakota");
-        assert_eq!(family.select_image_for_features(&["nvidia"]), Some("dakota-nvidia"));
+        assert_eq!(
+            family.select_image_for_features(&["nvidia"]),
+            Some("dakota-nvidia")
+        );
     }
 
     #[test]
@@ -357,7 +387,9 @@ mod family_feature_selection {
     fn bluefin_stable_supports_open_feature() {
         let family = find_family("Bluefin Stable");
         assert!(
-            family.select_image_for_features(&["nvidia", "open"]).is_some(),
+            family
+                .select_image_for_features(&["nvidia", "open"])
+                .is_some(),
             "open can only be combined with nvidia"
         );
     }
@@ -373,7 +405,10 @@ mod family_feature_selection {
     fn bluefin_lts_supports_gdx_feature() {
         // LTS-specific feature
         let family = find_family("Bluefin LTS");
-        assert_eq!(family.select_image_for_features(&["gdx"]), Some("bluefin-gdx"));
+        assert_eq!(
+            family.select_image_for_features(&["gdx"]),
+            Some("bluefin-gdx")
+        );
     }
 
     #[test]
@@ -390,7 +425,10 @@ mod family_feature_selection {
         assert_eq!(family.select_image_for_features(&["open"]), None);
         assert_eq!(family.select_image_for_features(&["framework"]), None);
 
-        assert!(features_supported > 0, "Dakota should support at least nvidia");
+        assert!(
+            features_supported > 0,
+            "Dakota should support at least nvidia"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────

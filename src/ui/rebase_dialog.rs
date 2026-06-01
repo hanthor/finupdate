@@ -71,9 +71,7 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     variant_box.append(&family_label);
 
     // Stream selector (populated once family is detected)
-    let stream_row = adw::ComboBoxRow::builder()
-        .title("Stream")
-        .build();
+    let stream_row = adw::ComboBoxRow::builder().title("Stream").build();
     let stream_group = adw::PreferencesGroup::new();
     stream_group.add(&stream_row);
     variant_box.append(&stream_group);
@@ -1339,14 +1337,14 @@ fn populate_family_switches(
         // Populate stream dropdown with available streams for this family
         let stream_model = gtk::StringList::new(&[]);
         for stream in &family.streams {
-           stream_model.append(stream);
+            stream_model.append(stream);
         }
         stream_row.set_model(Some(&stream_model));
-        
+
         // Set default stream to the first one (canonical)
         if !family.streams.is_empty() {
-           stream_row.set_selected(0);
-           *selected_stream.borrow_mut() = family.streams[0].clone();
+            stream_row.set_selected(0);
+            *selected_stream.borrow_mut() = family.streams[0].clone();
         }
 
         // Derive the initial toggle state from the booted image's suffix so
@@ -1388,8 +1386,12 @@ fn populate_family_switches(
             let nvidia_state = nvidia_state.clone();
             move || {
                 let stream = selected_stream.borrow().clone();
-                let (feats, target) =
-                    resolve_dx_nvidia_with_stream(&family, dx_state.get(), nvidia_state.get(), &stream);
+                let (feats, target) = resolve_dx_nvidia_with_stream(
+                    &family,
+                    dx_state.get(),
+                    nvidia_state.get(),
+                    &stream,
+                );
                 *selected_features.borrow_mut() = feats;
                 match target {
                     Some(t) => target_row.set_subtitle(&format!("{} (resolved)", t.image)),

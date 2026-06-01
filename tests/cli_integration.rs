@@ -327,7 +327,7 @@ mod cli_tests {
             code == 0 || code == 1,
             "tags command exited with unexpected code {code}"
         );
-        
+
         // If successful, should contain tag information
         let stdout = String::from_utf8_lossy(&output.stdout);
         if code == 0 && !stdout.is_empty() {

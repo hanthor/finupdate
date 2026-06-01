@@ -262,7 +262,7 @@ pub trait UpdaterService: Send + Sync {
         &self,
         image: &ImageRef,
     ) -> Result<Vec<crate::registry_client::AvailableTag>, ServiceError>;
- 
+
     /// Compute the target image ref for a family + selected features + stream.
     /// Returns None if the combination doesn't match a published image.
     ///
@@ -281,7 +281,11 @@ pub trait UpdaterService: Send + Sync {
     /// Defaults to the family's first (canonical) stream.
     /// Use resolve_target_with_stream() to specify a different stream.
     fn resolve_target(&self, family: &FamilyInfo, features: &[String]) -> Option<ImageRef> {
-        let default_stream = family.streams.first().map(|s| s.as_str()).unwrap_or("latest");
+        let default_stream = family
+            .streams
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("latest");
         self.resolve_target_with_stream(family, features, default_stream)
     }
 

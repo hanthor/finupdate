@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod stream_feature_tests {
     use finupdate::registry_client::ImageRef;
-    use finupdate::service::{Feature, FamilyInfo, BootcUpdaterService};
+    use finupdate::service::{BootcUpdaterService, FamilyInfo, Feature};
 
     fn create_test_service() -> BootcUpdaterService {
         BootcUpdaterService::new()
@@ -55,10 +55,7 @@ mod stream_feature_tests {
                     subtitle: "Developer experience variant".to_string(),
                 },
             ],
-            streams: vec![
-                "lts".to_string(),
-                "lts-hwe".to_string(),
-            ],
+            streams: vec!["lts".to_string(), "lts-hwe".to_string()],
         }
     }
 
@@ -66,17 +63,12 @@ mod stream_feature_tests {
         FamilyInfo {
             name: "Bluefin Dakota".to_string(),
             base_image: "dakota".to_string(),
-            features: vec![
-                Feature {
-                    id: "nvidia".to_string(),
-                    display_name: "NVIDIA GPU".to_string(),
-                    subtitle: "For NVIDIA graphics cards".to_string(),
-                },
-            ],
-            streams: vec![
-                "latest".to_string(),
-                "testing".to_string(),
-            ],
+            features: vec![Feature {
+                id: "nvidia".to_string(),
+                display_name: "NVIDIA GPU".to_string(),
+                subtitle: "For NVIDIA graphics cards".to_string(),
+            }],
+            streams: vec!["latest".to_string(), "testing".to_string()],
         }
     }
 
@@ -88,10 +80,10 @@ mod stream_feature_tests {
     fn resolve_base_image_with_default_stream() {
         let svc = create_test_service();
         let family = create_bluefin_stable();
-        
+
         let target = svc.resolve_target(&family, &[]);
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin");
         assert_eq!(target.tag, "latest"); // default is first stream
@@ -101,10 +93,10 @@ mod stream_feature_tests {
     fn resolve_base_image_with_explicit_stream() {
         let svc = create_test_service();
         let family = create_bluefin_stable();
-        
+
         let target = svc.resolve_target_with_stream(&family, &[], "stable");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin");
         assert_eq!(target.tag, "stable");
@@ -115,10 +107,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_stable();
         let features = vec!["nvidia".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "latest");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin-nvidia");
         assert_eq!(target.tag, "latest");
@@ -129,10 +121,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_stable();
         let features = vec!["nvidia".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "stable-daily");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin-nvidia");
         assert_eq!(target.tag, "stable-daily");
@@ -143,10 +135,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_stable();
         let features = vec!["dx".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "beta");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin-dx");
         assert_eq!(target.tag, "beta");
@@ -157,10 +149,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_stable();
         let features = vec!["dx".to_string(), "nvidia".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "latest");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin-dx-nvidia");
         assert_eq!(target.tag, "latest");
@@ -174,10 +166,10 @@ mod stream_feature_tests {
     fn resolve_lts_base_with_lts_stream() {
         let svc = create_test_service();
         let family = create_bluefin_lts();
-        
+
         let target = svc.resolve_target_with_stream(&family, &[], "lts");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin");
         assert_eq!(target.tag, "lts");
@@ -188,10 +180,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_lts();
         let features = vec!["nvidia".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "lts-hwe");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "bluefin-nvidia");
         assert_eq!(target.tag, "lts-hwe");
@@ -205,10 +197,10 @@ mod stream_feature_tests {
     fn resolve_dakota_base_with_latest_stream() {
         let svc = create_test_service();
         let family = create_dakota();
-        
+
         let target = svc.resolve_target_with_stream(&family, &[], "latest");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "dakota");
         assert_eq!(target.tag, "latest");
@@ -219,10 +211,10 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_dakota();
         let features = vec!["nvidia".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "testing");
         assert!(target.is_some());
-        
+
         let target = target.unwrap();
         assert_eq!(target.image, "dakota-nvidia");
         assert_eq!(target.tag, "testing");
@@ -233,7 +225,7 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_dakota();
         let features = vec!["dx".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "latest");
         assert!(target.is_none(), "Dakota should not have dx variant");
     }
@@ -247,7 +239,7 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let family = create_bluefin_stable();
         let features = vec!["nonexistent".to_string()];
-        
+
         let target = svc.resolve_target_with_stream(&family, &features, "latest");
         assert!(target.is_none(), "Should reject nonexistent feature");
     }
@@ -257,7 +249,7 @@ mod stream_feature_tests {
         let svc = create_test_service();
         let mut family = create_bluefin_stable();
         family.name = "Unknown Family".to_string(); // This family doesn't exist
-        
+
         let target = svc.resolve_target(&family, &[]);
         assert!(target.is_none(), "Should reject unknown family");
     }
@@ -297,11 +289,11 @@ mod stream_feature_tests {
     fn default_stream_is_first_in_list() {
         let svc = create_test_service();
         let family = create_bluefin_stable();
-        
+
         // resolve_target() without explicit stream should use family's first stream
         let default_target = svc.resolve_target(&family, &[]);
         let explicit_target = svc.resolve_target_with_stream(&family, &[], &family.streams[0]);
-        
+
         assert_eq!(default_target.unwrap().tag, explicit_target.unwrap().tag);
     }
 
@@ -309,7 +301,7 @@ mod stream_feature_tests {
     fn lts_default_stream_is_lts_not_latest() {
         let svc = create_test_service();
         let family = create_bluefin_lts();
-        
+
         let target = svc.resolve_target(&family, &[]);
         assert!(target.is_some());
         assert_eq!(target.unwrap().tag, "lts");

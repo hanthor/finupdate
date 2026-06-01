@@ -585,13 +585,13 @@ impl RegistryClient {
                 .filter(|t| is_sha_only_tag(t))
                 .cloned()
                 .collect();
-            
+
             let probe_list = if sha_tags.len() > sha_probe_cap {
                 sha_tags[..sha_probe_cap].to_vec()
             } else {
                 sha_tags
             };
-            
+
             if !probe_list.is_empty() {
                 let probed = self.probe_sha_tag_dates(&probe_list, &token, &client).await;
                 candidate_tags.extend(probed);
