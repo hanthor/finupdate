@@ -1491,10 +1491,9 @@ fn populate_family_switches(
         stream_row.connect_selected_notify(move |combo| {
             if let Some(item) = combo.selected_item() {
                 if let Ok(obj) = item.downcast::<gtk::StringObject>() {
-                    if let Some(stream_str) = obj.string() {
-                        *selected_stream_clone.borrow_mut() = stream_str.to_string();
-                        recompute_clone();
-                    }
+                    let stream_str = obj.string();
+                    *selected_stream_clone.borrow_mut() = stream_str.to_string();
+                    recompute_clone();
                 }
             }
         });

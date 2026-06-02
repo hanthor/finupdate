@@ -916,9 +916,9 @@ impl SimpleComponent for StatusView {
         hero_change_btn.add_css_class("flat");
         hero_change_btn.set_tooltip_text(Some("Change image variant or stream"));
         hero_change_btn.set_valign(gtk::Align::Center);
-        let change_sender = sender.input_sender().clone();
+        let change_sender = sender.output_sender().clone();
         hero_change_btn.connect_clicked(move |_| {
-            change_sender.emit(StatusViewInput::ShowRebase);
+            change_sender.emit(StatusViewOutput::ShowRebase);
         });
         hero_row.add_suffix(&hero_change_btn);
 

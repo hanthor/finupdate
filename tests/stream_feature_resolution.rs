@@ -7,10 +7,10 @@
 
 #[cfg(test)]
 mod stream_feature_tests {
-    use finupdate::registry_client::ImageRef;
-    use finupdate::service::{BootcUpdaterService, FamilyInfo, Feature};
+    use finupdate::service::{ImageRef, UpdaterService, BootcUpdaterService, FamilyInfo, Feature};
+    use std::sync::Arc;
 
-    fn create_test_service() -> BootcUpdaterService {
+    fn create_test_service() -> Arc<dyn UpdaterService> {
         BootcUpdaterService::new()
     }
 
