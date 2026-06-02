@@ -212,6 +212,34 @@ pub unsafe extern "C" fn finupdate_check_for_updates(
     });
 }
 
+/// Construct the rebase/image-switch widget for embedding in a host
+/// container — the gnome-control-center panel uses this to fill its
+/// AdwNavigationView "Change image" subpage.
+///
+/// Returns a `GtkWidget *` (typed as `void *`; cast on the C side). The
+/// widget is an `AdwPreferencesPage` with variant toggles, stream
+/// dropdown, recent-builds list, and a Switch button — same ownership
+/// transfer rules as [`finupdate_changelog_widget_new`].
+///
+/// MUST be called from the thread that owns the GLib main loop.
+///
+/// # Safety
+///
+/// `handle` must be a valid non-NULL pointer returned by [`finupdate_new`].
+/// Caller must be on the GLib main thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn finupdate_rebase_widget_new(handle: *mut Handle) -> *mut c_void {
+    let Some(handle) = (unsafe { handle.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let widget: gtk::Widget = crate::rebase_widget::build_rebase_widget(
+        handle.service.clone(),
+        &handle.rt,
+    )
+    .upcast();
+    IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget) as *mut c_void
+}
+
 /// Construct the "What's New" changelog widget for embedding in a host
 /// container — the gnome-control-center panel uses this to fill its
 /// AdwNavigationView "Changelog" subpage.

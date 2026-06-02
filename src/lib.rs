@@ -11,6 +11,7 @@ pub mod changelog_widget;
 pub mod config;
 pub mod ffi;
 pub mod orchestrator;
+pub mod rebase_widget;
 pub mod registry_client;
 pub mod sbom_diff;
 pub mod service;

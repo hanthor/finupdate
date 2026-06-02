@@ -38,6 +38,7 @@ struct _CcUpdatesPanel
   AdwActionRow       *hero_row;
   AdwActionRow       *update_state_row;
   AdwActionRow       *whats_new_row;
+  AdwActionRow       *change_image_row;
   GtkButton          *check_button;
 
   /* Rust backend handle. Created in init, freed in dispose. */
@@ -169,6 +170,31 @@ on_whats_new_activated (AdwActionRow *row, gpointer user_data)
   adw_navigation_view_push (self->nav_view, page);
 }
 
+/* ───── "Change image" subpage ───── */
+
+static void
+on_change_image_activated (AdwActionRow *row, gpointer user_data)
+{
+  CcUpdatesPanel *self = CC_UPDATES_PANEL (user_data);
+  GtkWidget *content;
+  AdwNavigationPage *page;
+
+  if (self->backend == NULL)
+    return;
+
+  content = (GtkWidget *) finupdate_rebase_widget_new (self->backend);
+  if (content == NULL)
+    return;
+
+  page = ADW_NAVIGATION_PAGE (
+      g_object_new (ADW_TYPE_NAVIGATION_PAGE,
+                    "title", _("Change Image"),
+                    "tag",   "change-image",
+                    "child", content,
+                    NULL));
+  adw_navigation_view_push (self->nav_view, page);
+}
+
 /* ───── GObject lifecycle ───── */
 
 static void
@@ -205,10 +231,12 @@ cc_updates_panel_class_init (CcUpdatesPanelClass *klass)
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, hero_row);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, update_state_row);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, whats_new_row);
+  gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, change_image_row);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, check_button);
 
   gtk_widget_class_bind_template_callback (widget_class, on_check_button_clicked);
   gtk_widget_class_bind_template_callback (widget_class, on_whats_new_activated);
+  gtk_widget_class_bind_template_callback (widget_class, on_change_image_activated);
 }
 
 static void

@@ -72,6 +72,19 @@
                         </child>
                       </object>
                     </child>
+                    <child>
+                      <object class="AdwActionRow" id="change_image_row">
+                        <property name="title" translatable="yes">Change image</property>
+                        <property name="subtitle" translatable="yes">Switch variant, stream, or pin a previous build</property>
+                        <property name="activatable">True</property>
+                        <signal name="activated" handler="on_change_image_activated" object="CcUpdatesPanel" swapped="no"/>
+                        <child type="suffix">
+                          <object class="GtkImage">
+                            <property name="icon-name">go-next-symbolic</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
                   </object>
                 </child>
 
