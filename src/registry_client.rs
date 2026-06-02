@@ -1121,7 +1121,10 @@ fn registry_cache_dir() -> std::path::PathBuf {
 }
 
 fn cache_key(registry: &str, org: &str, image: &str, stream: &str, suffix: &str) -> String {
-    format!("{}_{}_{}_{}_{}", registry, org, image, stream, suffix)
+    // Version 2: Fixed fetch_versions to properly probe sha-tags (June 2026).
+    // Bumping version invalidates all old caches to ensure users get fresh results.
+    let version = "v2";
+    format!("{}_{}_{}_{}_{}_{}", version, registry, org, image, stream, suffix)
         .replace('/', "_")
         .replace(':', "_")
 }
