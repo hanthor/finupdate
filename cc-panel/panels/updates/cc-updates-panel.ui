@@ -44,17 +44,33 @@
                   </object>
                 </child>
 
-                <!-- Update state + Check + What's new affordance -->
+                <!-- Update state + Check / Install + What's new affordance -->
                 <child>
                   <object class="AdwPreferencesGroup">
                     <child>
                       <object class="AdwActionRow" id="update_state_row">
                         <property name="title" translatable="yes">Press Check to query for updates</property>
                         <child type="suffix">
-                          <object class="GtkButton" id="check_button">
-                            <property name="label" translatable="yes">Check</property>
+                          <object class="GtkBox">
+                            <property name="orientation">horizontal</property>
+                            <property name="spacing">6</property>
                             <property name="valign">center</property>
-                            <signal name="clicked" handler="on_check_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                            <child>
+                              <object class="GtkButton" id="install_button">
+                                <property name="label" translatable="yes">Install</property>
+                                <property name="visible">False</property>
+                                <signal name="clicked" handler="on_install_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                                <style>
+                                  <class name="suggested-action"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkButton" id="check_button">
+                                <property name="label" translatable="yes">Check</property>
+                                <signal name="clicked" handler="on_check_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                              </object>
+                            </child>
                           </object>
                         </child>
                       </object>
@@ -83,6 +99,38 @@
                             <property name="icon-name">go-next-symbolic</property>
                           </object>
                         </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+
+                <!-- Per-module install progress; hidden until Install fires. -->
+                <child>
+                  <object class="AdwPreferencesGroup" id="progress_group">
+                    <property name="title" translatable="yes">Installing…</property>
+                    <property name="visible">False</property>
+                    <child>
+                      <object class="AdwActionRow" id="system_row">
+                        <property name="title" translatable="yes">System image</property>
+                        <property name="subtitle" translatable="yes">Waiting…</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwActionRow" id="flatpak_row">
+                        <property name="title">Flatpak</property>
+                        <property name="subtitle" translatable="yes">Waiting…</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwActionRow" id="brew_row">
+                        <property name="title">Homebrew</property>
+                        <property name="subtitle" translatable="yes">Waiting…</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwActionRow" id="distrobox_row">
+                        <property name="title">Distrobox</property>
+                        <property name="subtitle" translatable="yes">Waiting…</property>
                       </object>
                     </child>
                   </object>

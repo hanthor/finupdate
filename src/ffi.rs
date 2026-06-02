@@ -276,6 +276,207 @@ pub unsafe extern "C" fn finupdate_changelog_widget_new(handle: *mut Handle) -> 
     IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget) as *mut c_void
 }
 
+// ── apply-update event stream ────────────────────────────────────────────
+
+/// Event kind for the apply-update stream. Maps 1:1 to
+/// [`crate::update_worker::UpdateEvent`] so the C side can switch on the
+/// integer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinupdateEventKind {
+    /// One line of stdout/stderr from the update process. `message`
+    /// carries the text.
+    Output = 0,
+    /// A module's update started. `module` identifies which one.
+    ModuleStarted = 1,
+    /// A module's update finished. `module` + `status` carry the
+    /// outcome; `exit_code` is set when status is `Failed`.
+    ModuleFinished = 2,
+    /// The whole update completed successfully.
+    Complete = 3,
+    /// The system was already up to date — no work performed.
+    UpToDate = 4,
+    /// The update process failed with the message in `message`.
+    Error = 5,
+}
+
+/// Which of the four update modules an event refers to. `Unknown` is
+/// emitted for non-module events (Output / Complete / UpToDate / Error).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinupdateModule {
+    Unknown = 0,
+    System = 1,
+    Flatpak = 2,
+    Brew = 3,
+    Distrobox = 4,
+}
+
+/// Module completion status — only meaningful for `ModuleFinished`
+/// events; pass `Unknown` otherwise.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinupdateModuleStatus {
+    Unknown = 0,
+    Success = 1,
+    UpToDate = 2,
+    Skipped = 3,
+    Failed = 4,
+}
+
+/// Start a full update run (system + flatpak + brew + distrobox per
+/// the user's "Include app updates" setting). The `callback` fires once
+/// per event from a worker thread — the C panel must marshal each
+/// invocation onto the GLib main loop via `g_idle_add_full` before
+/// touching widgets. The stream terminates with one of
+/// `Complete` / `UpToDate` / `Error`.
+///
+/// `exit_code` is set when an event reports a failed module (status =
+/// `Failed`); zero otherwise. `message` is non-NULL for `Output` and
+/// `Error` events; NULL otherwise. Both `message` and the strings
+/// passed are Rust-owned and freed AFTER the callback returns — the C
+/// side must copy them if it needs them past the callback's scope.
+///
+/// # Safety
+///
+/// `handle` must be a valid non-NULL pointer returned by [`finupdate_new`].
+/// `callback` must outlive the run (static function pointer). `user_data`
+/// must remain valid until the terminating event fires (or until
+/// [`finupdate_free`] is called, which won't cancel the in-flight run
+/// — TODO: add a cancel handle).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn finupdate_apply_update_start(
+    handle: *mut Handle,
+    callback: extern "C" fn(
+        kind: FinupdateEventKind,
+        module: FinupdateModule,
+        status: FinupdateModuleStatus,
+        exit_code: i32,
+        message: *const c_char,
+        user_data: *mut c_void,
+    ),
+    user_data: *mut c_void,
+) {
+    let Some(handle) = (unsafe { handle.as_ref() }) else {
+        // Synthesise an Error and signal completion so callers don't
+        // hang waiting for a stream that will never start.
+        let err = CString::new("invalid handle").unwrap();
+        callback(
+            FinupdateEventKind::Error,
+            FinupdateModule::Unknown,
+            FinupdateModuleStatus::Unknown,
+            0,
+            err.as_ptr(),
+            user_data,
+        );
+        return;
+    };
+
+    let user_data_addr = user_data as usize;
+    handle.rt.spawn(async move {
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut rx = crate::update_worker::UpdateWorker::new().run(cancel_rx).await;
+
+        while let Some(event) = rx.recv().await {
+            emit_event(callback, user_data_addr as *mut c_void, event);
+        }
+    });
+}
+
+fn emit_event(
+    callback: extern "C" fn(
+        FinupdateEventKind,
+        FinupdateModule,
+        FinupdateModuleStatus,
+        i32,
+        *const c_char,
+        *mut c_void,
+    ),
+    user_data: *mut c_void,
+    event: crate::update_worker::UpdateEvent,
+) {
+    use crate::orchestrator::ModuleStatus;
+    use crate::update_worker::UpdateEvent;
+
+    // Hold the CString alive across the callback so the pointer
+    // remains valid for the duration of the call.
+    let mut _msg_owner: Option<CString> = None;
+    let mut msg_ptr: *const c_char = ptr::null();
+
+    let (kind, module, status, exit_code) = match event {
+        UpdateEvent::Output(line) => {
+            _msg_owner = CString::new(line).ok();
+            msg_ptr = _msg_owner
+                .as_ref()
+                .map(|c| c.as_ptr())
+                .unwrap_or(ptr::null());
+            (
+                FinupdateEventKind::Output,
+                FinupdateModule::Unknown,
+                FinupdateModuleStatus::Unknown,
+                0,
+            )
+        }
+        UpdateEvent::ModuleStarted(m) => (
+            FinupdateEventKind::ModuleStarted,
+            module_to_ffi(m),
+            FinupdateModuleStatus::Unknown,
+            0,
+        ),
+        UpdateEvent::ModuleFinished(m, s) => {
+            let (status_ffi, exit) = match s {
+                ModuleStatus::Success => (FinupdateModuleStatus::Success, 0),
+                ModuleStatus::UpToDate => (FinupdateModuleStatus::UpToDate, 0),
+                ModuleStatus::Skipped => (FinupdateModuleStatus::Skipped, 0),
+                ModuleStatus::Failed(code) => (FinupdateModuleStatus::Failed, code),
+            };
+            (
+                FinupdateEventKind::ModuleFinished,
+                module_to_ffi(m),
+                status_ffi,
+                exit,
+            )
+        }
+        UpdateEvent::Complete => (
+            FinupdateEventKind::Complete,
+            FinupdateModule::Unknown,
+            FinupdateModuleStatus::Unknown,
+            0,
+        ),
+        UpdateEvent::UpToDate => (
+            FinupdateEventKind::UpToDate,
+            FinupdateModule::Unknown,
+            FinupdateModuleStatus::Unknown,
+            0,
+        ),
+        UpdateEvent::Error(msg) => {
+            _msg_owner = CString::new(msg).ok();
+            msg_ptr = _msg_owner
+                .as_ref()
+                .map(|c| c.as_ptr())
+                .unwrap_or(ptr::null());
+            (
+                FinupdateEventKind::Error,
+                FinupdateModule::Unknown,
+                FinupdateModuleStatus::Unknown,
+                0,
+            )
+        }
+    };
+
+    callback(kind, module, status, exit_code, msg_ptr, user_data);
+}
+
+fn module_to_ffi(m: crate::orchestrator::Module) -> FinupdateModule {
+    use crate::orchestrator::Module;
+    match m {
+        Module::System => FinupdateModule::System,
+        Module::Flatpak => FinupdateModule::Flatpak,
+        Module::Brew => FinupdateModule::Brew,
+        Module::Distrobox => FinupdateModule::Distrobox,
+    }
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 fn string_to_c(s: &str) -> *mut c_char {
