@@ -3440,57 +3440,76 @@ fn spawn_changelog_fetch(
             // 2. Fetch GitHub commits (with dates for fallback version building)
             let t_github = std::time::Instant::now();
             if let Some((org, repo)) = parse_org_repo(&registry_uri) {
-                let url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
-                println!("[debug] changelog: phase=github_commits url={}", url);
+                #[derive(serde::Deserialize)]
+                struct GithubCommit {
+                    sha: String,
+                    commit: CommitDetails,
+                }
+                #[derive(serde::Deserialize)]
+                struct CommitDetails {
+                    message: String,
+                    author: AuthorDetails,
+                }
+                #[derive(serde::Deserialize)]
+                struct AuthorDetails {
+                    name: String,
+                    #[allow(dead_code)]
+                    date: String,
+                }
+
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(10))
                     .user_agent("Finupdate/0.1.0")
                     .build()
                     .unwrap_or_default();
 
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        #[derive(serde::Deserialize)]
-                        struct GithubCommit {
-                            sha: String,
-                            commit: CommitDetails,
-                        }
-                        #[derive(serde::Deserialize)]
-                        struct CommitDetails {
-                            message: String,
-                            author: AuthorDetails,
-                        }
-                        #[derive(serde::Deserialize)]
-                        struct AuthorDetails {
-                            name: String,
-                            #[allow(dead_code)]
-                            date: String,
-                        }
+                let mut all_commits: Vec<(String, String, String)> = Vec::new();
 
-                        if let Ok(commits_json) = resp.json::<Vec<GithubCommit>>().await {
-                            let commits: Vec<(String, String, String)> = commits_json
+                // Fetch commits from main repository
+                let url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
+                println!("[debug] changelog: phase=github_commits url={}", url);
+                if let Ok(resp) = client.get(&url).send().await {
+                    if let Ok(commits_json) = resp.json::<Vec<GithubCommit>>().await {
+                        all_commits.extend(
+                            commits_json
                                 .into_iter()
                                 .map(|c| (c.sha, c.commit.message, c.commit.author.name))
-                                .collect();
-                            println!(
-                                "[debug] changelog: phase=github_commits ms={} count={}",
-                                t_github.elapsed().as_millis(),
-                                commits.len()
-                            );
-                            let _ = sender.input(StatusViewInput::GithubCommitsLoaded(commits));
-                        } else {
-                            println!(
-                                "[debug] changelog: phase=github_commits ms={} err=parse_failed",
-                                t_github.elapsed().as_millis()
-                            );
-                        }
+                        );
                     }
-                    Err(e) => println!(
-                        "[debug] changelog: phase=github_commits ms={} err={}",
-                        t_github.elapsed().as_millis(),
-                        e
-                    ),
                 }
+
+                // Fetch commits from projectbluefin/common submodule (feature implementations)
+                let common_url = "https://api.github.com/repos/projectbluefin/common/commits";
+                println!("[debug] changelog: phase=github_commits_common url={}", common_url);
+                if let Ok(resp) = client.get(common_url).send().await {
+                    if let Ok(commits_json) = resp.json::<Vec<GithubCommit>>().await {
+                        // Only include feat: commits from common repo to avoid clutter
+                        all_commits.extend(
+                            commits_json
+                                .into_iter()
+                                .filter(|c| c.commit.message.starts_with("feat:"))
+                                .map(|c| (c.sha, c.commit.message, c.commit.author.name))
+                        );
+                    }
+                }
+
+                // Sort to put feat: commits first, then others
+                all_commits.sort_by(|a, b| {
+                    let a_is_feat = a.1.starts_with("feat:");
+                    let b_is_feat = b.1.starts_with("feat:");
+                    match (a_is_feat, b_is_feat) {
+                        (true, false) => std::cmp::Ordering::Less,   // feat comes first
+                        (false, true) => std::cmp::Ordering::Greater, // non-feat comes last
+                        _ => std::cmp::Ordering::Equal,              // same priority, preserve order
+                    }
+                });
+
+                println!(
+                    "[debug] changelog: phase=github_commits ms={} count={}",
+                    t_github.elapsed().as_millis(),
+                    all_commits.len()
+                );
+                let _ = sender.input(StatusViewInput::GithubCommitsLoaded(all_commits));
             }
             println!(
                 "[debug] changelog: phase=total ms={}",
