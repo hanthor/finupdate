@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Project Bluefin Contributors
+     SPDX-License-Identifier: GPL-2.0-or-later -->
+<interface>
+  <requires lib="gtk" version="4.0"/>
+  <requires lib="Adw" version="1.0"/>
+
+  <template class="CcUpdatesPanel" parent="CcPanel">
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="title" translatable="yes">Software Updates</property>
+
+        <!-- Hero: current image identity -->
+        <child>
+          <object class="AdwPreferencesGroup">
+            <child>
+              <object class="AdwActionRow" id="hero_row">
+                <property name="title">System Image</property>
+                <property name="subtitle">Detecting…</property>
+                <property name="subtitle-lines">2</property>
+                <property name="subtitle-selectable">True</property>
+                <property name="title-selectable">True</property>
+                <child type="prefix">
+                  <object class="GtkImage">
+                    <property name="icon-name">drive-harddisk-symbolic</property>
+                    <property name="pixel-size">32</property>
+                    <style>
+                      <class name="accent"/>
+                    </style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <!-- Update state: Up to date / available + Check button -->
+        <child>
+          <object class="AdwPreferencesGroup">
+            <child>
+              <object class="AdwActionRow" id="update_state_row">
+                <property name="title" translatable="yes">Press Check to query for updates</property>
+                <child type="suffix">
+                  <object class="GtkButton" id="check_button">
+                    <property name="label" translatable="yes">Check</property>
+                    <property name="valign">center</property>
+                    <signal name="clicked" handler="on_check_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+
+      </object>
+    </child>
+  </template>
+</interface>

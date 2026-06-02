@@ -330,6 +330,22 @@ pub fn global() -> Arc<dyn UpdaterService> {
         .clone()
 }
 
+/// Return the process-wide UpdaterService, initialising it lazily with the
+/// default [`BootcUpdaterService`] if [`init`] hasn't been called yet.
+///
+/// Used by the FFI surface ([`crate::ffi`]) — the gnome-control-center C
+/// panel loads `libfinupdate.so` and has no Rust-side `main()` to install
+/// the service. The same default the GUI uses (`BootcUpdaterService` over
+/// the live `HttpRegistry`) is the right thing for the panel too.
+///
+/// Safe to call concurrently; `OnceLock::get_or_init` serialises the
+/// first construction.
+pub fn ensure_initialised() -> Arc<dyn UpdaterService> {
+    SERVICE
+        .get_or_init(|| BootcUpdaterService::new())
+        .clone()
+}
+
 /// Default in-process implementation backed by the existing registry_client
 /// and orchestrator modules. Constructed once at app startup and passed to
 /// UI components as `Arc<dyn UpdaterService>`. The Registry dependency is
