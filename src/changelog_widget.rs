@@ -89,6 +89,14 @@ pub fn build_changelog_widget(
     removed_group.set_visible(false);
     page.add(&removed_group);
 
+    // ── Commits group ───────────────────────────────────────────────────
+    // Fed by the GitHub commits fetch. Stays hidden until at least one
+    // commit lands; when the API errors or rate-limits, we just leave
+    // it hidden rather than showing an unactionable error row.
+    let commits_group = adw::PreferencesGroup::builder().title("Commits").build();
+    commits_group.set_visible(false);
+    page.add(&commits_group);
+
     // ── Kick off the async fetches ──────────────────────────────────────
     if let Some(image) = booted {
         spawn_stack_fetch(
@@ -102,6 +110,7 @@ pub fn build_changelog_widget(
             added_group.downgrade(),
             removed_group.downgrade(),
         );
+        spawn_commits_fetch(runtime, image, commits_group.downgrade());
     } else {
         stack_loading.set_title("Couldn't detect the booted image");
         // Strip the spinner suffix in this terminal state.
@@ -305,6 +314,212 @@ enum SbomResult {
     Ok(SbomDiffResult),
     Unavailable,
     Skipped,
+}
+
+/// Fetch the booted image's GitHub commit history (org/repo derived from
+/// the registry URI), then populate the Commits group. Mirrors what the
+/// standalone app does inline in status_view.rs — feat: commits first,
+/// then other commits, with `projectbluefin/common` feat-commits mixed
+/// in for that specific org so cross-repo work surfaces.
+fn spawn_commits_fetch(
+    runtime: &tokio::runtime::Runtime,
+    image: ImageRef,
+    commits_group: glib::WeakRef<adw::PreferencesGroup>,
+) {
+    let Some((org, repo)) = parse_org_repo(&image.org, &image.image) else {
+        return;
+    };
+    let (tx, rx) = mpsc::channel::<Vec<Commit>>();
+    runtime.spawn(async move {
+        let commits = fetch_commits(&org, &repo).await;
+        let _ = tx.send(commits);
+    });
+
+    glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+        let Ok(commits) = rx.try_recv() else {
+            return glib::ControlFlow::Continue;
+        };
+        let Some(group) = commits_group.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if commits.is_empty() {
+            return glib::ControlFlow::Break;
+        }
+        let github_base = format!("https://github.com/{}/{}", commits[0].owner_org, commits[0].owner_repo);
+        group.set_title(&format!("Commits  ·  {}", commits.len()));
+        group.set_visible(true);
+        for c in commits {
+            group.add(&build_commit_row(&c, &github_base));
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// One parsed commit row from the GitHub API. `owner_org`/`owner_repo`
+/// remembers which repo each commit came from so the click-to-open URL
+/// still points to the right place when projectbluefin/common feat:
+/// commits are mixed into the main list.
+#[derive(Debug, Clone)]
+struct Commit {
+    sha: String,
+    message: String,
+    author: String,
+    date: String,
+    owner_org: String,
+    owner_repo: String,
+}
+
+async fn fetch_commits(org: &str, repo: &str) -> Vec<Commit> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("finupdate/0.1.0")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out: Vec<Commit> = Vec::new();
+
+    // Primary fetch — the booted image's source repo.
+    let primary_url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
+    if let Ok(commits) = fetch_repo_commits(&client, &primary_url, org, repo).await {
+        out.extend(commits);
+    }
+
+    // Cross-repo: projectbluefin/common is the shared feature repo for
+    // all projectbluefin images. Only feat: commits to avoid drowning
+    // the source repo's own commits. Skip on non-projectbluefin orgs.
+    if org == "projectbluefin" {
+        let common_url = "https://api.github.com/repos/projectbluefin/common/commits";
+        if let Ok(commits) =
+            fetch_repo_commits(&client, common_url, "projectbluefin", "common").await
+        {
+            out.extend(
+                commits
+                    .into_iter()
+                    .filter(|c| c.message.starts_with("feat:")),
+            );
+        }
+    }
+
+    // feat: first, otherwise preserve API order (which is reverse-chrono).
+    out.sort_by(|a, b| {
+        let a_feat = a.message.starts_with("feat:");
+        let b_feat = b.message.starts_with("feat:");
+        match (a_feat, b_feat) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+
+    // Cap at 20 so the panel doesn't render an enormous list.
+    out.truncate(20);
+    out
+}
+
+async fn fetch_repo_commits(
+    client: &reqwest::Client,
+    url: &str,
+    org: &str,
+    repo: &str,
+) -> Result<Vec<Commit>, reqwest::Error> {
+    #[derive(serde::Deserialize)]
+    struct ApiCommit {
+        sha: String,
+        commit: ApiCommitDetail,
+    }
+    #[derive(serde::Deserialize)]
+    struct ApiCommitDetail {
+        message: String,
+        author: ApiAuthor,
+    }
+    #[derive(serde::Deserialize)]
+    struct ApiAuthor {
+        name: String,
+        date: String,
+    }
+
+    let raw: Vec<ApiCommit> = client.get(url).send().await?.json().await?;
+    Ok(raw
+        .into_iter()
+        .map(|c| Commit {
+            sha: c.sha,
+            // GitHub commit messages can be paragraphs — keep just the
+            // first line for the row title; details belong in the
+            // click-through.
+            message: c
+                .commit
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            author: c.commit.author.name,
+            date: c.commit.author.date,
+            owner_org: org.to_string(),
+            owner_repo: repo.to_string(),
+        })
+        .collect())
+}
+
+fn build_commit_row(commit: &Commit, _default_github_base: &str) -> adw::ActionRow {
+    let date_str = chrono::DateTime::parse_from_rfc3339(&commit.date)
+        .map(|d| d.format("%b %-d, %Y").to_string())
+        .unwrap_or_else(|_| commit.date.clone());
+
+    let row = adw::ActionRow::builder()
+        .title(&commit.message)
+        .subtitle(&format!("{} · {}", commit.author, date_str))
+        .activatable(true)
+        .build();
+
+    let sha_short = if commit.sha.len() >= 7 {
+        &commit.sha[..7]
+    } else {
+        &commit.sha
+    };
+    let sha_lbl = caption_label(sha_short, &["monospace", "dim-label"]);
+    row.add_prefix(&sha_lbl);
+
+    // Click → open the commit on GitHub. Uses each commit's own owner
+    // so projectbluefin/common feat: commits link to common, not the
+    // source image's repo.
+    let commit_url = format!(
+        "https://github.com/{}/{}/commit/{}",
+        commit.owner_org, commit.owner_repo, commit.sha
+    );
+    row.connect_activated(move |row| {
+        let launcher = gtk::UriLauncher::new(&commit_url);
+        let parent = row.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+        launcher.launch(parent.as_ref(), gtk::gio::Cancellable::NONE, |result| {
+            if let Err(e) = result {
+                tracing::warn!("Couldn't open commit URL: {}", e);
+            }
+        });
+    });
+
+    row
+}
+
+/// Pull a `(github_org, github_repo)` pair out of a service ImageRef. Most
+/// universal-blue images are mirrored 1:1 from ghcr.io to GitHub, so
+/// `org/image` is also the GitHub `org/repo`. Returns None when we don't
+/// recognise the org or have no GitHub mapping for it.
+fn parse_org_repo(org: &str, image: &str) -> Option<(String, String)> {
+    // Strip variant suffixes off the image name when mapping to the repo:
+    // `dakota-nvidia` → `dakota`, `bluefin-dx-nvidia-open` → `bluefin`.
+    // The repos are organised per-base-image, not per-variant.
+    let base = image
+        .split_once('-')
+        .map(|(base, _)| base.to_string())
+        .unwrap_or_else(|| image.to_string());
+
+    match org {
+        "projectbluefin" | "ublue-os" => Some((org.to_string(), base)),
+        _ => None,
+    }
 }
 
 async fn sbom_diff_for_panel(booted: &ImageRef, target_full_ref: &str) -> SbomResult {
@@ -552,5 +767,32 @@ mod tests {
         let items = build_stack_items(Some(&booted), &target, None);
         let img = items.iter().find(|i| i.label == "Image").unwrap();
         assert!(img.bumped);
+    }
+
+    // ── parse_org_repo ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_org_repo_drops_variant_suffix() {
+        assert_eq!(
+            parse_org_repo("projectbluefin", "dakota-nvidia"),
+            Some(("projectbluefin".to_string(), "dakota".to_string()))
+        );
+        assert_eq!(
+            parse_org_repo("ublue-os", "bluefin-dx-nvidia-open"),
+            Some(("ublue-os".to_string(), "bluefin".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_org_repo_keeps_base_image_name_when_no_suffix() {
+        assert_eq!(
+            parse_org_repo("projectbluefin", "dakota"),
+            Some(("projectbluefin".to_string(), "dakota".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_org_repo_rejects_unknown_org() {
+        assert_eq!(parse_org_repo("some-other-org", "image"), None);
     }
 }
