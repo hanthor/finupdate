@@ -307,24 +307,14 @@ fn build_network_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings
 
 // ── System group (panel-action rows) ─────────────────────────────────────────
 //
-// Hosts the things that used to be standalone rows on the main page or
-// hamburger-menu entries: Image Source, Image History, Rebase to Previous
-// Version, Powerwash, Factory Reset. Each row dispatches an AppMsg via the
-// caller-supplied sender; navigation rows (Source / History) also close the
-// dialog so the user lands on the chosen subpage.
+// Hosts the destructive reset operations (Powerwash, Factory Reset).
+// Image Source and Rebase/Rollback are now surfaced on the main page.
 
 fn build_system_group(
     page: &adw::PreferencesPage,
-    dialog: &adw::PreferencesDialog,
+    _dialog: &adw::PreferencesDialog,
     sender: relm4::Sender<AppMsg>,
 ) {
-    let group = adw::PreferencesGroup::builder()
-        .title("System")
-        .description(
-            "Inspect the image source, roll back to a previous version, or reset the device.",
-        )
-        .build();
-
     // Helper: build a chevron-suffixed activatable ActionRow with the given
     // title / subtitle. The on-activate callback receives nothing; the caller
     // captures the dispatch sender.
@@ -340,41 +330,6 @@ fn build_system_group(
         row.add_suffix(&chev);
         row
     };
-
-    // Image Source — navigates the main StatusView stack to the source page,
-    // then closes the Advanced dialog so the user sees the subpage.
-    let source_row = make_row("Image Source", "Registry, tag, and signature policy");
-    {
-        let s = sender.clone();
-        let d = dialog.clone();
-        source_row.connect_activated(move |_| {
-            s.emit(AppMsg::ShowStatusPage("source".to_string()));
-            d.close();
-        });
-    }
-    group.add(&source_row);
-
-    // Image History & Rollback — unified entry point that opens the rebase
-    // modal. Per user direction the old separate "Image History" subpage
-    // (a list of on-disk deployments) was redundant with the rebase
-    // dialog's calendar of available rollback targets; one row covers both.
-    // The rebase dialog itself surfaces past versions and lets the user
-    // pick one to roll back to.
-    let rebase_row = make_row(
-        "Image History & Rollback…",
-        "Browse previous builds and roll back the system image",
-    );
-    {
-        let s = sender.clone();
-        let d = dialog.clone();
-        rebase_row.connect_activated(move |_| {
-            s.emit(AppMsg::ShowRebaseDialog);
-            d.close();
-        });
-    }
-    group.add(&rebase_row);
-
-    page.add(&group);
 
     // ── Reset group (destructive) ────────────────────────────────────────
     // Separate group so the destructive actions are visually segregated from

@@ -10,7 +10,8 @@
       "Bash(chmod +x *)",
       "Bash(./debug-gui-test-headless.sh *)",
       "Bash(qecore-headless --help)",
-      "Bash(just --list)"
+      "Bash(just --list)",
+      "Bash(cargo check *)"
     ]
   }
 }

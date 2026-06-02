@@ -361,7 +361,7 @@ async fn cmd_update(system_only: bool) -> ExitCode {
         settings.save();
     }
 
-    let (tx_cancel, rx_cancel) = tokio::sync::oneshot::channel();
+    let (_tx_cancel, rx_cancel) = tokio::sync::oneshot::channel();
     let mut rx = orchestrator::run(rx_cancel).await;
 
     let mut exit_code = ExitCode::SUCCESS;

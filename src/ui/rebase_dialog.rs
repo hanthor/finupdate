@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use crate::registry_client::ImageVersion;
+use crate::registry_client::{ImageVersion, strip_date_suffix};
 use crate::service::{self, FamilyInfo};
 use crate::update_worker::is_flatpak;
 
@@ -534,9 +534,11 @@ fn build_loaded_page(
         .build();
     let recent_take = RECENT_DROPDOWN_COUNT.min(versions.len());
     for v in versions.iter().take(recent_take) {
+        let display_version = strip_date_suffix(&v.version)
+            .unwrap_or_else(|| v.version.clone());
         let row = adw::ActionRow::builder()
             .title(v.date.format("%B %-d, %Y").to_string())
-            .subtitle(v.version.clone())
+            .subtitle(display_version)
             .activatable(true)
             .build();
         row.set_accessible_role(gtk::AccessibleRole::Button);
@@ -713,10 +715,12 @@ fn build_loaded_page(
                     target_full_ref,
                 )
             } else {
+                let display_version = strip_date_suffix(&version.version)
+                    .unwrap_or_else(|| version.version.clone());
                 format!(
                     "Your system will be rebased to the {} build (version {}).\n\nThis requires a restart to take effect and will re-download the full image.",
                     date.format("%B %-d, %Y"),
-                    version.version,
+                    display_version,
                 )
             };
 

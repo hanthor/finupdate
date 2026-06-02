@@ -94,8 +94,8 @@ pub enum StatusViewInput {
     RegistryVersionsLoaded(Vec<crate::registry_client::ImageVersion>),
     /// Available tags loaded from registry for the tag selector
     AvailableTagsLoaded(Vec<crate::registry_client::AvailableTag>),
-    /// Github commits loaded in background
-    GithubCommitsLoaded(Vec<(String, String, String)>),
+    /// Github commits loaded in background: (sha, message, author, date)
+    GithubCommitsLoaded(Vec<(String, String, String, String)>),
     /// SBOM package diff loaded in background
     SbomDiffLoaded(crate::sbom_diff::SbomDiffResult),
     /// A module has started running (from orchestrator).
@@ -156,9 +156,6 @@ pub struct StatusView {
     /// "Restart Tonight" button on the hero row — only shown when
     /// reboot_pending. Schedules a 02:00 reboot via `pkexec shutdown -r`.
     hero_schedule_btn: gtk::Button,
-    /// (i) info button in the hero row — opens the changelog page. Always
-    /// visible when an image is loaded.
-    hero_info_btn: gtk::Button,
     /// Banner group shown when action is needed.
     update_banner_group: adw::PreferencesGroup,
     /// Banner row with dynamic title/subtitle.
@@ -196,7 +193,7 @@ pub struct StatusView {
     expanded_deployment_id: Option<String>,
     changelog_version: String,
     registry_versions: Vec<crate::registry_client::ImageVersion>,
-    github_commits: Vec<(String, String, String)>,
+    github_commits: Vec<(String, String, String, String)>,
     sbom_diff: Option<crate::sbom_diff::SbomDiffResult>,
 
     // Image Source subpage widget references for dynamic updates.
@@ -280,13 +277,6 @@ impl StatusView {
         // - update available → "Install" (.suggested-action)
         // - reboot pending  → "Restart"  (.suggested-action)
         // - up-to-date / checking → hidden, status_pill takes the slot
-        //
-        // hero_info_btn (the (i) circle) is always visible — same "more info"
-        // affordance macOS shows next to the version line.
-        // Hero row info button is always visible — it's the "About this
-        // image" affordance (navigates to Image Source), distinct from the
-        // Update Available banner's (i) which shows changelog content.
-        self.hero_info_btn.set_visible(true);
 
         // Hero action buttons (Install / Restart / Restart Tonight) are now
         // RESERVED for the reboot_pending state per user direction. When an
@@ -318,7 +308,7 @@ impl StatusView {
             self.banner_title_row
                 .set_subtitle("A new image is staged and will be used on next boot.");
             self.banner_install_btn.set_visible(false);
-            self.banner_whats_new_btn.set_visible(false);
+            self.banner_whats_new_btn.set_visible(true);
             self.banner_restart_btn.set_visible(false);
             self.banner_discard_btn.set_visible(true);
         } else if matches!(self.preflight_status, PreflightStatus::UpdateAvailable) {
@@ -342,28 +332,8 @@ impl StatusView {
 
         let version = self.changelog_version.as_str();
 
-        // 1. Add version switcher (pills) at the very top of self.changelog_box
-        let version_selector = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        version_selector.set_halign(gtk::Align::Center);
-        version_selector.add_css_class("linked");
-
-        if !self.registry_versions.is_empty() {
-            // Display recent real versions (up to 4)
-            for v in self.registry_versions.iter().rev().take(4) {
-                let label = v.date.format("%m-%d").to_string(); // e.g. "05-27"
-                let btn = gtk::Button::with_label(&label);
-                let btn_sender = sender.input_sender().clone();
-                let v_str = v.version.clone();
-                btn.connect_clicked(move |_| {
-                    btn_sender.emit(StatusViewInput::SelectChangelogVersion(v_str.clone()));
-                });
-                if v.version == self.changelog_version {
-                    btn.add_css_class("suggested-action");
-                }
-                version_selector.append(&btn);
-            }
-        } else {
-            // No versions loaded yet — show a prominent spinner
+        // Show a loading indicator until versions arrive
+        if self.registry_versions.is_empty() {
             let spinner = gtk::Spinner::new();
             spinner.set_spinning(true);
             spinner.set_size_request(24, 24);
@@ -376,9 +346,7 @@ impl StatusView {
             load_box.append(&load_label);
             self.changelog_box.append(&load_box);
         }
-        self.changelog_box.append(&version_selector);
 
-        // 2. Find the selected version details
         let mut real_version: Option<&ImageVersion> = None;
         if !self.registry_versions.is_empty() {
             real_version = self
@@ -652,7 +620,7 @@ impl StatusView {
             self.changelog_box.append(&list_removals);
         }
 
-        let commits_list: Vec<(String, String, String)> = self.github_commits.clone();
+        let commits_list: Vec<(String, String, String, String)> = self.github_commits.clone();
 
         if !commits_list.is_empty() {
             let commits_title = gtk::Label::builder()
@@ -673,7 +641,7 @@ impl StatusView {
             let github_url = parse_org_repo(&self.registry_uri)
                 .map(|(org, repo)| format!("https://github.com/{}/{}", org, repo));
 
-            for (sha, msg, author) in commits_list {
+            for (sha, msg, author, date) in commits_list {
                 let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
                 row_box.set_margin_start(16);
                 row_box.set_margin_end(16);
@@ -699,8 +667,15 @@ impl StatusView {
                 msg_lbl.add_css_class("body");
                 msg_box.append(&msg_lbl);
 
+                // Parse ISO8601 date and format as "MMM D, YYYY"
+                let date_str = if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&date) {
+                    parsed.format("%b %d, %Y").to_string()
+                } else {
+                    date.clone()
+                };
+
                 let auth_lbl = gtk::Label::builder()
-                    .label(&author)
+                    .label(&format!("{} · {}", author, date_str))
                     .halign(gtk::Align::Start)
                     .build();
                 auth_lbl.add_css_class("caption");
@@ -984,11 +959,9 @@ impl SimpleComponent for StatusView {
 
         // Keep restart + discard as banner-row suffixes so the staged-reboot
         // flow keeps its prominent buttons. Install moved to the hero row.
-        // (i) circular info button — matches the hero's (i) styling but is
-        // separate semantically: hero (i) = "About this image", banner (i)
-        // = "What's new in this update". Same affordance the macOS Tahoe
-        // Software Update card uses.
-        let banner_whats_new_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
+        // Circular list button shows the changelog of what's new in this update.
+        // Uses view-list-symbolic to indicate it shows a detailed list of changes.
+        let banner_whats_new_btn = gtk::Button::from_icon_name("view-list-symbolic");
         banner_whats_new_btn.add_css_class("flat");
         banner_whats_new_btn.add_css_class("circular");
         banner_whats_new_btn.set_tooltip_text(Some("What's new in this update"));
@@ -1001,14 +974,16 @@ impl SimpleComponent for StatusView {
         });
 
         let banner_install_btn = gtk::Button::with_label("Install");
-        banner_install_btn.add_css_class("suggested-action");
+        banner_install_btn.add_css_class("accent");
+        banner_install_btn.set_valign(gtk::Align::Center);
         let install_sender_2 = sender.output_sender().clone();
         banner_install_btn.connect_clicked(move |_| {
             let _ = install_sender_2.send(StatusViewOutput::StartUpdate);
         });
 
         let banner_restart_btn = gtk::Button::with_label("Restart");
-        banner_restart_btn.add_css_class("suggested-action");
+        banner_restart_btn.add_css_class("accent");
+        banner_restart_btn.set_valign(gtk::Align::Center);
         let restart_sender = sender.output_sender().clone();
         banner_restart_btn.connect_clicked(move |_| {
             let _ = restart_sender.send(StatusViewOutput::Reboot);
@@ -1542,7 +1517,6 @@ impl SimpleComponent for StatusView {
             status_pill,
             hero_action_btn,
             hero_schedule_btn,
-            hero_info_btn,
             update_banner_group,
             banner_title_row,
             banner_install_btn,
@@ -2319,7 +2293,24 @@ fn read_image_info() -> Option<String> {
 }
 
 fn read_os_release_field(key: &str) -> Option<String> {
-    for path in &["/run/host/etc/os-release", "/etc/os-release"] {
+    // When in a Flatpak, use flatpak-spawn to read the host's os-release
+    if crate::update_worker::is_flatpak() {
+        if let Ok(output) = std::process::Command::new("flatpak-spawn")
+            .args(["--host", "cat", "/etc/os-release"])
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(content) = String::from_utf8(output.stdout) {
+                    if let Some(v) = parse_os_release_field(&content, key) {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to direct file reading
+    for path in &["/run/host/etc/os-release", "/etc/os-release", "/usr/lib/os-release", "/usr/lib/os-release"] {
         if let Ok(content) = std::fs::read_to_string(path) {
             if let Some(v) = parse_os_release_field(&content, key) {
                 return Some(v);
@@ -3383,6 +3374,7 @@ fn spawn_changelog_fetch(
             // suffix so e.g. "stable-daily-43.20260527" becomes
             // "stable-daily-43") drives both list_versions and
             // list_available_tags.
+            let mut newest_full_ref: Option<String> = None;
             let parts: Vec<&str> = registry_uri.split('/').collect();
             if parts.len() >= 3 {
                 let stream =
@@ -3427,6 +3419,7 @@ fn spawn_changelog_fetch(
                             t.elapsed().as_millis(),
                             versions.len()
                         );
+                        newest_full_ref = versions.first().map(|v| v.full_ref.clone());
                         sender.input(StatusViewInput::RegistryVersionsLoaded(versions));
                     }
                     Err(e) => println!(
@@ -3453,7 +3446,6 @@ fn spawn_changelog_fetch(
                 #[derive(serde::Deserialize)]
                 struct AuthorDetails {
                     name: String,
-                    #[allow(dead_code)]
                     date: String,
                 }
 
@@ -3463,7 +3455,7 @@ fn spawn_changelog_fetch(
                     .build()
                     .unwrap_or_default();
 
-                let mut all_commits: Vec<(String, String, String)> = Vec::new();
+                let mut all_commits: Vec<(String, String, String, String)> = Vec::new();
 
                 // Fetch commits from main repository
                 let url = format!("https://api.github.com/repos/{}/{}/commits", org, repo);
@@ -3473,7 +3465,7 @@ fn spawn_changelog_fetch(
                         all_commits.extend(
                             commits_json
                                 .into_iter()
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name)),
+                                .map(|c| (c.sha, c.commit.message, c.commit.author.name, c.commit.author.date)),
                         );
                     }
                 }
@@ -3491,7 +3483,7 @@ fn spawn_changelog_fetch(
                             commits_json
                                 .into_iter()
                                 .filter(|c| c.commit.message.starts_with("feat:"))
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name)),
+                                .map(|c| (c.sha, c.commit.message, c.commit.author.name, c.commit.author.date)),
                         );
                     }
                 }
@@ -3530,22 +3522,52 @@ fn spawn_changelog_fetch(
             //    Skip entirely when mock_identity is set — there's no real
             //    booted image to diff against, so the fetch would either 404
             //    or compare nonsense.
+            //
+            //    IMPORTANT: Do NOT use strip_date_suffix() refs here. If both
+            //    booted and target resolve to the same floating tag (e.g. both
+            //    "ghcr.io/projectbluefin/dakota:latest") the diff is trivially
+            //    empty. Use the actual full_ref from the newest registry version,
+            //    and the actual booted image's digest from bootc status.
             if Settings::load().mock_identity.is_none() {
-                let booted_tag = read_selected_tag();
-                let booted_ref = format!("{}:{}", registry_uri, booted_tag);
-                let target_ref = format!("{}:{}", registry_uri, selected_tag);
-                let sbom_sender = sender.clone();
-                tokio::spawn(async move {
-                    println!(
-                        "[debug] sbom_diff: deferred fetch booted_ref={} target_ref={}",
-                        booted_ref, target_ref
-                    );
-                    if let Some(diff) =
-                        crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
-                    {
-                        sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
-                    }
-                });
+                // Prefer the actual date-stamped full_ref of the newest build;
+                // fall back to the stream tag only if we got no versions.
+                let target_ref = newest_full_ref
+                    .unwrap_or_else(|| format!("{}:{}", registry_uri, selected_tag));
+
+                // Get the booted image's actual digest-pinned ref from bootc
+                // status so we compare two distinct manifests, not "latest" vs "latest".
+                let booted_ref = get_cached_bootc_status()
+                    .and_then(|json| {
+                        let booted = json.pointer("/status/booted")?;
+                        let img = booted
+                            .pointer("/image/image/image")
+                            .or_else(|| booted.pointer("/image/image"))
+                            .and_then(|v| v.as_str())?;
+                        let digest = booted
+                            .pointer("/image/imageDigest")
+                            .and_then(|v| v.as_str())?;
+                        Some(format!("{}@{}", img, digest))
+                    })
+                    .unwrap_or_else(|| {
+                        format!("{}:{}", registry_uri, read_selected_tag())
+                    });
+
+                if booted_ref != target_ref {
+                    let sbom_sender = sender.clone();
+                    tokio::spawn(async move {
+                        println!(
+                            "[debug] sbom_diff: deferred fetch booted_ref={} target_ref={}",
+                            booted_ref, target_ref
+                        );
+                        if let Some(diff) =
+                            crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
+                        {
+                            sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
+                        }
+                    });
+                } else {
+                    println!("[debug] sbom_diff: skipped (booted == target, same image)");
+                }
             } else {
                 println!("[debug] sbom_diff: skipped (mock_identity active)");
             }

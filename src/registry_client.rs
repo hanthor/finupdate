@@ -575,11 +575,15 @@ impl RegistryClient {
         // 8-way semaphore — measured at ~2-4s for 30 probes against
         // ghcr.io. Only runs when dated tags came up short.
         if candidate_tags.len() < candidate_cap {
-            // Build full list of sha-only tags first, then take a sample.
-            // This ensures we probe a diverse set regardless of registry
-            // tag ordering (e.g., Dakota's old February tags won't occupy
-            // the first N positions and starve newer builds).
-            let mut sha_tags: Vec<String> = tag_resp
+            // Build full list of sha-only tags first, then take an evenly-spread
+            // sample. IMPORTANT: GHCR returns tags alphabetically so sha hashes
+            // starting with 0-3 come first. If we simply take sha_tags[..N] we
+            // probe ~25% of the hash space and miss all recent builds whose hashes
+            // start with 4-f. Dakota switched to pure sha-tagged manifests in
+            // 2026-02 — taking only the first N tags was the root cause of the
+            // "always shows February dates" bug. Stride-sampling ensures we probe
+            // tags from every part of the hash alphabet regardless of registry ordering.
+            let sha_tags: Vec<String> = tag_resp
                 .tags
                 .iter()
                 .filter(|t| is_sha_only_tag(t))
@@ -587,7 +591,11 @@ impl RegistryClient {
                 .collect();
 
             let probe_list = if sha_tags.len() > sha_probe_cap {
-                sha_tags[..sha_probe_cap].to_vec()
+                // Stride-sample: take every stride-th tag so we cover the full
+                // alphabetic range of sha hashes rather than only tags starting
+                // with 0x00-0x3f.
+                let stride = sha_tags.len() / sha_probe_cap;
+                sha_tags.iter().step_by(stride.max(1)).take(sha_probe_cap).cloned().collect()
             } else {
                 sha_tags
             };
@@ -1073,7 +1081,7 @@ fn parse_dated_tag(tag: &str, stream: &str) -> Option<NaiveDate> {
 ///   `lts-hwe-20260224`             → `Some("lts-hwe")`
 ///   `latest`                       → `None`                  (no date)
 ///   `20260114`                     → `None`                  (no stream embedded)
-fn strip_date_suffix(tag: &str) -> Option<String> {
+pub fn strip_date_suffix(tag: &str) -> Option<String> {
     // Strip optional trailing sub-revision `.N` (1-4 digits) before looking
     // for the date — matches the Bazzite convention.
     let base = if let Some(idx) = tag.rfind('.') {
@@ -1121,9 +1129,11 @@ fn registry_cache_dir() -> std::path::PathBuf {
 }
 
 fn cache_key(registry: &str, org: &str, image: &str, stream: &str, suffix: &str) -> String {
-    // Version 2: Fixed fetch_versions to properly probe sha-tags (June 2026).
-    // Bumping version invalidates all old caches to ensure users get fresh results.
-    let version = "v2";
+    // Version 3: Fixed sha-tag sampling to use stride-spread instead of head-slice
+    // (June 2026). GHCR returns tags alphabetically so head-slice only probed
+    // sha hashes starting 0x00-0x3f and missed all recent builds. Bump
+    // invalidates caches built with the old alphabetically-biased probe list.
+    let version = "v3";
     format!(
         "{}_{}_{}_{}_{}_{}",
         version, registry, org, image, stream, suffix

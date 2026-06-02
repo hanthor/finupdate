@@ -700,12 +700,6 @@ impl SimpleComponent for App {
                 self.status_view
                     .emit(StatusViewInput::StateChanged(AppState::Complete));
 
-                // HIG: Use AdwToast for transient success notifications.
-                let toast = adw::Toast::new("System update complete — restart to apply");
-                toast.set_timeout(0); // Persistent until dismissed
-                toast.set_button_label(Some("Dismiss"));
-                self.toast_overlay.add_toast(toast);
-
                 // Send a desktop notification if window is not focused.
                 send_notification(
                     "update-complete",

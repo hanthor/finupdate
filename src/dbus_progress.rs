@@ -12,7 +12,6 @@
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
-use gtk::glib::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 

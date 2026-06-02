@@ -517,6 +517,24 @@ cargo run
 
 When GNOME 48+ ships new widgets, bump the `features = ["v1_8"]` in your libadwaita dep.
 
+---
+
+## Registry / Image Version History
+
+### Dakota (and images using sha-only tags)
+
+**Dakota switched from date-stamped tags to pure sha-only tags around 2026-02.**
+
+Before the switch, builds were tagged `latest.20260212`, `latest.20260211`, etc. — parseable as dates directly. After the switch, every build is tagged with a 40-character git commit sha (e.g. `6ca4b317e092ef767de2526e048b7877205efed7`), plus floating `latest` / `testing` tags.
+
+**Consequence for `fetch_versions` / sha-tag probing:**
+
+`RegistryClient::fetch_versions` probes sha-only tags to recover build dates from OCI config-blob `created` timestamps. GHCR returns tags **alphabetically**, so sha hashes starting with `0`–`3` come first in the list. A naive `sha_tags[..N]` slice probes only 25% of the hash alphabet and misses all recent builds whose sha starts with `4`–`f`.
+
+**Fix applied (v3 cache key):** Use stride-sampling (`step_by(stride)`) instead of a head-slice so each probe batch covers the full hash alphabet. The cache-key version is bumped whenever this logic changes so stale caches are invalidated automatically.
+
+**SBOM diff:** Dakota images do not use the same floating tag for booted vs. target — if both resolve to `:latest` the diff is trivially empty. Always compare using the actual OCI digest from `bootc status` (`image@sha256:...`) for booted, and the newest `ImageVersion.full_ref` for target.
+
 ### libadwaita 0.9 breaking change:
 `AdwDialog::present()` now takes `Option<&impl IsA<Widget>>`:
 ```rust
