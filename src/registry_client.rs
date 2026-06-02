@@ -1124,9 +1124,12 @@ fn cache_key(registry: &str, org: &str, image: &str, stream: &str, suffix: &str)
     // Version 2: Fixed fetch_versions to properly probe sha-tags (June 2026).
     // Bumping version invalidates all old caches to ensure users get fresh results.
     let version = "v2";
-    format!("{}_{}_{}_{}_{}_{}", version, registry, org, image, stream, suffix)
-        .replace('/', "_")
-        .replace(':', "_")
+    format!(
+        "{}_{}_{}_{}_{}_{}",
+        version, registry, org, image, stream, suffix
+    )
+    .replace('/', "_")
+    .replace(':', "_")
 }
 
 fn load_registry_cache<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {

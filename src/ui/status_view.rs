@@ -3473,14 +3473,17 @@ fn spawn_changelog_fetch(
                         all_commits.extend(
                             commits_json
                                 .into_iter()
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name))
+                                .map(|c| (c.sha, c.commit.message, c.commit.author.name)),
                         );
                     }
                 }
 
                 // Fetch commits from projectbluefin/common submodule (feature implementations)
                 let common_url = "https://api.github.com/repos/projectbluefin/common/commits";
-                println!("[debug] changelog: phase=github_commits_common url={}", common_url);
+                println!(
+                    "[debug] changelog: phase=github_commits_common url={}",
+                    common_url
+                );
                 if let Ok(resp) = client.get(common_url).send().await {
                     if let Ok(commits_json) = resp.json::<Vec<GithubCommit>>().await {
                         // Only include feat: commits from common repo to avoid clutter
@@ -3488,7 +3491,7 @@ fn spawn_changelog_fetch(
                             commits_json
                                 .into_iter()
                                 .filter(|c| c.commit.message.starts_with("feat:"))
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name))
+                                .map(|c| (c.sha, c.commit.message, c.commit.author.name)),
                         );
                     }
                 }
@@ -3498,9 +3501,9 @@ fn spawn_changelog_fetch(
                     let a_is_feat = a.1.starts_with("feat:");
                     let b_is_feat = b.1.starts_with("feat:");
                     match (a_is_feat, b_is_feat) {
-                        (true, false) => std::cmp::Ordering::Less,   // feat comes first
+                        (true, false) => std::cmp::Ordering::Less, // feat comes first
                         (false, true) => std::cmp::Ordering::Greater, // non-feat comes last
-                        _ => std::cmp::Ordering::Equal,              // same priority, preserve order
+                        _ => std::cmp::Ordering::Equal,            // same priority, preserve order
                     }
                 });
 
