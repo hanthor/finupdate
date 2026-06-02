@@ -1320,6 +1320,7 @@ fn populate_family_switches(
     let features_group = features_group.clone();
     let family_label = family_label.clone();
     let target_row = target_row.clone();
+    let stream_row = stream_row.clone();
 
     glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
         let Some((family_opt, image_opt)) = slot.lock().ok().and_then(|mut g| g.take()) else {
