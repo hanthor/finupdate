@@ -187,6 +187,11 @@ pub async fn run(
 fn build_runner_command(system_only: bool) -> Command {
     if let Ok(mock_path) = std::env::var("FINUPDATE_TEST_MOCK_RUNNER") {
         let mut cmd = Command::new(mock_path);
+        // Ensure the test runner inherits the parent's environment (especially PATH)
+        // so it can find mock binaries.
+        for (key, value) in std::env::vars() {
+            cmd.env(&key, &value);
+        }
         if system_only {
             cmd.env("FINUPDATE_SYSTEM_ONLY", "1");
         }
