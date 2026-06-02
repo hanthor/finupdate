@@ -71,7 +71,7 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     variant_box.append(&family_label);
 
     // Stream selector (populated once family is detected)
-    let stream_row = adw::ComboBoxRow::builder().title("Stream").build();
+    let stream_row = adw::ComboRow::builder().title("Stream").build();
     let stream_group = adw::PreferencesGroup::new();
     stream_group.add(&stream_row);
     variant_box.append(&stream_group);
@@ -1287,7 +1287,7 @@ fn populate_family_switches(
     features_group: &adw::PreferencesGroup,
     family_label: &gtk::Label,
     target_row: &adw::ActionRow,
-    stream_row: &adw::ComboBoxRow,
+    stream_row: &adw::ComboRow,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
     selected_stream: Rc<RefCell<String>>,
@@ -1737,6 +1737,7 @@ mod tests {
         FamilyInfo {
             name: "Bluefin Stable".to_string(),
             base_image: "bluefin".to_string(),
+            streams: vec![],
             features: vec![],
         }
     }
@@ -1823,6 +1824,7 @@ mod tests {
         FamilyInfo {
             name: "Bluefin Dakota".to_string(),
             base_image: "dakota".to_string(),
+            streams: vec![],
             features: vec![],
         }
     }
@@ -1831,6 +1833,7 @@ mod tests {
         FamilyInfo {
             name: "Bazzite KDE".to_string(),
             base_image: "bazzite".to_string(),
+            streams: vec![],
             features: vec![],
         }
     }

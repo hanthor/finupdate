@@ -455,7 +455,7 @@ mod family_feature_selection {
         let family = find_family("Bluefin Stable");
         for image in family.images {
             if image == &family.base_image() {
-                assert_eq!(family.select_image_for_features(&[]), Some(image));
+                assert_eq!(family.select_image_for_features(&[]), Some(*image));
             } else {
                 // Every non-base image should be selectable by some feature combo
                 let base = family.base_image();
@@ -467,7 +467,7 @@ mod family_feature_selection {
                 // This should resolve to the image
                 assert_eq!(
                     family.select_image_for_features(&features),
-                    Some(image),
+                    Some(*image),
                     "Image {} should be selectable via features {:?}",
                     image,
                     features
