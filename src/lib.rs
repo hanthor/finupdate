@@ -7,6 +7,7 @@
 //! Also exposed via cdylib: see [`ffi`] for the C ABI consumed by the
 //! gnome-control-center panel under `cc-panel/`.
 
+pub mod changelog_widget;
 pub mod config;
 pub mod ffi;
 pub mod orchestrator;

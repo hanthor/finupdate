@@ -7,46 +7,74 @@
 
   <template class="CcUpdatesPanel" parent="CcPanel">
     <child>
-      <object class="AdwPreferencesPage">
-        <property name="title" translatable="yes">Software Updates</property>
+      <!-- AdwNavigationView so the "What's new" detail can push as a
+           subpage and inherit the standard back-arrow without us
+           reimplementing it. -->
+      <object class="AdwNavigationView" id="nav_view">
 
-        <!-- Hero: current image identity -->
+        <!-- Root page: hero + update state + Whats-new entry -->
         <child>
-          <object class="AdwPreferencesGroup">
+          <object class="AdwNavigationPage">
+            <property name="title" translatable="yes">Software Updates</property>
+            <property name="tag">root</property>
             <child>
-              <object class="AdwActionRow" id="hero_row">
-                <property name="title">System Image</property>
-                <property name="subtitle">Detecting…</property>
-                <property name="subtitle-lines">2</property>
-                <property name="subtitle-selectable">True</property>
-                <property name="title-selectable">True</property>
-                <child type="prefix">
-                  <object class="GtkImage">
-                    <property name="icon-name">drive-harddisk-symbolic</property>
-                    <property name="pixel-size">32</property>
-                    <style>
-                      <class name="accent"/>
-                    </style>
+              <object class="AdwPreferencesPage">
+
+                <!-- Hero: current image identity -->
+                <child>
+                  <object class="AdwPreferencesGroup">
+                    <child>
+                      <object class="AdwActionRow" id="hero_row">
+                        <property name="title">System Image</property>
+                        <property name="subtitle">Detecting…</property>
+                        <property name="subtitle-lines">2</property>
+                        <property name="subtitle-selectable">True</property>
+                        <property name="title-selectable">True</property>
+                        <child type="prefix">
+                          <object class="GtkImage">
+                            <property name="icon-name">drive-harddisk-symbolic</property>
+                            <property name="pixel-size">32</property>
+                            <style>
+                              <class name="accent"/>
+                            </style>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
                   </object>
                 </child>
-              </object>
-            </child>
-          </object>
-        </child>
 
-        <!-- Update state: Up to date / available + Check button -->
-        <child>
-          <object class="AdwPreferencesGroup">
-            <child>
-              <object class="AdwActionRow" id="update_state_row">
-                <property name="title" translatable="yes">Press Check to query for updates</property>
-                <child type="suffix">
-                  <object class="GtkButton" id="check_button">
-                    <property name="label" translatable="yes">Check</property>
-                    <property name="valign">center</property>
-                    <signal name="clicked" handler="on_check_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                <!-- Update state + Check + What's new affordance -->
+                <child>
+                  <object class="AdwPreferencesGroup">
+                    <child>
+                      <object class="AdwActionRow" id="update_state_row">
+                        <property name="title" translatable="yes">Press Check to query for updates</property>
+                        <child type="suffix">
+                          <object class="GtkButton" id="check_button">
+                            <property name="label" translatable="yes">Check</property>
+                            <property name="valign">center</property>
+                            <signal name="clicked" handler="on_check_button_clicked" object="CcUpdatesPanel" swapped="no"/>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwActionRow" id="whats_new_row">
+                        <property name="title" translatable="yes">What's new in this update</property>
+                        <property name="subtitle" translatable="yes">See the package diff and key components</property>
+                        <property name="activatable">True</property>
+                        <signal name="activated" handler="on_whats_new_activated" object="CcUpdatesPanel" swapped="no"/>
+                        <child type="suffix">
+                          <object class="GtkImage">
+                            <property name="icon-name">go-next-symbolic</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
                   </object>
                 </child>
+
               </object>
             </child>
           </object>

@@ -44,6 +44,9 @@ use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;
 
+use gtk::glib::translate::IntoGlibPtr;
+use gtk::prelude::*;
+
 use crate::service::{self, UpdaterService};
 
 /// Opaque handle the C panel passes back into every entry point. Holds a
@@ -207,6 +210,42 @@ pub unsafe extern "C" fn finupdate_check_for_updates(
         };
         callback(result, user_data_addr as *mut c_void);
     });
+}
+
+/// Construct the "What's New" changelog widget for embedding in a host
+/// container — the gnome-control-center panel uses this to fill its
+/// AdwNavigationView "Changelog" subpage.
+///
+/// Returns a `GtkWidget *` (typed as `void *` so this header has no
+/// dependency on gtk4-sys; cast on the C side). The widget is an
+/// `AdwPreferencesPage` ready to be added to any AdwNavigationView /
+/// AdwLeaflet / AdwBin. Ownership: the caller becomes the parent, GTK's
+/// floating-ref discipline takes care of the rest — do not free
+/// manually.
+///
+/// MUST be called from the thread that owns the GLib main loop. The
+/// returned widget kicks off its own async data fetches via the tokio
+/// runtime inside `handle`; results land on the main loop via
+/// `g_timeout_add_full`, so the panel's GTK loop is the synchronisation
+/// point.
+///
+/// # Safety
+///
+/// `handle` must be a valid non-NULL pointer returned by [`finupdate_new`].
+/// Caller must be on the GLib main thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn finupdate_changelog_widget_new(handle: *mut Handle) -> *mut c_void {
+    let Some(handle) = (unsafe { handle.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let widget: gtk::Widget = crate::changelog_widget::build_changelog_widget(
+        handle.service.clone(),
+        &handle.rt,
+    )
+    .upcast();
+    // IntoGlibPtr transfers ownership of the floating ref to the caller,
+    // who will sink it when adding to a container.
+    IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget) as *mut c_void
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <shell/cc-panel.h>
+#include <adwaita.h>
 
 G_BEGIN_DECLS
 

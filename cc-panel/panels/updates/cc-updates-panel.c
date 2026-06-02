@@ -31,15 +31,17 @@
 
 struct _CcUpdatesPanel
 {
-  CcPanel       parent_instance;
+  CcPanel             parent_instance;
 
   /* Widgets owned by the .ui template */
-  AdwActionRow *hero_row;
-  AdwActionRow *update_state_row;
-  GtkButton    *check_button;
+  AdwNavigationView  *nav_view;
+  AdwActionRow       *hero_row;
+  AdwActionRow       *update_state_row;
+  AdwActionRow       *whats_new_row;
+  GtkButton          *check_button;
 
   /* Rust backend handle. Created in init, freed in dispose. */
-  Handle       *backend;
+  Handle             *backend;
 };
 
 G_DEFINE_FINAL_TYPE (CcUpdatesPanel, cc_updates_panel, CC_TYPE_PANEL)
@@ -134,6 +136,39 @@ on_check_button_clicked (GtkButton *button, gpointer user_data)
   finupdate_check_for_updates (self->backend, on_check_finished, self);
 }
 
+/* ───── "What's new" subpage ───── */
+
+/* Activated when the user clicks the "What's new in this update" row.
+ * Builds a fresh changelog widget from libfinupdate, wraps it in an
+ * AdwNavigationPage, and pushes it onto the nav stack. Rebuilding on
+ * every push (rather than caching) keeps the data fresh and avoids
+ * having to subscribe to registry-change notifications across the FFI. */
+static void
+on_whats_new_activated (AdwActionRow *row, gpointer user_data)
+{
+  CcUpdatesPanel *self = CC_UPDATES_PANEL (user_data);
+  GtkWidget *content;
+  AdwNavigationPage *page;
+
+  if (self->backend == NULL)
+    return;
+
+  /* The cdylib returns the widget as a void* — cast back to GtkWidget.
+   * Ownership transferred: the floating ref is sunk when we add the
+   * widget to the AdwNavigationPage below. */
+  content = (GtkWidget *) finupdate_changelog_widget_new (self->backend);
+  if (content == NULL)
+    return;
+
+  page = ADW_NAVIGATION_PAGE (
+      g_object_new (ADW_TYPE_NAVIGATION_PAGE,
+                    "title", _("What's New"),
+                    "tag",   "whats-new",
+                    "child", content,
+                    NULL));
+  adw_navigation_view_push (self->nav_view, page);
+}
+
 /* ───── GObject lifecycle ───── */
 
 static void
@@ -166,11 +201,14 @@ cc_updates_panel_class_init (CcUpdatesPanelClass *klass)
       widget_class,
       "/org/gnome/control-center/updates/cc-updates-panel.ui");
 
+  gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, nav_view);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, hero_row);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, update_state_row);
+  gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, whats_new_row);
   gtk_widget_class_bind_template_child (widget_class, CcUpdatesPanel, check_button);
 
   gtk_widget_class_bind_template_callback (widget_class, on_check_button_clicked);
+  gtk_widget_class_bind_template_callback (widget_class, on_whats_new_activated);
 }
 
 static void
