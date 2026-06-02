@@ -116,6 +116,7 @@ pub struct App {
 
 /// Messages the App component can receive.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AppMsg {
     /// User clicked "Update" — optionally bypass the metered-network confirmation.
     StartUpdate { skip_metered_check: bool },
@@ -173,6 +174,10 @@ pub enum AppMsg {
     /// the corresponding banner button is not exposed in the AT-SPI tree
     /// because libadwaita ActionRow doesn't enumerate suffix children.
     ShowWhatsNew,
+    /// Show "What's new" / changelog filtered to a specific image tag.
+    /// Used by the rebase dialog so the user can preview the diff against
+    /// their booted image before deciding to rebase.
+    ShowChangelogForTag(String),
     /// Dismiss the staged-reboot banner. Wired to Ctrl+Backspace for the
     /// same reason as ShowWhatsNew.
     DismissBanner,
@@ -494,6 +499,28 @@ impl SimpleComponent for App {
             });
         } // end if/else for mock_identity preflight short-circuit
 
+        // Prefetch image version history in the background so the rebase
+        // dialog opens with the calendar already populated. Results land in
+        // the registry cache; we don't need to plumb them through the model.
+        gtk::glib::idle_add_local_once(|| {
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for prefetch");
+                rt.block_on(async {
+                    let svc = crate::service::global();
+                    if let Ok(image) = svc.current_image().await {
+                        // Same window size the rebase dialog asks for when
+                        // the user clicks "Load older builds" — so a single
+                        // prefetch covers both the initial open and the
+                        // expanded calendar.
+                        let _ = svc.list_versions(&image, 120).await;
+                    }
+                });
+            });
+        });
+
         ComponentParts { model, widgets }
     }
 
@@ -538,7 +565,21 @@ impl SimpleComponent for App {
                     return;
                 }
 
-                tracing::info!("Starting system update via uupd");
+                // Unified install flow: route every update through the same
+                // modal dialog the "Check for updates" button opens. The
+                // dialog runs the orchestrator with inline per-module logs
+                // in expandable rows — no separate fullscreen "Updating"
+                // page anymore. Skips the old `self.state = Updating` +
+                // background worker code that duplicated what the dialog
+                // does itself.
+                tracing::info!("Routing StartUpdate through the update modal");
+                sender.input(AppMsg::OpenCheckDialog);
+                return;
+
+                // ── Dead code path retained until the fullscreen "updating"
+                //    stack page is fully removed from status_view.rs.
+                #[allow(unreachable_code)]
+                {
                 self.state = AppState::Updating;
                 self.log_lines.clear();
                 self.progress_dbus
@@ -612,6 +653,7 @@ impl SimpleComponent for App {
                         }
                     });
                 });
+                } // close #[allow(unreachable_code)] block
             }
 
             AppMsg::OpenCheckDialog => {
@@ -827,7 +869,12 @@ impl SimpleComponent for App {
                 match window_opt {
                     Some(window) => {
                         let suppress_real = self.settings.dev_mode || self.settings.dry_run;
-                        show_rebase_dialog(&window, suppress_real);
+                        let s = sender.input_sender().clone();
+                        let on_show_changelog: std::rc::Rc<dyn Fn(String)> =
+                            std::rc::Rc::new(move |tag| {
+                                s.emit(AppMsg::ShowChangelogForTag(tag));
+                            });
+                        show_rebase_dialog(&window, suppress_real, on_show_changelog);
                     }
                     None => {
                         tracing::warn!(
@@ -927,6 +974,11 @@ impl SimpleComponent for App {
                 // changelog page and switches the stack to it.
                 self.status_view
                     .emit(StatusViewInput::SelectChangelogVersion(String::new()));
+            }
+
+            AppMsg::ShowChangelogForTag(tag) => {
+                self.status_view
+                    .emit(StatusViewInput::SelectChangelogVersion(tag));
             }
 
             AppMsg::DismissBanner => {

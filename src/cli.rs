@@ -75,7 +75,13 @@ fn main() -> ExitCode {
         }
         "status" => rt.block_on(cmd_status()),
         "family" => rt.block_on(cmd_family()),
-        "versions" => rt.block_on(cmd_versions()),
+        "versions" => {
+            let count = std::env::args()
+                .nth(2)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(8);
+            rt.block_on(cmd_versions(count))
+        }
         "tags" => rt.block_on(cmd_tags()),
         "changelog" => {
             let target_tag = std::env::args().nth(2);
@@ -136,7 +142,61 @@ async fn cmd_family() -> ExitCode {
     }
 }
 
-async fn cmd_versions() -> ExitCode {
+/// Resolve a user-supplied target tag against the live registry.
+///
+/// Returns `(actual_tag, Some(original))` if the original was translated
+/// (e.g. YYYYMMDD → sha-tag), or `(original, None)` if it was used as-is.
+///
+/// Triggers a `list_versions(120)` probe so date-only inputs can be matched
+/// against the sha-tag config-blob `created` timestamps the GUI uses.
+async fn resolve_target_tag(
+    svc: &dyn service::UpdaterService,
+    booted: &service::ImageRef,
+    raw: &str,
+) -> (String, Option<String>) {
+    // Heuristic: 8-digit YYYYMMDD → date lookup. Anything else is taken
+    // literally unless the lookup happens to find a matching version.
+    let parsed_date = if raw.len() == 8 && raw.chars().all(|c| c.is_ascii_digit()) {
+        chrono::NaiveDate::parse_from_str(raw, "%Y%m%d").ok()
+    } else {
+        None
+    };
+    let Some(target_date) = parsed_date else {
+        return (raw.to_string(), None);
+    };
+
+    match svc.list_versions(booted, 120).await {
+        Ok(versions) => match versions.iter().find(|v| v.date == target_date) {
+            // `full_ref` is the actual `registry/org/image:tag` so extract
+            // just the tag suffix. `version` is a synthetic date string for
+            // sha-tagged builds and won't resolve as a manifest.
+            Some(v) => {
+                let tag = v
+                    .full_ref
+                    .rsplit_once(':')
+                    .map(|(_, t)| t.to_string())
+                    .unwrap_or_else(|| v.version.clone());
+                (tag, Some(raw.to_string()))
+            }
+            None => {
+                eprintln!(
+                    "finupdate-cli: no published image found for date {} — using {} literally",
+                    target_date, raw
+                );
+                (raw.to_string(), None)
+            }
+        },
+        Err(e) => {
+            eprintln!(
+                "finupdate-cli: list_versions failed ({}) — using {} literally",
+                e, raw
+            );
+            (raw.to_string(), None)
+        }
+    }
+}
+
+async fn cmd_versions(count: usize) -> ExitCode {
     let svc = service::global();
     let image = match svc.current_image().await {
         Ok(i) => i,
@@ -145,7 +205,7 @@ async fn cmd_versions() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match svc.list_versions(&image, 8).await {
+    match svc.list_versions(&image, count).await {
         Ok(versions) if versions.is_empty() => {
             eprintln!("finupdate-cli: no versions found for {}", image);
             ExitCode::FAILURE
@@ -207,13 +267,25 @@ async fn cmd_changelog(target_tag: Option<String>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let target_tag = target_tag.unwrap_or_else(|| booted.tag.clone());
+    let raw_target = target_tag.unwrap_or_else(|| booted.tag.clone());
+
+    // Mirror the GUI's resolution: if the user passed an 8-digit YYYYMMDD or
+    // any non-existent literal tag, resolve it via list_versions which probes
+    // sha-tag config-blob `created` timestamps. This way `changelog 20260530`
+    // works even though Dakota stopped publishing date-stamped tags after
+    // Feb 2026 — we map the date to whatever sha-tag was built that day.
+    let (target_tag, resolved_via) = resolve_target_tag(&*svc, &booted, &raw_target).await;
+
     println!(
         "Changelog for {}/{}/{}:",
         booted.registry, booted.org, booted.image
     );
     println!("  booted tag: {}", booted.tag);
-    println!("  target tag: {}", target_tag);
+    if let Some(via) = resolved_via {
+        println!("  target tag: {} (resolved from {})", target_tag, via);
+    } else {
+        println!("  target tag: {}", target_tag);
+    }
     println!();
 
     // GitHub commits (same source the GUI's "What's new" page uses). Recent

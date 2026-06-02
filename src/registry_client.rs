@@ -46,6 +46,7 @@ pub enum RegistryError {
     #[error("No dated tags found for stream '{0}'")]
     NoTags(String),
     #[error("Unable to detect current image — is bootc installed?")]
+    #[allow(dead_code)]
     NoCurrentImage,
 }
 
@@ -234,6 +235,7 @@ impl Family {
     /// image (`"bluefin"` for `[]`, `"bluefin-nvidia"` for `["nvidia"]`,
     /// `"bluefin-dx-nvidia"` for `["dx", "nvidia"]`), or `None` if no image
     /// matches (e.g. `["open"]` alone — open driver requires nvidia).
+    #[allow(dead_code)]
     pub fn select_image_for_features(&self, features: &[&str]) -> Option<&'static str> {
         let base = self.base_image();
         if features.is_empty() {
@@ -302,6 +304,7 @@ impl RegistryClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn registry(&self) -> &str {
         &self.registry
     }
@@ -567,43 +570,77 @@ impl RegistryClient {
         let sha_probe_cap = candidate_cap.max(120);
         candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
 
-        // Slow path: dakota-nvidia and similar images publish via sha-only
-        // tags (40-hex commit shas) rather than dated names. parse_dated_tag
-        // can't surface them, so we probe up to SHA_PROBE_CAP sha-tagged
-        // manifests and ask their config blobs for `created` timestamps.
-        // Two HTTP calls per probe (manifest + config blob), bounded by an
-        // 8-way semaphore — measured at ~2-4s for 30 probes against
-        // ghcr.io. Only runs when dated tags came up short.
-        if candidate_tags.len() < candidate_cap {
-            // Build full list of sha-only tags first, then take an evenly-spread
-            // sample. IMPORTANT: GHCR returns tags alphabetically so sha hashes
-            // starting with 0-3 come first. If we simply take sha_tags[..N] we
-            // probe ~25% of the hash space and miss all recent builds whose hashes
-            // start with 4-f. Dakota switched to pure sha-tagged manifests in
-            // 2026-02 — taking only the first N tags was the root cause of the
-            // "always shows February dates" bug. Stride-sampling ensures we probe
-            // tags from every part of the hash alphabet regardless of registry ordering.
-            let sha_tags: Vec<String> = tag_resp
-                .tags
+        // Slow path: dakota and similar images publish via sha-only tags
+        // (40-hex commit shas) rather than dated names. parse_dated_tag can't
+        // surface them, so we probe up to SHA_PROBE_CAP sha-tagged manifests
+        // and ask their config blobs for `created` timestamps. Two HTTP calls
+        // per probe (manifest + config blob), bounded by an 8-way semaphore.
+        //
+        // ALWAYS probe sha tags — not just when dated tags came up short.
+        // Dakota carries 30+ legacy February-dated tags from before its
+        // switch to sha-only naming. Those fill the candidate cap on every
+        // fetch, so a "skip sha probe if we already have enough" guard means
+        // recent sha-tagged builds are NEVER surfaced. Trade a one-time
+        // ~5–10s slow path for correctness.
+        let sha_tags: Vec<String> = tag_resp
+            .tags
+            .iter()
+            .filter(|t| is_sha_only_tag(t))
+            .cloned()
+            .collect();
+
+        let probe_list = if sha_tags.len() > sha_probe_cap {
+            // Stride-sample across the alphabetic range of sha hashes —
+            // GHCR returns tags alphabetically, so head-slicing biases
+            // toward hashes starting with 0–3.
+            let stride = sha_tags.len() / sha_probe_cap;
+            sha_tags
                 .iter()
-                .filter(|t| is_sha_only_tag(t))
+                .step_by(stride.max(1))
+                .take(sha_probe_cap)
                 .cloned()
-                .collect();
+                .collect()
+        } else {
+            sha_tags
+        };
 
-            let probe_list = if sha_tags.len() > sha_probe_cap {
-                // Stride-sample: take every stride-th tag so we cover the full
-                // alphabetic range of sha hashes rather than only tags starting
-                // with 0x00-0x3f.
-                let stride = sha_tags.len() / sha_probe_cap;
-                sha_tags.iter().step_by(stride.max(1)).take(sha_probe_cap).cloned().collect()
-            } else {
-                sha_tags
-            };
+        if !probe_list.is_empty() {
+            let probed = self.probe_sha_tag_dates(&probe_list, &token, &client).await;
+            candidate_tags.extend(probed);
+            candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
+        }
 
-            if !probe_list.is_empty() {
-                let probed = self.probe_sha_tag_dates(&probe_list, &token, &client).await;
-                candidate_tags.extend(probed);
-                candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
+        // Always probe the floating stream tag (`latest`, `stable`, etc.) for
+        // its actual config-blob `created` date. Dakota stopped publishing
+        // dated tags in 2026-02 but still updates `:latest` daily — without
+        // this probe, the newest entry in the list is months-stale (Feb
+        // 2026), which makes the changelog target_ref / Stack diff useless.
+        // Probe is cheap (2 HTTP calls) and only added when the floating tag
+        // actually outdates everything we already have, so it doesn't crowd
+        // out historic dated builds.
+        if tag_resp.tags.iter().any(|t| t == &self.stream) {
+            if let Some(date) = probe_config_created(
+                &client,
+                &self.registry,
+                &self.org,
+                &self.image,
+                &self.stream,
+                &token,
+            )
+            .await
+            {
+                let newest_existing = candidate_tags.iter().map(|(d, _)| *d).max();
+                let stream_is_newer = newest_existing.map(|d| date > d).unwrap_or(true);
+                if stream_is_newer {
+                    tracing::debug!(
+                        "fetch_versions: injecting floating stream tag '{}' dated {} (newer than newest dated tag {:?})",
+                        self.stream,
+                        date,
+                        newest_existing
+                    );
+                    candidate_tags.push((date, self.stream.clone()));
+                    candidate_tags.sort_by(|a, b| b.0.cmp(&a.0));
+                }
             }
         }
 
@@ -855,27 +892,61 @@ async fn fetch_version(
         .await
         .ok()?;
 
-    let manifest: ManifestResponse = resp.json().await.ok()?;
+    // We need the raw JSON twice: once for ManifestResponse (annotations) and
+    // once for the config digest (Dakota fallback). Read it as Value, then
+    // re-deserialize the annotations slice via ManifestResponse.
+    let raw: serde_json::Value = resp.json().await.ok()?;
+    let manifest: ManifestResponse =
+        serde_json::from_value(raw.clone()).unwrap_or(ManifestResponse { annotations: None });
     // Older / docker-v2 manifests (e.g. ucore's stable-zfs-* tags) have no
     // OCI annotations. Treat that as "no metadata" rather than "skip this
     // version" — we still know the date and ref, which is enough for the
     // history list to render and for rollback targeting to work.
     let ann = manifest.annotations.unwrap_or_default();
 
-    let version = ann
-        .get("org.opencontainers.image.version")
-        .cloned()
-        .unwrap_or_else(|| date.format("%Y%m%d").to_string());
+    let mut version = ann.get("org.opencontainers.image.version").cloned();
+    let mut kernel = ann.get("ostree.linux").cloned();
+    let mut revision = ann.get("org.opencontainers.image.revision").cloned();
+    let mut created_str = ann.get("org.opencontainers.image.created").cloned();
 
-    let kernel = ann.get("ostree.linux").cloned().unwrap_or_default();
+    // Dakota fallback: its registry manifests carry only `image.base.digest`,
+    // so version/revision/created live in the config blob's Labels map. One
+    // extra HTTP per build that's missing manifest metadata — the call is
+    // already cached for the lifetime of `fetch_versions`. Kernel is left
+    // unset because Dakota publishes no kernel-version anywhere accessible
+    // (it's inside the kernel-core layer, which we can't crack here).
+    if version.is_none() || revision.is_none() || created_str.is_none() {
+        if let Some(labels) = fetch_config_labels(client, url, token, &raw).await {
+            if version.is_none() {
+                version = labels.get("org.opencontainers.image.version").cloned();
+            }
+            if revision.is_none() {
+                revision = labels.get("org.opencontainers.image.revision").cloned();
+            }
+            if created_str.is_none() {
+                created_str = labels.get("org.opencontainers.image.created").cloned();
+            }
+            if kernel.is_none() {
+                // Long shot — Bluefin sometimes mirrors ostree.linux into the
+                // config labels as well. Cheap to check while we have the blob.
+                kernel = labels.get("ostree.linux").cloned();
+            }
+        }
+    }
 
-    let revision = ann
-        .get("org.opencontainers.image.revision")
+    // Drop sentinel "local-build" placeholders Dakota stamps onto squashed
+    // commit-sha tags — those would render as bogus rows in the UI.
+    let drop_sentinels = |s: Option<String>| -> Option<String> {
+        s.filter(|v| v != "local-build" && !v.is_empty())
+    };
+    let version = drop_sentinels(version).unwrap_or_else(|| date.format("%Y%m%d").to_string());
+    let kernel = drop_sentinels(kernel).unwrap_or_default();
+    let revision = drop_sentinels(revision)
         .map(|r| r.chars().take(8).collect())
         .unwrap_or_default();
-
-    let created = ann
-        .get("org.opencontainers.image.created")
+    let created = created_str
+        .as_deref()
+        .filter(|s| !s.starts_with("2011-11-11"))
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap().and_utc());
@@ -888,6 +959,45 @@ async fn fetch_version(
         revision,
         created,
     })
+}
+
+/// Pull the config blob labels for the manifest at `manifest_url`. Used as a
+/// fallback when manifest annotations don't carry the OCI metadata we need
+/// — Dakota's the canonical case. `manifest_raw` is the already-parsed
+/// manifest JSON; we use it to find the config digest without a second
+/// manifest GET. Returns the `config.Labels` map or None on any failure.
+async fn fetch_config_labels(
+    client: &reqwest::Client,
+    manifest_url: &str,
+    token: &str,
+    manifest_raw: &serde_json::Value,
+) -> Option<HashMap<String, String>> {
+    let config_digest = manifest_raw
+        .get("config")
+        .and_then(|c| c.get("digest"))
+        .and_then(|d| d.as_str())?;
+
+    // Derive the blob URL by replacing the `/manifests/<tag>` suffix with
+    // `/blobs/<digest>`. Saves us having to thread registry/org/image down
+    // through callers — the manifest URL already carries them.
+    let (base, _) = manifest_url.rsplit_once("/manifests/")?;
+    let blob_url = format!("{base}/blobs/{config_digest}");
+
+    let resp = client.get(&blob_url).bearer_auth(token).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let config: serde_json::Value = resp.json().await.ok()?;
+    let labels = config
+        .pointer("/config/Labels")
+        .and_then(|v| v.as_object())?;
+    let mut out = HashMap::new();
+    for (k, v) in labels {
+        if let Some(s) = v.as_str() {
+            out.insert(k.clone(), s.to_string());
+        }
+    }
+    Some(out)
 }
 
 /// True for tags that look like a 40-char lowercase commit sha — the form
@@ -949,6 +1059,12 @@ async fn probe_config_created(
         .ok()?;
 
     let created_str = config.get("created").and_then(|v| v.as_str())?;
+    // Reject Dakota's `2011-11-11T11:11:11Z` placeholder timestamp that
+    // commit-sha-tagged squashed images carry — it's not a real build date,
+    // and including it would skew the candidate_tags sort.
+    if created_str.starts_with("2011-11-11") {
+        return None;
+    }
     let dt = DateTime::parse_from_rfc3339(created_str).ok()?;
     Some(dt.with_timezone(&Utc).date_naive())
 }
@@ -1129,11 +1245,11 @@ fn registry_cache_dir() -> std::path::PathBuf {
 }
 
 fn cache_key(registry: &str, org: &str, image: &str, stream: &str, suffix: &str) -> String {
-    // Version 3: Fixed sha-tag sampling to use stride-spread instead of head-slice
-    // (June 2026). GHCR returns tags alphabetically so head-slice only probed
-    // sha hashes starting 0x00-0x3f and missed all recent builds. Bump
-    // invalidates caches built with the old alphabetically-biased probe list.
-    let version = "v3";
+    // Version 4: Removed the `dated_tags >= cap` gate that suppressed sha-tag
+    // probing entirely (June 2026). Dakota carries 30+ legacy February-dated
+    // tags that filled the cap, so v3 caches still only contained those Feb
+    // dates and never surfaced recent sha-tagged builds. v4 always probes.
+    let version = "v4";
     format!(
         "{}_{}_{}_{}_{}_{}",
         version, registry, org, image, stream, suffix

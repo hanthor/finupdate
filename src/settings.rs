@@ -17,6 +17,7 @@ pub enum UpdateInterval {
     Custom,
 }
 
+#[allow(dead_code)]
 impl UpdateInterval {
     /// Index into the UI combo-row model (Hourly=0, Daily=1, Weekly=2, Custom=3).
     pub fn to_index(&self) -> u32 {
@@ -64,6 +65,7 @@ pub struct MockBootcIdentity {
 
 impl MockBootcIdentity {
     /// Render as the canonical full image reference: `registry/org/image:tag`.
+    #[allow(dead_code)]
     pub fn full_ref(&self) -> String {
         format!("{}/{}/{}:{}", self.registry, self.org, self.image, self.tag)
     }

@@ -30,12 +30,25 @@ use crate::registry_client::{ImageVersion, strip_date_suffix};
 use crate::service::{self, FamilyInfo};
 use crate::update_worker::is_flatpak;
 
+/// Callback invoked when the user clicks "See changelog" inside the rebase
+/// dialog's selected-version panel. Receives the version tag; the app uses it
+/// to navigate the main view to the What's New page filtered to that tag.
+pub type OnShowChangelog = Rc<dyn Fn(String)>;
+
 /// Open the rebase history dialog as a child of `parent`.
-pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
+pub fn show_rebase_dialog(
+    parent: &adw::ApplicationWindow,
+    dev_mode: bool,
+    on_show_changelog: OnShowChangelog,
+) {
     let dialog = adw::Dialog::builder()
-        .title("Rebase to Previous Version")
+        .title("Pin to a Previous Build")
         .content_width(520)
-        .content_height(600)
+        // 720 + tighter day cells fits variants + calendar + details + buttons
+        // without the inner ScrolledWindow needing to scroll on typical
+        // laptop screens (≥900px tall). See inject_calendar_css below for
+        // the matching cell-size reduction.
+        .content_height(720)
         .build();
 
     let toolbar_view = adw::ToolbarView::new();
@@ -58,6 +71,12 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     let selected_features: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let selected_stream: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let current_family: Rc<RefCell<Option<FamilyInfo>>> = Rc::new(RefCell::new(None));
+    // Booted image — populated by populate_family_switches's background
+    // detect, consumed by build_loaded_page so the rebase button can label
+    // itself "Switch to :testing" when the user has changed the stream
+    // away from whatever they're actually booted on (rather than only
+    // labelling for date-pinned actions).
+    let booted_image: Rc<RefCell<Option<service::ImageRef>>> = Rc::new(RefCell::new(None));
 
     let variant_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     variant_box.set_margin_start(16);
@@ -92,25 +111,16 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     target_image_group.add(&target_image_row);
     variant_box.append(&target_image_group);
 
-    // ── Stack: loading / loaded / error ────────────────────────────────
+    // ── Stack: loaded / error ──────────────────────────────────────────
+    // No separate "loading" page anymore — we render the calendar UI
+    // immediately on dialog open (with a small inline "Loading builds…"
+    // indicator) and rebuild it when the registry fetch returns. Skipping
+    // the full-screen status page means the user sees the dialog chrome
+    // and stream/feature toggles right away even on a slow connection.
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .transition_duration(200)
         .build();
-
-    // Loading page
-    let loading_page = {
-        let status = adw::StatusPage::builder()
-            .title("Loading Version History")
-            .description("Fetching available image versions…")
-            .build();
-        let spinner = gtk::Spinner::new();
-        spinner.set_spinning(true);
-        spinner.set_size_request(32, 32);
-        status.set_child(Some(&spinner));
-        status
-    };
-    stack.add_named(&loading_page, Some("loading"));
 
     // Error page
     let retry_button = gtk::Button::builder()
@@ -141,7 +151,25 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     main_box.append(&stack);
     toolbar_view.set_content(Some(&main_box));
     dialog.set_child(Some(&toolbar_view));
-    stack.set_visible_child_name("loading");
+    // Render an empty calendar immediately so the user has visual feedback
+    // while the registry probe runs. The `is_loading` flag drives the
+    // inline "Loading builds…" indicator below the grid.
+    build_loaded_page(
+        &loaded_box,
+        &stack,
+        &dialog,
+        parent,
+        Vec::new(),
+        dev_mode,
+        current_family.clone(),
+        selected_features.clone(),
+        selected_stream.clone(),
+        booted_image.clone(),
+        None,
+        on_show_changelog.clone(),
+        true,
+    );
+    stack.set_visible_child_name("loaded");
 
     let stack_for_retry = stack.clone();
     let loaded_box_for_retry = loaded_box.clone();
@@ -151,6 +179,9 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
     let variant_state_for_retry = variant_state.clone();
     let current_family_for_retry = current_family.clone();
     let selected_features_for_retry = selected_features.clone();
+    let on_show_changelog_for_retry = on_show_changelog.clone();
+    let selected_stream_for_retry = selected_stream.clone();
+    let booted_image_for_retry = booted_image.clone();
     retry_button.connect_clicked(move |_| {
         let variant = variant_state_for_retry.borrow().clone();
         start_version_fetch(
@@ -163,16 +194,74 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
             &variant,
             current_family_for_retry.clone(),
             selected_features_for_retry.clone(),
+            selected_stream_for_retry.clone(),
+            booted_image_for_retry.clone(),
             INITIAL_FETCH_COUNT,
+            on_show_changelog_for_retry.clone(),
+            None,
         );
     });
 
     // Family + feature switches are populated AFTER the initial fetch
     // completes (we need the detected RegistryClient to know which family
-    // we're on). Switches are wired to recompute the target_image_row
-    // suffix label as the user toggles them; restarting fetch on every
-    // toggle would thrash the network — instead the user clicks Rebase to
-    // commit a switch to a different image.
+    // we're on). When the user flips DX/NVIDIA/stream, recompute resolves
+    // the new target image and invokes `on_target_change` below, which
+    // kicks off a fresh registry fetch so the calendar reflects builds for
+    // THAT image rather than the booted one. Debounced via a generation
+    // counter so a flurry of toggles in <300 ms only fires one fetch.
+    let refetch_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+    let on_target_change: Rc<dyn Fn(Option<service::ImageRef>)> = {
+        let stack = stack.clone();
+        let loaded_box = loaded_box.clone();
+        let dialog = dialog.clone();
+        let parent = parent.clone();
+        let error_page = error_page.clone();
+        let current_family = current_family.clone();
+        let selected_features = selected_features.clone();
+        let on_show_changelog = on_show_changelog.clone();
+        let refetch_gen = refetch_gen.clone();
+        let selected_stream = selected_stream.clone();
+        let booted_image = booted_image.clone();
+        Rc::new(move |target: Option<service::ImageRef>| {
+            let this_gen = refetch_gen.get().wrapping_add(1);
+            refetch_gen.set(this_gen);
+            let stack = stack.clone();
+            let loaded_box = loaded_box.clone();
+            let dialog = dialog.clone();
+            let parent = parent.clone();
+            let error_page = error_page.clone();
+            let current_family = current_family.clone();
+            let selected_features = selected_features.clone();
+            let on_show_changelog = on_show_changelog.clone();
+            let refetch_gen = refetch_gen.clone();
+            let selected_stream = selected_stream.clone();
+            let booted_image = booted_image.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                if refetch_gen.get() != this_gen {
+                    // Newer toggle already came in — drop this firing.
+                    return glib::ControlFlow::Break;
+                }
+                start_version_fetch(
+                    stack.clone(),
+                    loaded_box.clone(),
+                    dialog.clone(),
+                    parent.clone(),
+                    error_page.clone(),
+                    dev_mode,
+                    "", // variant filter empty; target_override carries the image identity
+                    current_family.clone(),
+                    selected_features.clone(),
+                    selected_stream.clone(),
+                    booted_image.clone(),
+                    INITIAL_FETCH_COUNT,
+                    on_show_changelog.clone(),
+                    target.clone(),
+                );
+                glib::ControlFlow::Break
+            });
+        })
+    };
+
     populate_family_switches(
         &features_group,
         &family_label,
@@ -181,6 +270,8 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
         current_family.clone(),
         selected_features.clone(),
         selected_stream.clone(),
+        booted_image.clone(),
+        on_target_change,
     );
 
     dialog.present(Some(parent));
@@ -195,7 +286,11 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
         &initial_variant,
         current_family.clone(),
         selected_features.clone(),
+        selected_stream.clone(),
+        booted_image.clone(),
         INITIAL_FETCH_COUNT,
+        on_show_changelog.clone(),
+        None,
     );
 }
 
@@ -206,7 +301,6 @@ pub fn show_rebase_dialog(parent: &adw::ApplicationWindow, dev_mode: bool) {
 /// builds" affordance inside the calendar re-fetches with EXPANDED_FETCH_COUNT.
 const INITIAL_FETCH_COUNT: usize = 12;
 const EXPANDED_FETCH_COUNT: usize = 120;
-const RECENT_DROPDOWN_COUNT: usize = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn start_version_fetch(
@@ -219,14 +313,25 @@ fn start_version_fetch(
     variant: &str,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
+    selected_stream: Rc<RefCell<String>>,
+    booted_image: Rc<RefCell<Option<service::ImageRef>>>,
     max_versions: usize,
+    on_show_changelog: OnShowChangelog,
+    target_override: Option<service::ImageRef>,
 ) {
-    stack.set_visible_child_name("loading");
+    // No "loading" stack page anymore — the empty calendar built on dialog
+    // open carries its own "Loading builds…" indicator. Just make sure the
+    // error page isn't sticky from a previous failed run.
     error_page.set_description(Some("Check your internet connection and try again."));
 
     let variant_str = variant.to_string();
     let result_slot: Arc<Mutex<Option<FetchResult>>> = Arc::new(Mutex::new(None));
-    spawn_fetch_thread(result_slot.clone(), &variant_str, max_versions);
+    spawn_fetch_thread(
+        result_slot.clone(),
+        &variant_str,
+        max_versions,
+        target_override.clone(),
+    );
 
     // Build a "reload with EXPANDED_FETCH_COUNT" closure that the loaded
     // page passes to the "Load older builds" button inside the calendar.
@@ -242,6 +347,10 @@ fn start_version_fetch(
         let variant_owned = variant_str.clone();
         let current_family = current_family.clone();
         let selected_features = selected_features.clone();
+        let selected_stream = selected_stream.clone();
+        let booted_image = booted_image.clone();
+        let on_show_changelog = on_show_changelog.clone();
+        let target_override_owned = target_override.clone();
         Rc::new(move || {
             start_version_fetch(
                 stack.clone(),
@@ -253,7 +362,11 @@ fn start_version_fetch(
                 &variant_owned,
                 current_family.clone(),
                 selected_features.clone(),
+                selected_stream.clone(),
+                booted_image.clone(),
                 EXPANDED_FETCH_COUNT,
+                on_show_changelog.clone(),
+                target_override_owned.clone(),
             );
         })
     };
@@ -277,11 +390,15 @@ fn start_version_fetch(
                         dev_mode,
                         current_family.clone(),
                         selected_features.clone(),
+                        selected_stream.clone(),
+                        booted_image.clone(),
                         if is_expanded {
                             None
                         } else {
                             Some(reload_fn.clone())
                         },
+                        on_show_changelog.clone(),
+                        false,
                     );
                     stack.set_visible_child_name("loaded");
                 }
@@ -300,7 +417,11 @@ fn start_version_fetch(
             return glib::ControlFlow::Break;
         }
 
-        if start_time.elapsed() > std::time::Duration::from_secs(20) {
+        // Generous timeout: the sha-tag probe path does ~120 manifest+config
+        // round-trips against ghcr.io to surface recent builds whose tags
+        // aren't date-stamped. 90s covers slower networks; cache absorbs the
+        // cost on subsequent opens.
+        if start_time.elapsed() > std::time::Duration::from_secs(90) {
             error_page.set_description(Some("Check your internet connection and try again."));
             stack.set_visible_child_name("error");
             return glib::ControlFlow::Break;
@@ -314,6 +435,7 @@ fn spawn_fetch_thread(
     result_slot: Arc<Mutex<Option<FetchResult>>>,
     variant: &str,
     max_versions: usize,
+    target_override: Option<service::ImageRef>,
 ) {
     let variant_str = variant.to_string();
     std::thread::spawn(move || {
@@ -323,14 +445,21 @@ fn spawn_fetch_thread(
             .expect("tokio runtime");
 
         rt.block_on(async move {
-            // Migrated from RegistryClient::detect + fetch_versions(90) to
-            // the service layer. current_image() honours mock_identity →
-            // bootc status → os-release; list_versions delegates to
-            // fetch_versions internally with the config-blob date harvest
-            // included. `max_versions` lets the caller scale up the fetch
-            // when the user clicks "Load older builds" in the calendar.
+            // `target_override` is set by the variant/stream switches in the
+            // dialog: when the user flips DX/NVIDIA/stream, recompute resolves
+            // the new target image and asks us to load THAT image's history
+            // into the calendar instead of the booted one. None means use the
+            // booted image (initial open, retry button).
+            //
+            // current_image() honours mock_identity → bootc status → os-release;
+            // list_versions delegates to fetch_versions internally with the
+            // config-blob date harvest included.
             let svc = service::global();
-            let result = match svc.current_image().await {
+            let image_result = match target_override {
+                Some(img) => Ok(img),
+                None => svc.current_image().await,
+            };
+            let result = match image_result {
                 Err(_) => FetchResult::DetectFailed,
                 Ok(image) => match svc.list_versions(&image, max_versions).await {
                     Ok(mut versions) => {
@@ -350,6 +479,7 @@ fn spawn_fetch_thread(
 // ── Loaded page builder ──────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn build_loaded_page(
     container: &gtk::Box,
     stack: &gtk::Stack,
@@ -359,7 +489,11 @@ fn build_loaded_page(
     dev_mode: bool,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
+    selected_stream: Rc<RefCell<String>>,
+    booted_image: Rc<RefCell<Option<service::ImageRef>>>,
     reload_fn: Option<Rc<dyn Fn()>>,
+    on_show_changelog: OnShowChangelog,
+    is_loading: bool,
 ) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -397,13 +531,42 @@ fn build_loaded_page(
     details_group.add(&built_row);
     details_group.add(&commit_row);
 
-    // ── Rebase button (disabled until selection) ────────────────────────
-    let rebase_btn = gtk::Button::builder()
-        .label("Rebase…")
+    // ── See changelog button (disabled until selection) ─────────────────
+    // Closes the dialog and routes the main view to the What's New page
+    // filtered to the selected tag, so the user can preview the diff vs.
+    // booted before committing to a rebase.
+    let see_changelog_btn = gtk::Button::builder()
+        .label("See changelog")
         .sensitive(false)
         .margin_start(16)
         .margin_end(16)
         .margin_top(8)
+        .build();
+    see_changelog_btn.add_css_class("flat");
+
+    // ── Rebase button ───────────────────────────────────────────────────
+    // The label and sensitivity update from THREE places:
+    //   - this initial computation (stream / variant state at page-load)
+    //   - the day-click handler (populate_details_for, when a date is picked)
+    //   - the day-click handler's deselect branch (when a picked date is
+    //     clicked again, falling back to the stream-switch label)
+    // The shared cell `pending_stream_ref` carries the resolved full ref
+    // for stream/variant-only switches, so the click handler can dispatch
+    // without re-resolving (and so the day-pin path can override it).
+    let pending_stream_ref: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let (initial_label, initial_sensitive, initial_ref) = compute_stream_switch_action(
+        current_family.borrow().as_ref(),
+        &selected_features.borrow(),
+        &selected_stream.borrow(),
+        booted_image.borrow().as_ref(),
+    );
+    *pending_stream_ref.borrow_mut() = initial_ref;
+    let rebase_btn = gtk::Button::builder()
+        .label(&initial_label)
+        .sensitive(initial_sensitive)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(4)
         .margin_bottom(16)
         .build();
     // Inline action button (in-page, not a centered StatusPage CTA) — per
@@ -418,9 +581,17 @@ fn build_loaded_page(
     calendar_box.set_margin_top(16);
     calendar_box.set_margin_bottom(8);
 
-    // Current displayed month — starts at current month.
+    // Current displayed month — start on the month containing the most-recent
+    // published image so the user lands on something with highlighted days
+    // instead of an empty calendar (Dakota's recent tags are sha-only, not
+    // date-stamped, so "today" might have nothing visible).
     let today = Local::now().date_naive();
-    let initial_month = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
+    let initial_month = versions
+        .last()
+        .map(|v| NaiveDate::from_ymd_opt(v.date.year(), v.date.month(), 1).unwrap_or(v.date))
+        .unwrap_or_else(|| {
+            NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today)
+        });
     let displayed_month: Rc<RefCell<NaiveDate>> = Rc::new(RefCell::new(initial_month));
 
     // ── Month nav row ───────────────────────────────────────────────────
@@ -474,8 +645,8 @@ fn build_loaded_page(
 
     // Day grid — 7 columns × 6 rows, pre-populated
     let grid = gtk::Grid::builder()
-        .row_spacing(4)
-        .column_spacing(4)
+        .row_spacing(2)
+        .column_spacing(2)
         .row_homogeneous(true)
         .column_homogeneous(true)
         .build();
@@ -488,6 +659,45 @@ fn build_loaded_page(
         }
     }
     calendar_box.append(&grid);
+
+    // Empty-state hint shown when the displayed month has no highlighted days
+    // (e.g. user navigated to a month with no published builds). Toggled by
+    // redraw_grid based on the count of `day-available` cells. When the
+    // dialog is in its initial loading state we relabel this to "Loading
+    // builds…" + spinner so the empty calendar reads as "in progress",
+    // not "definitively empty".
+    let empty_hint = gtk::Label::builder()
+        .label(if is_loading {
+            "Loading builds…"
+        } else {
+            "No builds in this month"
+        })
+        .halign(gtk::Align::Center)
+        .margin_top(8)
+        .build();
+    empty_hint.add_css_class("dim-label");
+    empty_hint.add_css_class("caption");
+    empty_hint.set_visible(false);
+    calendar_box.append(&empty_hint);
+
+    // Persistent "Loading builds…" row at the bottom of the calendar while
+    // the registry fetch is in flight. Sits below the grid so the user
+    // sees activity even when the grid itself has some highlights (e.g.
+    // first batch of dated tags arrived but sha probe is still running).
+    if is_loading {
+        let loading_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        loading_row.set_halign(gtk::Align::Center);
+        loading_row.set_margin_top(8);
+        let spinner = gtk::Spinner::new();
+        spinner.set_spinning(true);
+        spinner.set_size_request(14, 14);
+        let lbl = gtk::Label::new(Some("Loading builds…"));
+        lbl.add_css_class("dim-label");
+        lbl.add_css_class("caption");
+        loading_row.append(&spinner);
+        loading_row.append(&lbl);
+        calendar_box.append(&loading_row);
+    }
 
     // "Load older builds" button at the bottom of the calendar — only when
     // the initial fetch was the small INITIAL_FETCH_COUNT cut. Clicking
@@ -517,97 +727,39 @@ fn build_loaded_page(
 
     inject_calendar_css();
 
-    // ── Recent versions dropdown (top of the dialog) ──────────────────────
-    // User direction: surface the most recent N builds prominently. The
-    // calendar is overkill when the user is just rolling back to last week.
-    // Top-RECENT_DROPDOWN_COUNT versions render as a PreferencesGroup of
-    // activatable ActionRows; click activates the same selection state the
-    // calendar grid uses, so the rebase button + details panel get the same
-    // wiring.
-    let recent_group = adw::PreferencesGroup::builder()
-        .title("Recent builds")
-        .description("Most recent images — click to select, then Rebase")
-        .margin_start(16)
-        .margin_end(16)
-        .margin_top(8)
-        .margin_bottom(0)
+    // See changelog mirrors the details panel: enabled iff a date is selected.
+    // Use property binding so we don't have to thread the button through every
+    // call site that toggles the details panel visibility.
+    details_group
+        .bind_property("visible", &see_changelog_btn, "sensitive")
+        .sync_create()
         .build();
-    let recent_take = RECENT_DROPDOWN_COUNT.min(versions.len());
-    for v in versions.iter().take(recent_take) {
-        let display_version = strip_date_suffix(&v.version)
-            .unwrap_or_else(|| v.version.clone());
-        let row = adw::ActionRow::builder()
-            .title(v.date.format("%B %-d, %Y").to_string())
-            .subtitle(display_version)
-            .activatable(true)
-            .build();
-        row.set_accessible_role(gtk::AccessibleRole::Button);
-        let chev = gtk::Image::from_icon_name("go-next-symbolic");
-        chev.add_css_class("dim-label");
-        row.add_suffix(&chev);
 
-        let date = v.date;
+    // Wire the See changelog button — closes the dialog, routes to What's New
+    // for the selected tag.
+    {
         let selected_rc = selected.clone();
         let version_map_rc = version_map.clone();
-        let details_group_rc = details_group.clone();
-        let version_row_rc = version_row.clone();
-        let kernel_row_rc = kernel_row.clone();
-        let built_row_rc = built_row.clone();
-        let commit_row_rc = commit_row.clone();
-        let rebase_btn_rc = rebase_btn.clone();
-        row.connect_activated(move |_| {
-            *selected_rc.borrow_mut() = Some(date);
-            if let Some(v) = version_map_rc.get(&date) {
-                update_details(
-                    &details_group_rc,
-                    &version_row_rc,
-                    &kernel_row_rc,
-                    &built_row_rc,
-                    &commit_row_rc,
-                    &rebase_btn_rc,
-                    v,
-                    &date,
-                    current_date,
-                );
-            }
-        });
-        recent_group.add(&row);
-    }
-
-    // ── "Show older builds" reveals the full calendar ─────────────────────
-    let calendar_revealer = gtk::Revealer::builder()
-        .transition_type(gtk::RevealerTransitionType::SlideDown)
-        .transition_duration(200)
-        .reveal_child(false)
-        .build();
-    calendar_revealer.set_child(Some(&calendar_box));
-
-    let show_older_btn = gtk::Button::builder()
-        .label("Show older builds…")
-        .halign(gtk::Align::Center)
-        .margin_top(8)
-        .margin_bottom(0)
-        .build();
-    show_older_btn.add_css_class("flat");
-    {
-        let revealer = calendar_revealer.clone();
-        let btn = show_older_btn.clone();
-        show_older_btn.connect_clicked(move |_| {
-            let new_state = !revealer.reveals_child();
-            revealer.set_reveal_child(new_state);
-            btn.set_label(if new_state {
-                "Hide calendar"
-            } else {
-                "Show older builds…"
-            });
+        let dialog_rc = dialog.clone();
+        let cb = on_show_changelog.clone();
+        see_changelog_btn.connect_clicked(move |_| {
+            let Some(date) = *selected_rc.borrow() else {
+                return;
+            };
+            let Some(v) = version_map_rc.get(&date).cloned() else {
+                return;
+            };
+            dialog_rc.close();
+            cb(v.version);
         });
     }
 
     // ── Assemble container ──────────────────────────────────────────────
-    container.append(&recent_group);
-    container.append(&show_older_btn);
-    container.append(&calendar_revealer);
+    // Calendar is the primary navigator: highlighted days have published
+    // images, click one to load its details below.
+    container.append(&calendar_box);
     container.append(&details_group);
+    container.append(&see_changelog_btn);
     container.append(&rebase_btn);
 
     // ── Helpers for re-drawing the grid ────────────────────────────────
@@ -621,7 +773,32 @@ fn build_loaded_page(
     let rebase_btn_rc = rebase_btn.clone();
     let month_label_rc = month_label.clone();
     let next_btn_rc = next_btn.clone();
+    let empty_hint_rc = empty_hint.clone();
 
+    // Closure invoked when the user clicks an already-selected day to clear
+    // their selection. Restores the stream-switch label so the button
+    // doesn't go dead if the user was changing streams via the dropdown.
+    let on_deselect: Rc<dyn Fn()> = {
+        let rebase_btn = rebase_btn.clone();
+        let current_family = current_family.clone();
+        let selected_features = selected_features.clone();
+        let selected_stream = selected_stream.clone();
+        let booted_image = booted_image.clone();
+        let pending_stream_ref = pending_stream_ref.clone();
+        Rc::new(move || {
+            let (label, sensitive, full_ref) = compute_stream_switch_action(
+                current_family.borrow().as_ref(),
+                &selected_features.borrow(),
+                &selected_stream.borrow(),
+                booted_image.borrow().as_ref(),
+            );
+            *pending_stream_ref.borrow_mut() = full_ref;
+            rebase_btn.set_label(&label);
+            rebase_btn.set_sensitive(sensitive);
+        })
+    };
+
+    let on_deselect_for_redraw = on_deselect.clone();
     let redraw = Rc::new(move |grid: &gtk::Grid, displayed: NaiveDate| {
         redraw_grid(
             grid,
@@ -637,6 +814,8 @@ fn build_loaded_page(
             &rebase_btn_rc,
             &month_label_rc,
             &next_btn_rc,
+            &empty_hint_rc,
+            Some(on_deselect_for_redraw.clone()),
         );
     });
 
@@ -685,9 +864,54 @@ fn build_loaded_page(
         let stack_rc = stack.clone();
         let current_family_rc = current_family.clone();
         let selected_features_rc = selected_features.clone();
+        let pending_stream_ref_rc = pending_stream_ref.clone();
+        let selected_stream_rc = selected_stream.clone();
 
         rebase_btn.connect_clicked(move |_| {
+            // ── No date selected: stream/variant-only switch path ───────
+            // Triggered by the user changing the stream dropdown (or DX /
+            // NVIDIA toggles) and clicking the button without picking a
+            // specific date. Commits to the floating stream tag, so future
+            // upgrades follow it instead of pinning to a single build.
             let Some(date) = *selected_rc.borrow() else {
+                let Some(full_ref) = pending_stream_ref_rc.borrow().clone() else {
+                    return;
+                };
+                let stream = selected_stream_rc.borrow().clone();
+                let confirm = adw::AlertDialog::builder()
+                    .heading(format!("Switch to :{}?", stream))
+                    .body(format!(
+                        "Your system will follow the floating `{}` tag and resume receiving automatic updates from it:\n\n{}\n\nA restart is required and the full image will be re-downloaded.",
+                        stream, full_ref,
+                    ))
+                    .build();
+                confirm.add_response("cancel", "_Cancel");
+                confirm.add_response("switch", "_Switch");
+                confirm.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+                confirm.set_default_response(Some("cancel"));
+                confirm.set_close_response("cancel");
+
+                let stack = stack_rc.clone();
+                let dialog_close = dialog_rc.clone();
+                let full_ref_for_run = full_ref.clone();
+                confirm.connect_response(None, move |_, response| {
+                    if response == "switch" {
+                        if dev_mode {
+                            run_rebase_simulated(
+                                full_ref_for_run.clone(),
+                                stack.clone(),
+                                dialog_close.clone(),
+                            );
+                        } else {
+                            run_rebase(
+                                full_ref_for_run.clone(),
+                                stack.clone(),
+                                dialog_close.clone(),
+                            );
+                        }
+                    }
+                });
+                confirm.present(Some(&parent_rc));
                 return;
             };
             let Some(version) = version_map_rc.get(&date).cloned() else {
@@ -711,26 +935,26 @@ fn build_loaded_page(
 
             let body = if switching_image {
                 format!(
-                    "Your system will be rebased to:\n\n{}\n\nThis is a different image variant than what you're currently running. A restart is required and the full image will be re-downloaded.",
+                    "Your system will be pinned to:\n\n{}\n\nThis is a different image variant than what you're currently running. A restart is required and the full image will be re-downloaded. Automatic updates pause until you unpin.",
                     target_full_ref,
                 )
             } else {
                 let display_version = strip_date_suffix(&version.version)
                     .unwrap_or_else(|| version.version.clone());
                 format!(
-                    "Your system will be rebased to the {} build (version {}).\n\nThis requires a restart to take effect and will re-download the full image.",
+                    "Your system will be pinned to the {} build (version {}).\n\nA restart is required and the full image will be re-downloaded. Automatic updates pause until you unpin.",
                     date.format("%B %-d, %Y"),
                     display_version,
                 )
             };
 
             let confirm = adw::AlertDialog::builder()
-                .heading("Rebase System?")
+                .heading("Pin to this build?")
                 .body(body)
                 .build();
 
             confirm.add_response("cancel", "_Cancel");
-            confirm.add_response("rebase", "_Rebase");
+            confirm.add_response("rebase", "_Pin");
             confirm.set_response_appearance("rebase", adw::ResponseAppearance::Suggested);
             confirm.set_default_response(Some("cancel"));
             confirm.set_close_response("cancel");
@@ -801,6 +1025,12 @@ fn redraw_grid(
     rebase_btn: &gtk::Button,
     month_label: &gtk::Label,
     next_btn: &gtk::Button,
+    empty_hint: &gtk::Label,
+    // Called when the user clicks an already-selected day to deselect it.
+    // Restores the rebase button's stream-switch label/sensitivity (e.g.
+    // "Switch to :testing") so the button stays useful instead of going
+    // disabled in the middle of a stream change.
+    on_deselect: Option<Rc<dyn Fn()>>,
 ) {
     let today = Local::now().date_naive();
 
@@ -816,6 +1046,7 @@ fn redraw_grid(
     let first_weekday = displayed.weekday().num_days_from_monday() as i32;
     let selected_date = *selected.borrow();
 
+    let mut available_count = 0u32;
     let mut slot = 0i32;
     for row in 0..6i32 {
         for col in 0..7i32 {
@@ -859,6 +1090,7 @@ fn redraw_grid(
                     }
                     if is_available {
                         btn.add_css_class("day-available");
+                        available_count += 1;
                     }
                     if is_current {
                         btn.add_css_class("day-current");
@@ -888,6 +1120,9 @@ fn redraw_grid(
                         let rebase_btn_inner = rebase_btn.clone();
                         let month_label_inner = month_label.clone();
                         let next_btn_inner = next_btn.clone();
+                        let empty_hint_inner = empty_hint.clone();
+                        let on_deselect_inner = on_deselect.clone();
+                        let on_deselect_for_redraw = on_deselect.clone();
 
                         let hid = btn.connect_clicked(move |_| {
                             // Toggle or set selection
@@ -913,6 +1148,8 @@ fn redraw_grid(
                                 &rebase_btn_inner,
                                 &month_label_inner,
                                 &next_btn_inner,
+                                &empty_hint_inner,
+                                on_deselect_for_redraw.clone(),
                             );
 
                             // Update details panel
@@ -932,7 +1169,16 @@ fn redraw_grid(
                                 }
                             } else {
                                 details_group_inner.set_visible(false);
-                                rebase_btn_inner.set_sensitive(false);
+                                // Restore stream-switch state on the button
+                                // rather than just disabling it. The user
+                                // may have been mid-stream-change; clearing
+                                // back to "Switch to :testing" is more
+                                // honest than a dead button.
+                                if let Some(ref f) = on_deselect_inner {
+                                    f();
+                                } else {
+                                    rebase_btn_inner.set_sensitive(false);
+                                }
                             }
                         });
 
@@ -945,6 +1191,8 @@ fn redraw_grid(
             slot += 1;
         }
     }
+
+    empty_hint.set_visible(available_count == 0);
 }
 
 fn update_details(
@@ -974,9 +1222,60 @@ fn update_details(
         rebase_btn.set_label("Currently Installed");
         rebase_btn.set_sensitive(false);
     } else {
-        rebase_btn.set_label(&format!("Rebase to {}…", date.format("%b %-d")));
+        // YYYYMMDD format — matches the registry's actual tag scheme and
+        // is what the user types when they reference a build.
+        rebase_btn.set_label(&format!("Pin to {}", date.format("%Y%m%d")));
         rebase_btn.set_sensitive(true);
     }
+}
+
+/// Compute what the rebase button should say + do when NO calendar day is
+/// selected. Returns `(label, sensitive, target_full_ref)`.
+///
+/// Three cases:
+/// - **Currently installed** — selected stream + resolved variant match
+///   what's booted. Button disabled, label "Currently Installed".
+/// - **Switch action available** — stream or variant differs from booted.
+///   Button enabled, label "Switch to :testing" / "Switch to dakota-nvidia",
+///   target_ref points at the floating stream tag for the resolved image.
+/// - **Indeterminate** — booted image unknown (bootc-status failed, no
+///   os-release fallback). Button disabled, label asks the user to pick a
+///   build instead.
+fn compute_stream_switch_action(
+    family: Option<&FamilyInfo>,
+    selected_features: &[String],
+    selected_stream: &str,
+    booted: Option<&service::ImageRef>,
+) -> (String, bool, Option<String>) {
+    let Some(family) = family else {
+        return ("Pin to this build…".to_string(), false, None);
+    };
+    if selected_stream.is_empty() {
+        return ("Pin to this build…".to_string(), false, None);
+    }
+    let Some(target) = service::global().resolve_target(family, selected_features) else {
+        return (
+            "(combination doesn't match a published image)".to_string(),
+            false,
+            None,
+        );
+    };
+    // Detect "no-op switch": booted is on the same image AND same stream.
+    if let Some(b) = booted {
+        if b.image == target.image && b.tag == selected_stream {
+            return ("Currently Installed".to_string(), false, None);
+        }
+    }
+    let full_ref = format!("{}/{}/{}:{}", target.registry, target.org, target.image, selected_stream);
+    // Prefer the short "Switch to :stream" wording when only the stream
+    // moved; fall back to "Switch to image:stream" when the image name
+    // changes too (variant toggle), so the user sees exactly what they're
+    // committing to.
+    let label = match booted {
+        Some(b) if b.image == target.image => format!("Switch to :{}", selected_stream),
+        _ => format!("Switch to {}:{}", target.image, selected_stream),
+    };
+    (label, true, Some(full_ref))
 }
 
 // ── Rebase worker ────────────────────────────────────────────────────────────
@@ -1295,6 +1594,8 @@ fn populate_family_switches(
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
     selected_stream: Rc<RefCell<String>>,
+    booted_image: Rc<RefCell<Option<service::ImageRef>>>,
+    on_target_change: Rc<dyn Fn(Option<service::ImageRef>)>,
 ) {
     // Two pieces of state get resolved in the background thread:
     //   - the family the booted image belongs to (drives WHICH toggles show)
@@ -1352,6 +1653,12 @@ fn populate_family_switches(
             *selected_stream.borrow_mut() = family.streams[0].clone();
         }
 
+        // Stash booted image for build_loaded_page's rebase-button label
+        // logic (it needs the booted tag to detect "stream/variant change vs
+        // no change"). Cloned because image_opt is consumed by the toggle-
+        // state derivation below.
+        *booted_image.borrow_mut() = image_opt.clone();
+
         // Derive the initial toggle state from the booted image's suffix so
         // users already on -dx / -nvidia / -dx-nvidia-open see the dialog
         // open with their current configuration represented, not with
@@ -1389,6 +1696,7 @@ fn populate_family_switches(
             let target_row = target_row.clone();
             let dx_state = dx_state.clone();
             let nvidia_state = nvidia_state.clone();
+            let on_target_change = on_target_change.clone();
             move || {
                 let stream = selected_stream.borrow().clone();
                 let (feats, target) = resolve_dx_nvidia_with_stream(
@@ -1398,12 +1706,17 @@ fn populate_family_switches(
                     &stream,
                 );
                 *selected_features.borrow_mut() = feats;
-                match target {
+                match &target {
                     Some(t) => target_row.set_subtitle(&format!("{} (resolved)", t.image)),
                     None => {
                         target_row.set_subtitle("(combination doesn't match any published image)")
                     }
                 }
+                // Refetch the calendar for the resolved target image so the
+                // day grid reflects builds for THAT image (the user just
+                // toggled DX/NVIDIA/stream — they expect the calendar to
+                // follow). Debounced inside on_target_change.
+                on_target_change(target);
             }
         };
 
@@ -1561,6 +1874,7 @@ fn resolve_dx_nvidia_with_stream(
 /// Returns (selected_features, resolved_image). The features list flows into
 /// the Rebase button click handler so the bootc-switch ref matches what the
 /// preview shows.
+#[allow(dead_code)]
 fn resolve_dx_nvidia(
     family: &FamilyInfo,
     dx_on: bool,
@@ -1686,11 +2000,11 @@ fn inject_calendar_css() {
     css.load_from_string(
         r#"
         .day-btn {
-            min-width: 36px;
-            min-height: 36px;
+            min-width: 30px;
+            min-height: 30px;
             padding: 0;
-            border-radius: 18px;
-            font-size: 0.85em;
+            border-radius: 15px;
+            font-size: 0.82em;
         }
         .day-btn:not(:sensitive) { opacity: 0.3; }
         .day-available           { color: @accent_color; font-weight: bold; }
@@ -1713,6 +2027,7 @@ fn inject_calendar_css() {
 
 enum FetchResult {
     Ok(Vec<ImageVersion>),
+    #[allow(dead_code)]
     Err(String),
     DetectFailed,
 }

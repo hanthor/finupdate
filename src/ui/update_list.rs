@@ -37,6 +37,7 @@ enum ModuleStatus {
 }
 
 struct ModuleEntry {
+    #[allow(dead_code)]
     key: &'static str,
     description: &'static str,
     row: adw::ExpanderRow,

@@ -531,9 +531,57 @@ Before the switch, builds were tagged `latest.20260212`, `latest.20260211`, etc.
 
 `RegistryClient::fetch_versions` probes sha-only tags to recover build dates from OCI config-blob `created` timestamps. GHCR returns tags **alphabetically**, so sha hashes starting with `0`–`3` come first in the list. A naive `sha_tags[..N]` slice probes only 25% of the hash alphabet and misses all recent builds whose sha starts with `4`–`f`.
 
-**Fix applied (v3 cache key):** Use stride-sampling (`step_by(stride)`) instead of a head-slice so each probe batch covers the full hash alphabet. The cache-key version is bumped whenever this logic changes so stale caches are invalidated automatically.
+**Fixes applied:**
+
+- **v3 cache key:** Use stride-sampling (`step_by(stride)`) instead of a head-slice so each probe batch covers the full hash alphabet. The cache-key version is bumped whenever this logic changes so stale caches are invalidated automatically.
+- **v4 cache key:** Removed the `if dated_tags.len() < candidate_cap` gate that suppressed sha-probing entirely when Dakota's 30+ legacy February-dated tags filled the cap. The probe now ALWAYS runs — recent sha-tagged builds were never surfaced before.
 
 **SBOM diff:** Dakota images do not use the same floating tag for booted vs. target — if both resolve to `:latest` the diff is trivially empty. Always compare using the actual OCI digest from `bootc status` (`image@sha256:...`) for booted, and the newest `ImageVersion.full_ref` for target.
+
+### GHCR's broken Referrers API — use the fallback tag
+
+GHCR returns **HTTP 303** for the OCI v1.1 Referrers endpoint (`GET /v2/<name>/referrers/<digest>`), redirecting to a non-OCI GitHub URL. `oci_client::pull_referrers` doesn't follow this, so the call silently returns no results.
+
+**Fix:** Use the spec-defined fallback tag convention. The OCI distribution spec requires registries to also expose referrers under a synthetic tag named `<image>:sha256-<hex-digest>` (i.e. the subject digest with `:` replaced by `-`). Pulling that as a manifest returns an OCI image index whose `manifests[]` entries are the referrers; each entry has an `artifactType` field you filter client-side. `oci_client::ImageIndexEntry` strips `artifactType`, so parse the raw JSON yourself.
+
+```rust
+let fallback_tag = subject_digest.replace(':', "-");
+let url = format!("https://{}/v2/{}/manifests/{}", registry, repo, fallback_tag);
+// Fetch as application/vnd.oci.image.index.v1+json, parse, find artifactType match.
+```
+
+GHCR public-repo reads still require a token even when anonymous — request `https://ghcr.io/token?service=ghcr.io&scope=repository:<repo>:pull`.
+
+## Dev Verification Workflow
+
+Three build/test surfaces, in order of cost:
+
+| Tool | What it verifies | When to use |
+|------|-----------------|-------------|
+| `just build` | Cargo compile + tests in the **toolbox** | Inner loop while editing — fast (~10–20s warm) but does NOT update the installed app |
+| `finupdate-cli` (`target/debug/finupdate-cli`) | Backend logic against live registries — no GTK | Verifying registry/SBOM/version-resolution logic without launching the GUI |
+| `just flatpak` | Full Flatpak build + install (`--install --force-clean`) | Anything UI-visible. This is the only way to actually deploy changes to the installed app the user launches |
+
+### Toolbox setup
+
+The `finupdate` toolbox container holds the build deps (rust toolchain, GTK headers, etc.) so the host stays clean. `just build` runs `toolbox run --container finupdate cargo build` automatically. If you have a clean shell, you can drop into the toolbox with `toolbox enter finupdate`.
+
+### Using the CLI to verify backend logic
+
+The CLI binary (`finupdate-cli`) exists specifically as a headless seam to test the `UpdaterService` and registry code without touching GTK. Useful for:
+
+- **Confirming the registry probe returns recent builds**: `FINUPDATE_IMAGE=ghcr.io/projectbluefin/dakota:latest target/debug/finupdate-cli versions 120` — should print ~50+ unique dates.
+- **Testing SBOM diff plumbing**: `finupdate-cli changelog <target-tag>` runs the same `fetch_and_diff_sboms` path the GUI uses. Bypasses the GUI's tokio runtime / channel plumbing so you see backend failures directly.
+- **Tracing**: `RUST_LOG=finupdate=debug` (binary name uses `_` not `-`) prints structured tracing.
+- **Image override**: `FINUPDATE_IMAGE` env var bypasses `bootc status` so you can target any image without rebooting.
+
+When the GUI shows "nothing happened" (empty diff, no commits, blank calendar), reproduce the equivalent backend call via the CLI first. If the CLI works and the GUI doesn't, the bug is in the GTK plumbing (channel, sender, redraw). If both fail, the bug is in the registry/HTTP layer.
+
+### When to run which
+
+- **Fast iteration on backend code (registry, sbom, service):** edit → `just build` → run `finupdate-cli` → repeat. No flatpak needed.
+- **UI changes (status_view, rebase_dialog, preferences, etc.):** edit → `just build` (compile-check only) → `just flatpak` (deploy) → relaunch the app. `just build` alone won't change what the user sees.
+- **Pre-PR sanity check:** `just flatpak` to ensure the Flatpak manifest still picks up new files / deps.
 
 ### libadwaita 0.9 breaking change:
 `AdwDialog::present()` now takes `Option<&impl IsA<Widget>>`:

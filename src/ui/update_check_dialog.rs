@@ -47,6 +47,7 @@ enum SourceState {
 
 /// Result summary from the check dialog.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CheckResult {
     /// Whether the system image has an update available.
     pub system_update: bool,
@@ -57,14 +58,21 @@ pub struct CheckResult {
 }
 
 /// Source entry for the check UI.
+///
+/// Each entry renders as an `adw::ExpanderRow` whose status suffix shows the
+/// current state (waiting / checking / found / uptodate) and whose expander
+/// body holds the streaming log output for that module. The user can click
+/// any row to see its logs inline instead of switching to a separate
+/// fullscreen view.
 #[allow(dead_code)]
 struct SourceEntry {
     name: &'static str,
     subtitle: &'static str,
     icon_name: &'static str,
-    row: adw::ActionRow,
+    row: adw::ExpanderRow,
     status_stack: gtk::Stack,
     spinner: gtk::Spinner,
+    log_buffer: gtk::TextBuffer,
     state: SourceState,
 }
 
@@ -132,8 +140,10 @@ pub fn show_update_check_dialog(
     content.set_margin_top(20);
     content.set_margin_bottom(20);
 
-    // Header
-    let title_label = gtk::Label::new(Some("Checking for updates…"));
+    // Header. The dialog runs the actual update via UpdateWorker — the
+    // "check" framing was misleading because clicking the button kicked off
+    // a full install. Title is "Updating…" until the orchestrator returns.
+    let title_label = gtk::Label::new(Some("Updating…"));
     title_label.add_css_class("title-3");
     title_label.set_halign(gtk::Align::Start);
     title_label.set_margin_bottom(4);
@@ -164,7 +174,7 @@ pub fn show_update_check_dialog(
     let mut sources = Vec::with_capacity(SOURCE_DEFS.len());
 
     for &(_key, name, sub, icon) in SOURCE_DEFS {
-        let row = adw::ActionRow::builder().title(name).subtitle(sub).build();
+        let row = adw::ExpanderRow::builder().title(name).subtitle(sub).build();
         row.add_prefix(&gtk::Image::from_icon_name(icon));
 
         // Status stack: waiting / checking (spinner) / found / uptodate
@@ -207,6 +217,32 @@ pub fn show_update_check_dialog(
         status_stack.set_visible_child_name("waiting");
 
         row.add_suffix(&status_stack);
+
+        // Inline log panel — read-only TextView in a scrolled window. Lives
+        // inside the ExpanderRow body so clicking the row chevron reveals
+        // streaming logs for THIS module. Replaces the previous fullscreen
+        // "updating" Stack page; everything lives in the modal now.
+        let log_buffer = gtk::TextBuffer::new(None);
+        let log_view = gtk::TextView::with_buffer(&log_buffer);
+        log_view.set_editable(false);
+        log_view.set_cursor_visible(false);
+        log_view.set_monospace(true);
+        log_view.set_wrap_mode(gtk::WrapMode::WordChar);
+        log_view.add_css_class("dim-label");
+        log_view.add_css_class("caption");
+        let log_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(120)
+            .max_content_height(220)
+            .vexpand(false)
+            .build();
+        log_scroll.set_child(Some(&log_view));
+        log_scroll.set_margin_start(12);
+        log_scroll.set_margin_end(12);
+        log_scroll.set_margin_top(4);
+        log_scroll.set_margin_bottom(8);
+        row.add_row(&log_scroll);
+
         list_box.append(&row);
 
         sources.push(SourceEntry {
@@ -216,6 +252,7 @@ pub fn show_update_check_dialog(
             row,
             status_stack,
             spinner,
+            log_buffer,
             state: SourceState::Waiting,
         });
     }
@@ -223,7 +260,7 @@ pub fn show_update_check_dialog(
     content.append(&list_box);
 
     // Footer: summary + buttons
-    let summary_label = gtk::Label::new(Some("Querying 4 update sources…"));
+    let summary_label = gtk::Label::new(Some("Running update across 4 sources…"));
     summary_label.add_css_class("dim-label");
     summary_label.set_halign(gtk::Align::Start);
     summary_label.set_margin_bottom(12);
@@ -237,14 +274,20 @@ pub fn show_update_check_dialog(
     // HIG / control-center idiom these are rectangular with rounded corners
     // (.suggested-action alone), not pill-shaped. .pill is reserved for
     // centered standalone hero CTAs.
-    let close_btn = gtk::Button::with_label("Close");
+    // Labelled "Cancel" while the update is in flight, swapped to "Close"
+    // once Done/Error fires. Matches the GNOME HIG "destructive abort during,
+    // dismiss after" idiom for long-running modal operations.
+    let close_btn = gtk::Button::with_label("Cancel");
 
+    // The install_btn is allocated but never shown — the dialog already runs
+    // the full update on open via UpdateWorker, so a separate "Install all"
+    // would re-run the same work. Allocated as an orphan so call sites that
+    // still touch `s.install_btn` don't have to change. Drop this once those
+    // touches are removed.
     let install_btn = gtk::Button::with_label("Install all");
-    install_btn.add_css_class("suggested-action");
     install_btn.set_visible(false);
 
     button_box.append(&close_btn);
-    button_box.append(&install_btn);
     content.append(&button_box);
 
     // Wrap in a toolbar view with header bar
@@ -272,14 +315,11 @@ pub fn show_update_check_dialog(
         dialog_close.close();
     });
 
-    // ── Wire install button ──────────────────────────────────────────────
-    let dialog_install = dialog.clone();
-    let on_install = Rc::new(on_install);
-    let on_install_clone = on_install.clone();
-    install_btn.connect_clicked(move |_| {
-        dialog_install.close();
-        (on_install_clone)();
-    });
+    // The install_btn is now orphaned (see allocation above). The dialog
+    // runs the update itself, so there's nothing for an explicit "Install"
+    // click to do that wasn't already happening. Keep the `on_install`
+    // parameter wired so callers don't change yet.
+    let _ = on_install;
 
     // ── Run the check process ────────────────────────────────────────────
     let state_clone = state.clone();
@@ -334,6 +374,23 @@ pub fn show_update_check_dialog(
                         }
                         update_progress(&s);
                     }
+                    CheckEvent::LogLine { module, line } => {
+                        // Append to the matching module's buffer. Drop the
+                        // line if the line happens to start with ANSI
+                        // escapes — common in flatpak / brew output — so
+                        // the panel stays legible.
+                        let stripped = strip_ansi_escapes(&line);
+                        for source in s.sources.iter_mut() {
+                            if source_matches_key(source.name, &module) {
+                                let buf = &source.log_buffer;
+                                let mut end = buf.end_iter();
+                                if buf.char_count() > 0 {
+                                    buf.insert(&mut end, "\n");
+                                }
+                                buf.insert(&mut end, &stripped);
+                            }
+                        }
+                    }
                     CheckEvent::Done => {
                         s.done = true;
                         s.progress_bar.set_fraction(1.0);
@@ -362,17 +419,18 @@ pub fn show_update_check_dialog(
 
                         if updates_found > 0 {
                             s.title_label.set_label(&format!(
-                                "{} source{} with updates",
+                                "Updates installed · {} source{}",
                                 updates_found,
                                 if updates_found == 1 { "" } else { "s" }
                             ));
-                            s.summary_label.set_label("Ready to install.");
-                            s.install_btn.set_visible(true);
+                            s.summary_label
+                                .set_label("Reboot to apply system changes.");
                         } else {
                             s.title_label.set_label("Everything is up to date");
                             s.summary_label
                                 .set_label("You're running the latest images and apps.");
                         }
+                        s.close_btn.set_label("Close");
 
                         let result = CheckResult {
                             system_update,
@@ -446,19 +504,38 @@ pub fn show_update_check_dialog(
                                 system_found = true;
                             }
                         }
+
+                        // Route the raw line into the active module's log
+                        // buffer so the user can expand the row and see
+                        // what's happening live. Skip lines we can't route.
+                        if let Some(ref m) = current_module {
+                            let _ = line_tx.send(CheckEvent::LogLine {
+                                module: m.clone(),
+                                line: line.clone(),
+                            });
+                        }
                     }
                     UpdateEvent::Complete => {
                         // Mark final module as complete
                         if let Some(ref last) = current_module {
                             let _ = line_tx.send(CheckEvent::ModuleComplete(last.clone()));
                         }
-                        // If we ran a full update (not just check), system likely has updates
-                        if system_found {
-                            let _ = line_tx.send(CheckEvent::ModuleFound(
-                                "system".to_string(),
-                                "Update installed".to_string(),
-                            ));
+                        // `Complete` = orchestrator exit 0 = the runner did
+                        // real work. Treat the system module as "found"
+                        // unconditionally — the earlier `system_found`
+                        // string match against the runner's log output was
+                        // brittle and missed every successful update on
+                        // systems where the runner uses a different success
+                        // string. The exit code is the ground truth.
+                        if !system_found {
+                            tracing::debug!(
+                                "check: orchestrator exited 0 but log parse missed the system success marker — treating Complete as updates installed"
+                            );
                         }
+                        let _ = line_tx.send(CheckEvent::ModuleFound(
+                            "system".to_string(),
+                            "Update installed".to_string(),
+                        ));
                         let _ = line_tx.send(CheckEvent::Done);
                         break;
                     }
@@ -520,6 +597,11 @@ enum CheckEvent {
     ModuleStart(String),
     ModuleComplete(String),
     ModuleFound(String, String),
+    /// Raw log line for the currently-active module — routed into that
+    /// row's log buffer so the user can expand it and see what happened.
+    /// `module` is the key (system/flatpak/brew/distrobox); `line` is the
+    /// log content with no trailing newline.
+    LogLine { module: String, line: String },
     Done,
     Error(String),
 }
@@ -551,6 +633,29 @@ fn extract_module_key_from_line(line: &str) -> Option<&'static str> {
 }
 
 /// Update the progress bar fraction based on completed sources.
+/// Strip ANSI escape sequences from a log line. Flatpak and brew dump
+/// colour codes that render as `^[[32m` in a TextView — drop them so the
+/// expanded log panel stays readable. Conservative regex-free strip:
+/// drops `ESC [ ... letter` runs.
+fn strip_ansi_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            while let Some(&n) = chars.peek() {
+                chars.next();
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn update_progress(state: &CheckState) {
     let total = state.sources.len() as f64;
     let completed = state

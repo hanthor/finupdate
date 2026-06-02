@@ -107,13 +107,30 @@ fn make_client() -> Client {
     Client::default()
 }
 
+/// Raw OCI image index entry — `oci_client::ImageIndexEntry` doesn't expose
+/// `artifactType`, which is what we need to filter referrers by media type.
+/// Parsing the raw JSON ourselves is one extra struct vs. round-tripping
+/// every entry to check its manifest type.
+#[derive(Deserialize)]
+struct ReferrersIndex {
+    manifests: Vec<ReferrerEntry>,
+}
+#[derive(Deserialize)]
+struct ReferrerEntry {
+    digest: String,
+    #[serde(rename = "artifactType")]
+    artifact_type: Option<String>,
+}
+
 /// Find the digest of the SPDX referrer manifest for `image_ref`.
 ///
-/// Uses the OCI Distribution v1.1 referrers API. The image must be addressed
-/// by digest for the referrers query — we pull the original manifest first to
-/// resolve the tag → digest if needed.
+/// GHCR returns HTTP 303 (redirect to a non-OCI URL) for the OCI v1.1
+/// referrers API endpoint, which `oci_client::pull_referrers` doesn't follow
+/// — so that path silently returns no results. We use the spec-defined
+/// fallback tag convention instead: `<image>:sha256-<hex-digest>` resolves
+/// to an image index whose manifests are the referrers. Filter client-side
+/// by `artifactType`. See OCI Distribution Spec §referrers (fallback).
 async fn find_spdx_referrer(client: &Client, image_ref: &Reference) -> Option<String> {
-    // Resolve tag → digest by pulling the manifest (cheap; just metadata).
     let (_, subject_digest) = client
         .pull_manifest(image_ref, &RegistryAuth::Anonymous)
         .await
@@ -121,24 +138,110 @@ async fn find_spdx_referrer(client: &Client, image_ref: &Reference) -> Option<St
 
     tracing::debug!("subject digest for {}: {}", image_ref, subject_digest);
 
-    // The referrers endpoint requires a digest reference, not a tag.
-    let digest_ref = Reference::with_digest(
-        image_ref.registry().to_string(),
-        image_ref.repository().to_string(),
-        subject_digest,
+    // Fetch the fallback referrers tag as raw JSON — oci_client's typed
+    // ImageIndexEntry strips the artifactType field we need.
+    let fallback_tag = subject_digest.replace(':', "-");
+    let url = format!(
+        "https://{}/v2/{}/manifests/{}",
+        image_ref.registry(),
+        image_ref.repository(),
+        fallback_tag
     );
 
-    let referrers = client
-        .pull_referrers(&digest_ref, Some(SPDX_ARTIFACT_TYPE))
-        .await
-        .ok()?;
+    let token = ghcr_anonymous_token(image_ref.repository()).await;
+    tracing::debug!(
+        "referrers fallback: url={} token_present={}",
+        url,
+        token.is_some()
+    );
+    let http = reqwest::Client::new();
+    let mut req = http
+        .get(&url)
+        .header("Accept", "application/vnd.oci.image.index.v1+json");
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("referrers fallback fetch failed: {}", e);
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        tracing::warn!(
+            "referrers fallback tag {} returned HTTP {}",
+            fallback_tag,
+            resp.status()
+        );
+        return None;
+    }
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("referrers fallback body read failed: {}", e);
+            return None;
+        }
+    };
+    let index: ReferrersIndex = match serde_json::from_str(&body) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(
+                "referrers fallback JSON parse failed: {} (body head: {})",
+                e,
+                &body.chars().take(200).collect::<String>()
+            );
+            return None;
+        }
+    };
+    tracing::debug!(
+        "referrers fallback: parsed {} entries",
+        index.manifests.len()
+    );
+    for m in &index.manifests {
+        tracing::trace!(
+            "  entry: digest={} artifactType={:?}",
+            m.digest,
+            m.artifact_type
+        );
+    }
 
-    // The registry should filter server-side, but we asked anyway. Take the
-    // first manifest — registries that don't support the artifactType filter
-    // may return all referrers; in that case we'd need to pull each manifest
-    // to check its artifactType. For GHCR (which respects the filter) this
-    // first-match approach is correct.
-    referrers.manifests.first().map(|m| m.digest.clone())
+    let found = index
+        .manifests
+        .into_iter()
+        .find(|m| m.artifact_type.as_deref() == Some(SPDX_ARTIFACT_TYPE))
+        .map(|m| m.digest);
+    if found.is_none() {
+        tracing::warn!(
+            "no SPDX referrer found in fallback index for {}",
+            image_ref
+        );
+    }
+    found
+}
+
+/// Mint a short-lived anonymous bearer token for pulling from a public
+/// ghcr.io repository. GHCR requires a token even for anonymous reads.
+/// Returns None on non-GHCR registries or token-endpoint failure (the
+/// caller falls back to unauthenticated requests).
+async fn ghcr_anonymous_token(repository: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct TokenResp {
+        token: String,
+    }
+    let url = format!(
+        "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
+        repository
+    );
+    reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .ok()?
+        .json::<TokenResp>()
+        .await
+        .ok()
+        .map(|t| t.token)
 }
 
 /// Pull the SBOM blob from a referrer manifest digest and parse it into a

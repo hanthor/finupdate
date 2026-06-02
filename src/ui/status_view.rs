@@ -25,6 +25,7 @@ use crate::ui::update_list::{UpdateList, UpdateListInput};
 
 /// Mock deployment representation for the collapsible version history list.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MockDeployment {
     pub id: String,
     pub state: String, // "current" | "staged" | "previous" | "archived"
@@ -39,6 +40,24 @@ pub struct MockDeployment {
     pub package_count: u32,
     pub signer: String,
     pub pinned: bool,
+}
+
+/// State of the SBOM diff fetch for the changelog page. Renders a different
+/// section in `rebuild_changelog_page` for each value so the user sees
+/// "comparing packages…" while we wait, instead of a silent gap that takes
+/// 30+ seconds to fill in on a slow connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SbomStatus {
+    /// Initial state — no changelog fetch has started yet.
+    Pending,
+    /// SBOM fetch is in flight (tokio task spawned).
+    Loading,
+    /// fetch_and_diff_sboms returned None — the registry didn't publish
+    /// SPDX referrers for one of the images. Show a dim "not available"
+    /// note instead of a spinner that never resolves.
+    NotAvailable,
+    /// Diff is loaded (stored in `sbom_diff`).
+    Loaded,
 }
 
 /// Input messages for the StatusView component.
@@ -98,6 +117,18 @@ pub enum StatusViewInput {
     GithubCommitsLoaded(Vec<(String, String, String, String)>),
     /// SBOM package diff loaded in background
     SbomDiffLoaded(crate::sbom_diff::SbomDiffResult),
+    /// SBOM fetch finished but no diff was computable (e.g. the registry
+    /// didn't publish SPDX referrers for one of the images). Used to swap
+    /// the in-flight spinner placeholder out for a "not available" hint.
+    SbomDiffUnavailable,
+    /// SBOM fetch has been kicked off — switch the changelog Stack section
+    /// to a "Comparing packages…" placeholder until SbomDiffLoaded or
+    /// SbomDiffUnavailable fires.
+    SbomDiffStarted,
+    /// Unpin the booted system back to a floating stream tag. Opens a
+    /// confirmation dialog; on confirm, runs `bootc switch <registry>:<stream>`
+    /// and toasts the result.
+    UnpinToStream(String),
     /// A module has started running (from orchestrator).
     ModuleStarted(crate::orchestrator::Module),
     /// A module has finished (from orchestrator).
@@ -195,6 +226,7 @@ pub struct StatusView {
     registry_versions: Vec<crate::registry_client::ImageVersion>,
     github_commits: Vec<(String, String, String, String)>,
     sbom_diff: Option<crate::sbom_diff::SbomDiffResult>,
+    sbom_status: SbomStatus,
 
     // Image Source subpage widget references for dynamic updates.
     // EntryRow keeps `text` always-editable (Apply on Enter / button click),
@@ -211,17 +243,15 @@ pub struct StatusView {
     history_list_box: gtk::ListBox,
     images_count_label: gtk::Label,
     changelog_box: gtk::Box,
-    changelog_version_label: gtk::Label,
-    changelog_date_label: gtk::Label,
-    changelog_summary_label: gtk::Label,
-    changelog_diff_box: gtk::Box,
-    changelog_removed_box: gtk::Box,
-    changelog_commit_box: gtk::Box,
     changelog_install_bar: gtk::Box,
+    /// "Pinned to {tag}" front-page group — visible only when the booted tag
+    /// is a specific build (date or sha) rather than a floating stream.
+    /// Surfaces a one-click Unpin button back to the family's stream tag.
+    pin_group: adw::PreferencesGroup,
+    pin_row: adw::ActionRow,
 
     // Dialog rollback state
     rollback_target: Option<MockDeployment>,
-    changelog_v_buttons: Vec<gtk::Button>,
 }
 
 impl StatusView {
@@ -247,6 +277,15 @@ impl StatusView {
     }
 
     fn refresh_idle_description(&self) {
+        // Pin-state UI mirrors the booted tag: shown when pinned, hidden
+        // when the user is back on a floating stream.
+        let pinned = is_pinned_tag(&self.selected_tag);
+        self.pin_group.set_visible(pinned);
+        if pinned {
+            self.pin_row
+                .set_title(&format!("Pinned to :{}", self.selected_tag));
+        }
+
         self.hero_row.set_title(&self.hero_title());
         // Hero subtitle is the booted image summary (version · sha). The
         // previous code prefixed it with a tag-display ("latest · " or
@@ -354,6 +393,14 @@ impl StatusView {
                 .iter()
                 .find(|v| v.version == self.changelog_version);
         }
+
+        // Booted version — pulled from bootc-status's booted image ref (with
+        // os-release fallback for Dakota where bootc-status fails). Anchors
+        // the "from" side of the Stack diff. None when the booted tag can't
+        // be matched against the recently-fetched registry_versions window.
+        let booted_version: Option<&ImageVersion> = read_booted_tag_suffix()
+            .as_deref()
+            .and_then(|t| find_booted_match(&self.registry_versions, t));
 
         let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         header_box.set_margin_top(12);
@@ -476,61 +523,65 @@ impl StatusView {
         stack_title.add_css_class("dim-label");
         self.changelog_box.append(&stack_title);
 
-        let grid = gtk::FlowBox::new();
-        grid.set_selection_mode(gtk::SelectionMode::None);
-        grid.set_max_children_per_line(3);
-        grid.set_min_children_per_line(2);
-        grid.set_column_spacing(8);
-        grid.set_row_spacing(8);
-
-        let stack_items: Vec<(&str, String, bool)> = if let Some(v) = real_version {
-            vec![("Kernel", v.kernel.clone(), false)]
-        } else {
-            vec![]
-        };
-
-        for (name, ver, bumped) in stack_items {
-            let pill_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            pill_box.add_css_class("card");
-            pill_box.set_margin_start(2);
-            pill_box.set_margin_end(2);
-            pill_box.set_margin_top(2);
-            pill_box.set_margin_bottom(2);
-
-            let lbl_name = gtk::Label::builder()
-                .label(name)
-                .halign(gtk::Align::Start)
-                .margin_start(8)
-                .margin_top(8)
-                .margin_bottom(8)
-                .build();
-            lbl_name.add_css_class("body");
-
-            let lbl_ver_str = if bumped { format!("{} ↑", ver) } else { ver };
-            let lbl_ver = gtk::Label::builder()
-                .label(&lbl_ver_str)
-                .halign(gtk::Align::End)
-                .hexpand(true)
-                .margin_end(8)
-                .margin_top(8)
-                .margin_bottom(8)
-                .build();
-            lbl_ver.add_css_class("monospace");
-            lbl_ver.add_css_class("caption");
-            if bumped {
-                lbl_ver.add_css_class("success");
+        // Build "from → to" rows for the Stack. The user is comparing the
+        // booted build (left) against the selected target (right), so each
+        // component renders as `current → target` with the target highlighted
+        // when it differs. Booted info is missing when bootc-status couldn't
+        // be read or when the booted tag is outside the registry window — in
+        // that case we degrade to "—" for the current side so the row still
+        // makes sense. `host_kernel` (uname -r) backstops the Kernel row for
+        // Dakota, whose registry-side kernel is empty.
+        let host_kernel = get_host_kernel();
+        let stack_items = build_stack_items(
+            booted_version,
+            real_version,
+            if host_kernel == "—" {
+                None
             } else {
-                lbl_ver.add_css_class("dim-label");
+                Some(host_kernel.as_str())
+            },
+        );
+
+        if !stack_items.is_empty() {
+            let stack_list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .build();
+            stack_list.add_css_class("card");
+
+            for item in &stack_items {
+                let row = adw::ActionRow::builder().title(item.label).build();
+
+                let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                diff_box.set_valign(gtk::Align::Center);
+
+                let from_lbl = gtk::Label::new(Some(item.current.as_deref().unwrap_or("—")));
+                from_lbl.add_css_class("monospace");
+                from_lbl.add_css_class("caption");
+                from_lbl.add_css_class("dim-label");
+                diff_box.append(&from_lbl);
+
+                let arrow_lbl = gtk::Label::new(Some("→"));
+                arrow_lbl.add_css_class("dim-label");
+                diff_box.append(&arrow_lbl);
+
+                let to_lbl = gtk::Label::new(Some(&item.target));
+                to_lbl.add_css_class("monospace");
+                to_lbl.add_css_class("caption");
+                if item.bumped {
+                    to_lbl.add_css_class("success");
+                } else {
+                    to_lbl.add_css_class("dim-label");
+                }
+                diff_box.append(&to_lbl);
+
+                row.add_suffix(&diff_box);
+                stack_list.append(&row);
             }
-
-            pill_box.append(&lbl_name);
-            pill_box.append(&lbl_ver);
-
-            grid.append(&pill_box);
+            self.changelog_box.append(&stack_list);
         }
-        self.changelog_box.append(&grid);
 
         let mut upgrades_list: Vec<(String, String, String)> = Vec::new();
+        let mut added_list: Vec<(String, String)> = Vec::new();
         let mut removals_list: Vec<String> = Vec::new();
 
         if let Some(ref diff) = self.sbom_diff {
@@ -542,15 +593,75 @@ impl StatusView {
                 ));
             }
             for pkg in &diff.added {
-                upgrades_list.push((
-                    pkg.name.clone(),
-                    "(added)".to_string(),
-                    pkg.new_version.clone(),
-                ));
+                added_list.push((pkg.name.clone(), pkg.new_version.clone()));
             }
             for pkg in &diff.removed {
                 removals_list.push(pkg.clone());
             }
+        }
+
+        // SBOM placeholder: surface the in-flight state so the user knows the
+        // package diff is loading. Without this the Stack section is silently
+        // blank for 30+ seconds on a slow connection. Skipped once the diff
+        // lands and we have real upgrades/removals to render below.
+        match self.sbom_status {
+            SbomStatus::Loading => {
+                let title = gtk::Label::builder()
+                    .label("Package changes")
+                    .halign(gtk::Align::Start)
+                    .margin_top(12)
+                    .build();
+                title.add_css_class("caption");
+                title.add_css_class("dim-label");
+                self.changelog_box.append(&title);
+
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                row.set_margin_start(12);
+                row.set_margin_end(12);
+                row.set_margin_top(8);
+                row.set_margin_bottom(8);
+                let spinner = gtk::Spinner::new();
+                spinner.set_spinning(true);
+                spinner.set_size_request(16, 16);
+                let lbl = gtk::Label::new(Some("Comparing packages…"));
+                lbl.add_css_class("dim-label");
+                lbl.add_css_class("caption");
+                row.append(&spinner);
+                row.append(&lbl);
+
+                let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                placeholder.add_css_class("card");
+                placeholder.append(&row);
+                self.changelog_box.append(&placeholder);
+            }
+            SbomStatus::NotAvailable => {
+                let title = gtk::Label::builder()
+                    .label("Package changes")
+                    .halign(gtk::Align::Start)
+                    .margin_top(12)
+                    .build();
+                title.add_css_class("caption");
+                title.add_css_class("dim-label");
+                self.changelog_box.append(&title);
+
+                let lbl = gtk::Label::builder()
+                    .label("Package diff not available — registry didn't publish an SPDX SBOM for one of the images.")
+                    .halign(gtk::Align::Start)
+                    .wrap(true)
+                    .max_width_chars(70)
+                    .margin_start(12)
+                    .margin_end(12)
+                    .margin_top(8)
+                    .margin_bottom(8)
+                    .build();
+                lbl.add_css_class("dim-label");
+                lbl.add_css_class("caption");
+                let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                placeholder.add_css_class("card");
+                placeholder.append(&lbl);
+                self.changelog_box.append(&placeholder);
+            }
+            SbomStatus::Pending | SbomStatus::Loaded => {}
         }
 
         if !upgrades_list.is_empty() {
@@ -581,9 +692,13 @@ impl StatusView {
                 let arr_lbl = gtk::Label::new(Some("→"));
                 arr_lbl.add_css_class("dim-label");
 
+                // Highlight the target (new) version in success-green so the
+                // upgrade is visually obvious — mirrors the bluefin-changelog
+                // TUI's `changed` styling. The `from` side stays dim.
                 let to_lbl = gtk::Label::new(Some(&to));
                 to_lbl.add_css_class("monospace");
                 to_lbl.add_css_class("caption");
+                to_lbl.add_css_class("success");
 
                 val_box.append(&from_lbl);
                 val_box.append(&arr_lbl);
@@ -593,6 +708,43 @@ impl StatusView {
                 list_upgrades.append(&row);
             }
             self.changelog_box.append(&list_upgrades);
+        }
+
+        if !added_list.is_empty() {
+            let added_title = gtk::Label::builder()
+                .label(&format!("Added  ·  {}", added_list.len()))
+                .halign(gtk::Align::Start)
+                .margin_top(12)
+                .build();
+            added_title.add_css_class("caption");
+            added_title.add_css_class("dim-label");
+            self.changelog_box.append(&added_title);
+
+            let list_added = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .build();
+            list_added.add_css_class("card");
+
+            for (pkg, ver) in added_list {
+                let row = adw::ActionRow::builder().title(&pkg).build();
+
+                // Prefix with a green `+` so additions stand out from
+                // upgrades. ActionRow doesn't natively style the prefix
+                // glyph — a Label with the `success` class does the job.
+                let plus_lbl = gtk::Label::new(Some("+"));
+                plus_lbl.add_css_class("success");
+                plus_lbl.add_css_class("monospace");
+                row.add_prefix(&plus_lbl);
+
+                let ver_lbl = gtk::Label::new(Some(&ver));
+                ver_lbl.add_css_class("monospace");
+                ver_lbl.add_css_class("caption");
+                ver_lbl.add_css_class("success");
+                row.add_suffix(&ver_lbl);
+
+                list_added.append(&row);
+            }
+            self.changelog_box.append(&list_added);
         }
 
         if !removals_list.is_empty() {
@@ -867,6 +1019,10 @@ impl SimpleComponent for StatusView {
         let hero_row = adw::ActionRow::builder()
             .title(initial_image_info.as_deref().unwrap_or("System Image"))
             .subtitle(&initial_subtitle)
+            // Two-line subtitle: image ref on line 1, digest + build date on
+            // line 2. parse_booted_image_summary() splits with `\n`; set to 2
+            // so ActionRow doesn't ellipsis-clip the second line.
+            .subtitle_lines(2)
             // Per user direction: the SHA needs to be copyable so people
             // can paste it into diagnostics / bug reports. subtitle_selectable
             // is the gnome-control-center About-panel idiom (cc-about-page.blp
@@ -941,6 +1097,38 @@ impl SimpleComponent for StatusView {
 
         hero_group.add(&hero_row);
         idle_page.add(&hero_group);
+
+        // ── Pin group ─────────────────────────────────────────────────────
+        // Surfaced when the user is booted on a specific build (date tag,
+        // sha tag, etc.) rather than a floating stream. One-click "Unpin"
+        // switches back to the family's default stream tag so auto-updates
+        // resume. Hidden when the booted tag IS already a stream.
+        let pin_group = adw::PreferencesGroup::new();
+        let pin_row = adw::ActionRow::builder()
+            .title("Pinned to a specific build")
+            .subtitle("Automatic updates are paused. Unpin to resume.")
+            .build();
+        pin_row.set_activatable(false);
+        let pin_icon = gtk::Image::from_icon_name("emblem-important-symbolic");
+        pin_icon.set_pixel_size(20);
+        pin_icon.add_css_class("warning");
+        pin_row.add_prefix(&pin_icon);
+
+        let unpin_btn = gtk::Button::with_label("Unpin");
+        unpin_btn.add_css_class("suggested-action");
+        unpin_btn.set_valign(gtk::Align::Center);
+        let unpin_sender = sender.input_sender().clone();
+        unpin_btn.connect_clicked(move |_| {
+            // For now default to "latest" as the unpin target. Most families
+            // use it; LTS users will need to pick a different stream via the
+            // Change → rebase dialog (follow-up: query current_family() for
+            // the canonical stream and switch on that).
+            unpin_sender.emit(StatusViewInput::UnpinToStream("latest".to_string()));
+        });
+        pin_row.add_suffix(&unpin_btn);
+        pin_group.add(&pin_row);
+        pin_group.set_visible(is_pinned_tag(&initial_selected_tag));
+        idle_page.add(&pin_group);
 
         // Banner group (visually distinct second card) is kept for the
         // descriptive paragraph + Discard action when a deployment is staged
@@ -1351,64 +1539,7 @@ impl SimpleComponent for StatusView {
         changelog_page.set_child(Some(&changelog_clamp));
 
         // Pills version switcher (built dynamically in rebuild_changelog_page)
-        let changelog_v_buttons = Vec::new();
-
         let changelog_box = gtk::Box::new(gtk::Orientation::Vertical, 16);
-
-        let changelog_version_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-        changelog_version_label.add_css_class("title-3");
-
-        let changelog_date_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-        changelog_date_label.add_css_class("caption");
-        changelog_date_label.add_css_class("dim-label");
-
-        let changelog_summary_label = gtk::Label::builder()
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .max_width_chars(60)
-            .build();
-        changelog_summary_label.add_css_class("body");
-
-        changelog_box.append(&changelog_version_label);
-        changelog_box.append(&changelog_date_label);
-        changelog_box.append(&changelog_summary_label);
-
-        // Package upgrades (diffs)
-        let diff_header = gtk::Label::new(Some("Upgraded packages"));
-        diff_header.add_css_class("caption");
-        diff_header.add_css_class("dim-label");
-        diff_header.set_halign(gtk::Align::Start);
-        diff_header.set_margin_top(12);
-        changelog_box.append(&diff_header);
-
-        let changelog_diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        changelog_diff_box.add_css_class("card");
-        changelog_box.append(&changelog_diff_box);
-
-        // Removed packages
-        let removed_header = gtk::Label::new(Some("Removed packages"));
-        removed_header.add_css_class("caption");
-        removed_header.add_css_class("dim-label");
-        removed_header.set_halign(gtk::Align::Start);
-        removed_header.set_margin_top(12);
-        changelog_box.append(&removed_header);
-
-        let changelog_removed_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        changelog_removed_box.add_css_class("card");
-        changelog_box.append(&changelog_removed_box);
-
-        // Commit logs
-        let commit_header = gtk::Label::new(Some("Commits"));
-        commit_header.add_css_class("caption");
-        commit_header.add_css_class("dim-label");
-        commit_header.set_halign(gtk::Align::Start);
-        commit_header.set_margin_top(12);
-        changelog_box.append(&commit_header);
-
-        let changelog_commit_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        changelog_commit_box.add_css_class("card");
-        changelog_box.append(&changelog_commit_box);
-
         changelog_content.append(&changelog_box);
 
         // Dynamic Install Action bar on Changelog
@@ -1539,6 +1670,7 @@ impl SimpleComponent for StatusView {
             registry_versions: Vec::new(),
             github_commits: Vec::new(),
             sbom_diff: None,
+            sbom_status: SbomStatus::Pending,
 
             registry_entry_row: registry_entry_row.clone(),
             registry_row_sub: registry_row_sub.clone(),
@@ -1548,15 +1680,10 @@ impl SimpleComponent for StatusView {
             history_list_box: history_list_box.clone(),
             images_count_label,
             changelog_box: changelog_box.clone(),
-            changelog_version_label: changelog_version_label.clone(),
-            changelog_date_label: changelog_date_label.clone(),
-            changelog_summary_label: changelog_summary_label.clone(),
-            changelog_diff_box: changelog_diff_box.clone(),
-            changelog_removed_box: changelog_removed_box.clone(),
-            changelog_commit_box: changelog_commit_box.clone(),
             changelog_install_bar: changelog_install_bar.clone(),
+            pin_group: pin_group.clone(),
+            pin_row: pin_row.clone(),
             rollback_target: None,
-            changelog_v_buttons,
         };
 
         let widgets = view_output!();
@@ -1575,14 +1702,6 @@ impl SimpleComponent for StatusView {
             .images_count_label
             .set_label(&format!("{} images", model.deployments.len()));
         model.rebuild_changelog_page(&sender);
-
-        for btn in &model.changelog_v_buttons {
-            if btn.label().as_deref() == Some(model.changelog_version.as_str()) {
-                btn.add_css_class("suggested-action");
-            } else {
-                btn.remove_css_class("suggested-action");
-            }
-        }
 
         // Update elapsed timer every 250ms while the "updating" page is visible.
         let stack_ref = root.clone();
@@ -1855,14 +1974,10 @@ impl SimpleComponent for StatusView {
                         .stack
                         .root()
                         .and_then(|r| r.downcast::<gtk::Window>().ok());
-                    let mut builder = adw::MessageDialog::builder()
-                        .title("Powerwash?")
+                    let dialog = adw::AlertDialog::builder()
                         .heading("Powerwash this device?")
-                        .body("`/etc` will be reset to image defaults and all installed apps will be removed. Your home directory, files, and signed-in accounts are kept.");
-                    if let Some(ref w) = window {
-                        builder = builder.transient_for(w);
-                    }
-                    let dialog = builder.build();
+                        .body("`/etc` will be reset to image defaults and all installed apps will be removed. Your home directory, files, and signed-in accounts are kept.")
+                        .build();
 
                     dialog.add_response("cancel", "Cancel");
                     dialog.add_response("powerwash", "Powerwash");
@@ -1898,7 +2013,7 @@ impl SimpleComponent for StatusView {
                         }
                         dlg.close();
                     });
-                    dialog.present();
+                    dialog.present(window.as_ref());
                 } else if action == "factory" {
                     let window = self
                         .stack
@@ -1912,15 +2027,11 @@ impl SimpleComponent for StatusView {
                         .build();
                     entry.add_css_class("entry");
 
-                    let mut builder = adw::MessageDialog::builder()
-                        .title("Factory Reset?")
+                    let dialog = adw::AlertDialog::builder()
                         .heading("Factory reset?")
                         .body("Erases all user data, accounts, apps, rollback images, and settings, then redeploys the factory image. This cannot be undone.")
-                        .extra_child(&entry);
-                    if let Some(ref w) = window {
-                        builder = builder.transient_for(w);
-                    }
-                    let dialog = builder.build();
+                        .extra_child(&entry)
+                        .build();
 
                     dialog.add_response("cancel", "Cancel");
                     dialog.add_response("reset", "Factory Reset");
@@ -1963,7 +2074,7 @@ impl SimpleComponent for StatusView {
                         }
                         dlg.close();
                     });
-                    dialog.present();
+                    dialog.present(window.as_ref());
                 } else {
                     for d in &mut self.deployments {
                         if d.id == action {
@@ -1994,17 +2105,13 @@ impl SimpleComponent for StatusView {
                     .stack
                     .root()
                     .and_then(|r| r.downcast::<gtk::Window>().ok());
-                let mut builder = adw::MessageDialog::builder()
-                    .title("Roll back?")
+                let dialog = adw::AlertDialog::builder()
                     .heading(format!("Roll back to {}?", d.tag))
                     .body(format!(
                         "The next boot will use {}:{}.\nYour current image stays on disk and remains available to roll forward.",
                         d.image, d.tag
-                    ));
-                if let Some(ref w) = window {
-                    builder = builder.transient_for(w);
-                }
-                let dialog = builder.build();
+                    ))
+                    .build();
 
                 dialog.add_response("cancel", "Cancel");
                 dialog.add_response("rollback", "Roll back");
@@ -2020,7 +2127,7 @@ impl SimpleComponent for StatusView {
                     dlg.close();
                 });
                 self.rollback_target = Some(d);
-                dialog.present();
+                dialog.present(window.as_ref());
             }
 
             StatusViewInput::ConfirmRollback => {
@@ -2162,7 +2269,62 @@ impl SimpleComponent for StatusView {
 
             StatusViewInput::SbomDiffLoaded(diff) => {
                 self.sbom_diff = Some(diff);
+                self.sbom_status = SbomStatus::Loaded;
                 self.rebuild_changelog_page(&sender);
+            }
+
+            StatusViewInput::SbomDiffStarted => {
+                self.sbom_status = SbomStatus::Loading;
+                self.rebuild_changelog_page(&sender);
+            }
+
+            StatusViewInput::SbomDiffUnavailable => {
+                self.sbom_status = SbomStatus::NotAvailable;
+                self.rebuild_changelog_page(&sender);
+            }
+
+            StatusViewInput::UnpinToStream(stream_tag) => {
+                let window = self
+                    .stack
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let dialog = adw::AlertDialog::builder()
+                    .heading(format!("Unpin to :{}?", stream_tag))
+                    .body(format!(
+                        "Your system will switch back to the floating `{}` tag and resume receiving automatic updates. A restart is required after the switch.",
+                        stream_tag
+                    ))
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("unpin", "Unpin");
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("unpin", adw::ResponseAppearance::Suggested);
+
+                let toast_overlay = self.toast_overlay.clone();
+                let registry_uri = self.registry_uri.clone();
+                let settings_snapshot = Settings::load();
+                dialog.connect_response(None, move |dlg, response| {
+                    if response == "unpin" {
+                        if settings_snapshot.dry_run || settings_snapshot.dev_mode {
+                            tracing::warn!(
+                                "unpin suppressed (dry_run={}, dev_mode={})",
+                                settings_snapshot.dry_run,
+                                settings_snapshot.dev_mode
+                            );
+                            let t = adw::Toast::new("Unpin staged (dry-run, no commands run)");
+                            toast_overlay.add_toast(t);
+                        } else {
+                            run_unpin_to_stream(
+                                &toast_overlay,
+                                registry_uri.clone(),
+                                stream_tag.clone(),
+                            );
+                        }
+                    }
+                    dlg.close();
+                });
+                dialog.present(window.as_ref());
             }
 
             StatusViewInput::ModuleStarted(module) => {
@@ -2270,11 +2432,22 @@ fn apply_auto_updates_setting(active: bool) {
 /// Read the current OS image name and variant from `/etc/os-release`.
 /// Tries `/run/host/etc/os-release` first for Flatpak compatibility.
 fn read_image_info() -> Option<String> {
-    // Prefer PRETTY_NAME from os-release (e.g. "Bluefin Dakota") — that's
-    // the user-facing name distros publish for display. Falls back to
-    // detect_bootc_image_info's "org/image" title (e.g.
-    // "projectbluefin/dakota") and then to the IMAGE_ID + VARIANT_ID
-    // combo if the os-release files aren't present.
+    // Compose "{NAME} {IMAGE_NAME-capitalised}" when both are present —
+    // e.g. NAME="Bluefin", IMAGE_NAME="dakota" → "Bluefin Dakota". Gives
+    // the hero row a richer identity than PRETTY_NAME alone (which on
+    // Bluefin is just "Bluefin"). Falls back to PRETTY_NAME, then
+    // detect_bootc_image_info's "org/image" form, then IMAGE_ID +
+    // VARIANT_ID — same chain as before, just with the composition step
+    // bolted on top.
+    let name = read_os_release_field("NAME");
+    let image = read_os_release_field("IMAGE_NAME");
+    if let (Some(n), Some(i)) = (name.as_deref(), image.as_deref()) {
+        let capped = capitalise_first(i);
+        if !n.eq_ignore_ascii_case(&capped) && !n.contains(capped.as_str()) {
+            return Some(format!("{} {}", n, capped));
+        }
+    }
+
     if let Some(pretty) = read_os_release_field("PRETTY_NAME") {
         return Some(pretty);
     }
@@ -2290,6 +2463,16 @@ fn read_image_info() -> Option<String> {
         return Some(id);
     }
     None
+}
+
+/// Title-case the first character of `s`, leave the rest unchanged.
+/// Used to turn `dakota` → `Dakota` for the hero-row display.
+fn capitalise_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+    }
 }
 
 fn read_os_release_field(key: &str) -> Option<String> {
@@ -2345,12 +2528,24 @@ fn read_booted_image_summary() -> Option<String> {
 }
 
 /// Pure-function counterpart of [`read_booted_image_summary`] — extracted
-/// for unit testing without spawning `bootc status --json`. Takes the same
-/// JSON shape bootc emits and returns the formatted subtitle.
+/// for unit testing without spawning `bootc status --json`. Returns a
+/// two-line subtitle:
+///
+/// ```text
+/// ghcr.io/projectbluefin/dakota:latest
+/// bc6d66c9 · 2026-05-30
+/// ```
+///
+/// Image ref on line 1 (so the user can read the full identity);
+/// short digest + build date on line 2 (small, dimmable in the row CSS).
+/// The hero ActionRow needs `set_subtitle_lines(2)` to render both lines.
+/// Missing pieces are skipped — the function never returns an empty
+/// trailing " · " or a dangling newline.
 fn parse_booted_image_summary(json: &Value) -> Option<String> {
     let booted = json.pointer("/status/booted")?;
-    let version = booted
-        .pointer("/image/version")
+    let image_ref = booted
+        .pointer("/image/image/image")
+        .or_else(|| booted.pointer("/image/image"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let digest = booted
@@ -2358,11 +2553,243 @@ fn parse_booted_image_summary(json: &Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .and_then(|s| s.strip_prefix("sha256:").or(Some(s)))
         .map(|s| s.chars().take(8).collect::<String>());
-    match (version, digest) {
-        (Some(v), Some(d)) => Some(format!("{}  ·  sha{}", v, d)),
-        (Some(v), None) => Some(v),
-        (None, Some(d)) => Some(format!("sha{}", d)),
-        _ => None,
+    let date = booted
+        .pointer("/image/timestamp")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.len() >= 10)
+        .map(|s| s[..10].to_string());
+
+    // Compose line 2 ("digest · date") from whichever pieces we have.
+    let mut line2_parts: Vec<String> = Vec::new();
+    if let Some(d) = digest {
+        line2_parts.push(d);
+    }
+    if let Some(t) = date {
+        line2_parts.push(t);
+    }
+    let line2 = line2_parts.join(" · ");
+
+    match (image_ref, line2.is_empty()) {
+        (Some(r), true) => Some(r),
+        (Some(r), false) => Some(format!("{}\n{}", r, line2)),
+        (None, false) => Some(line2),
+        (None, true) => None,
+    }
+}
+
+/// Extract the booted image's tag suffix (everything after the final `:`) from
+/// the cached bootc-status JSON — e.g. `stable-daily-43.20260530`. Used to
+/// pair the booted build with its entry in `registry_versions` (whose
+/// `version` field is the `org.opencontainers.image.version` annotation, in
+/// practice equal to the dated tag for Universal Blue images).
+///
+/// Falls back to os-release fields when bootc-status fails. Dakota's
+/// composefs deployment hits a "Multiple extra entries in /boot" error in
+/// `bootc status` which makes the JSON path unavailable; os-release still
+/// carries the booted build identity via `IMAGE_VERSION` / `VERSION_ID`.
+fn read_booted_tag_suffix() -> Option<String> {
+    if let Some(json) = get_cached_bootc_status() {
+        if let Some(t) = parse_booted_tag_suffix(&json) {
+            return Some(t);
+        }
+    }
+    // os-release fallback. IMAGE_VERSION is more specific (Dakota writes
+    // "20260530"), VERSION_ID is the broader handle (same value on Dakota,
+    // version-id only on Bluefin). Either one anchors the booted entry in
+    // registry_versions through find_booted_match's date/substring lookup.
+    read_os_release_field("IMAGE_VERSION").or_else(|| read_os_release_field("VERSION_ID"))
+}
+
+/// Pure-function counterpart of [`read_booted_tag_suffix`] — extracted for
+/// unit testing.
+fn parse_booted_tag_suffix(json: &Value) -> Option<String> {
+    let img = json
+        .pointer("/status/booted/image/image/image")
+        .or_else(|| json.pointer("/status/booted/image/image"))
+        .and_then(|v| v.as_str())?;
+    let (_, tag) = img.rsplit_once(':')?;
+    if tag.is_empty() {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
+/// Match the booted anchor string against the registry version list with
+/// progressive fallbacks. Anchors come from `read_booted_tag_suffix`, which
+/// may yield:
+/// - A fully-qualified Bluefin tag: `stable-daily-43.20260602`
+/// - A bare date string from Dakota's os-release: `20260530`
+/// - A floating stream tag: `latest`
+///
+/// Strategy:
+/// 1. Exact `v.version == anchor` — direct hit for Bluefin.
+/// 2. `v.version.contains(anchor)` — handles Dakota where the booted side
+///    is `20260530` and the registry side is `latest.20260530`.
+/// 3. `v.date == parsed_date(anchor)` — last resort when the version string
+///    diverges entirely (Dakota's commit-sha tags annotate as `latest`).
+fn find_booted_match<'a>(
+    versions: &'a [ImageVersion],
+    anchor: &str,
+) -> Option<&'a ImageVersion> {
+    if let Some(v) = versions.iter().find(|v| v.version == anchor) {
+        return Some(v);
+    }
+    if let Some(v) = versions.iter().find(|v| v.version.contains(anchor)) {
+        return Some(v);
+    }
+    if let Some(date) = extract_yyyymmdd_date(anchor) {
+        return versions.iter().find(|v| v.date == date);
+    }
+    None
+}
+
+/// Find an embedded YYYYMMDD date anywhere in a tag/anchor string. Accepts
+/// `20260530`, `latest.20260530`, `stable-daily-43.20260602`, etc. Returns
+/// None when no 8-digit run parses as a valid Gregorian date.
+fn extract_yyyymmdd_date(s: &str) -> Option<chrono::NaiveDate> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 8 {
+        return None;
+    }
+    for i in 0..=(bytes.len() - 8) {
+        let slice = &bytes[i..i + 8];
+        if slice.iter().all(|b| b.is_ascii_digit()) {
+            // Reject if preceded/followed by another digit — that means the
+            // run is longer than 8 and we'd be slicing through it.
+            let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+            let next_ok = i + 8 == bytes.len() || !bytes[i + 8].is_ascii_digit();
+            if prev_ok && next_ok {
+                if let Ok(d) = chrono::NaiveDate::parse_from_str(
+                    std::str::from_utf8(slice).ok()?,
+                    "%Y%m%d",
+                ) {
+                    return Some(d);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// One row in the changelog "Stack" diff: a labelled component (Image,
+/// Kernel, Revision, Build) plus its current and target value. `bumped` lets
+/// the renderer flag rows whose value actually changes, so the user can
+/// scan the section and see at a glance which components moved.
+#[derive(Debug, Clone)]
+struct StackItem {
+    label: &'static str,
+    current: Option<String>,
+    target: String,
+    bumped: bool,
+}
+
+/// Build the rows for the changelog Stack section. Compares the booted
+/// `ImageVersion` against the selected target and emits a labelled
+/// from→to row for each meaningful component (image tag, kernel, git
+/// revision, build date). Returns an empty Vec when there's no target
+/// to compare against — caller suppresses the whole section in that
+/// case.
+///
+/// `host_kernel` is the live `uname -r` for the booted host; used to fill
+/// in the booted side of the Kernel row when the registry-side annotation
+/// is missing. Dakota doesn't publish `ostree.linux` anywhere accessible,
+/// so without this the booted kernel would render as "—" even though we
+/// know it from the running system.
+fn build_stack_items(
+    booted: Option<&ImageVersion>,
+    target: Option<&ImageVersion>,
+    host_kernel: Option<&str>,
+) -> Vec<StackItem> {
+    let Some(target) = target else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+
+    // Image tag — what the user is on vs. what they're going to. Use the
+    // version annotation (typically the dated tag) so the value stays
+    // short enough to render in the row suffix. Full refs would overflow.
+    let image_bumped = booted.map(|b| b.version != target.version).unwrap_or(true);
+    out.push(StackItem {
+        label: "Image",
+        current: booted.map(|b| b.version.clone()),
+        target: target.version.clone(),
+        bumped: image_bumped,
+    });
+
+    // Kernel — the headline number for a bootc update. Only emit the row
+    // when at least one side has a value; Dakota doesn't ship kernel data
+    // for either side, and a "— → —" row is just noise.
+    let target_kernel = if target.kernel.is_empty() {
+        None
+    } else {
+        Some(target.kernel.clone())
+    };
+    let current_kernel = booted
+        .map(|b| b.kernel.clone())
+        .filter(|k| !k.is_empty())
+        .or_else(|| host_kernel.map(|s| s.to_string()).filter(|s| !s.is_empty()));
+    if target_kernel.is_some() || current_kernel.is_some() {
+        let kernel_bumped = match (&current_kernel, &target_kernel) {
+            (Some(c), Some(t)) => c != t,
+            // We know the target but not the booted side → "new" value the
+            // user would land on. Matches the Image/Revision/Built rows'
+            // behaviour when booted info is missing.
+            (None, Some(_)) => true,
+            // Target side missing (Dakota: no kernel anywhere) — current is
+            // just informational, not a change. Keep it dim.
+            _ => false,
+        };
+        out.push(StackItem {
+            label: "Kernel",
+            current: current_kernel,
+            target: target_kernel.unwrap_or_default(),
+            bumped: kernel_bumped,
+        });
+    }
+
+    // Short git commit — the actual code that built the image. Skipped on
+    // images that don't publish `image.revision` (some Dakota builds).
+    if !target.revision.is_empty() {
+        let target_rev = short_sha(&target.revision);
+        let current_rev = booted
+            .map(|b| short_sha(&b.revision))
+            .filter(|s| !s.is_empty());
+        let rev_bumped = current_rev
+            .as_deref()
+            .map(|c| c != target_rev)
+            .unwrap_or(true);
+        out.push(StackItem {
+            label: "Revision",
+            current: current_rev,
+            target: target_rev,
+            bumped: rev_bumped,
+        });
+    }
+
+    // Build date — surfaces "how recent" without making the user parse a
+    // 40-char manifest digest.
+    let target_built = target.created.format("%b %-d, %Y").to_string();
+    let current_built = booted.map(|b| b.created.format("%b %-d, %Y").to_string());
+    let built_bumped = current_built
+        .as_deref()
+        .map(|c| c != target_built)
+        .unwrap_or(true);
+    out.push(StackItem {
+        label: "Built",
+        current: current_built,
+        target: target_built,
+        bumped: built_bumped,
+    });
+
+    out
+}
+
+fn short_sha(s: &str) -> String {
+    if s.len() >= 7 {
+        s[..7].to_string()
+    } else {
+        s.to_string()
     }
 }
 
@@ -2522,6 +2949,51 @@ fn read_selected_tag() -> String {
     detect_bootc_image_info()
         .map(|(_, _, tag)| tag)
         .unwrap_or_else(|| "latest".to_string())
+}
+
+/// True when `tag` is a specific pinned build rather than a floating stream.
+///
+/// A "stream" tag is one of the canonical channel names a Family publishes
+/// (`latest`, `testing`, `stable`, `gts`, `beta`, `lts`, `lts-hwe`, etc.).
+/// Anything else is treated as pinned: 8-digit date strings (`20260530`),
+/// dotted date suffixes (`latest.20260530`), and 40-char sha hex tags.
+///
+/// Used to decide whether to show the "Unpin to {stream}" affordance on the
+/// front page — if the user is pinned, they're not getting auto-updates and
+/// need a one-click escape hatch.
+fn is_pinned_tag(tag: &str) -> bool {
+    const STREAM_TAGS: &[&str] = &[
+        "latest",
+        "testing",
+        "stable",
+        "stable-daily",
+        "beta",
+        "gts",
+        "lts",
+        "lts-hwe",
+        "lts-amd64",
+        "lts-arm64",
+        "gdx",
+        "unstable",
+    ];
+    if STREAM_TAGS.contains(&tag) {
+        return false;
+    }
+    // Sha-only (40-char hex) — definitely pinned.
+    if tag.len() == 40 && tag.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    // 8-digit date string — pinned.
+    if tag.len() == 8 && tag.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Dotted/dashed date suffix on a stream tag — pinned.
+    if strip_date_suffix(tag).is_some() {
+        return true;
+    }
+    // Anything else (unrecognised tag) — treat as pinned for safety; user
+    // can still click unpin to go back to the family's default stream.
+    true
 }
 
 /// Try to determine when the last successful update ran.
@@ -2823,6 +3295,82 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
             Ok(summary) => {
                 let t = adw::Toast::new(&summary);
                 t.set_timeout(6);
+                toast_overlay.add_toast(t);
+                gtk::glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => gtk::glib::ControlFlow::Break,
+        }
+    });
+}
+
+/// Switch the booted system back to a floating stream tag — the "Unpin"
+/// action surfaced when [`is_pinned_tag`] returns true for the booted tag.
+/// Runs `pkexec bootc switch <registry>/<image>:<stream>` in the background
+/// and toasts the result.
+///
+/// Same `flatpak-spawn --host` / direct `pkexec` split as the other
+/// destructive runners — the Flatpak sandbox has no host pkexec on PATH.
+fn run_unpin_to_stream(
+    toast_overlay: &adw::ToastOverlay,
+    registry_uri: String,
+    stream_tag: String,
+) {
+    let target_ref = format!("{}:{}", registry_uri, stream_tag);
+
+    let toast = adw::Toast::new(&format!("Unpinning… (switching to :{})", stream_tag));
+    toast.set_timeout(4);
+    toast_overlay.add_toast(toast);
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let toast_overlay = toast_overlay.clone();
+    let target_for_thread = target_ref.clone();
+
+    std::thread::spawn(move || {
+        let cmd_result = if crate::update_worker::is_flatpak() {
+            Command::new("flatpak-spawn")
+                .args(["--host", "pkexec", "bootc", "switch", &target_for_thread])
+                .output()
+        } else {
+            Command::new("pkexec")
+                .args(["bootc", "switch", &target_for_thread])
+                .output()
+        };
+
+        let summary = match cmd_result {
+            Ok(out) if out.status.success() => {
+                tracing::info!("unpin: bootc switch {} succeeded", target_for_thread);
+                format!("Unpinned to {} — reboot to apply", target_for_thread)
+            }
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr_tail = String::from_utf8_lossy(&out.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("")
+                    .to_string();
+                tracing::error!(
+                    "unpin: bootc switch {} failed exit {}: {}",
+                    target_for_thread,
+                    code,
+                    stderr_tail
+                );
+                format!("Unpin failed (exit {code}): {stderr_tail}")
+            }
+            Err(e) => {
+                tracing::error!("unpin: bootc switch could not start: {}", e);
+                format!("Unpin could not start: {e}")
+            }
+        };
+
+        let _ = tx.send(summary);
+    });
+
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        match rx.try_recv() {
+            Ok(summary) => {
+                let t = adw::Toast::new(&summary);
+                t.set_timeout(8);
                 toast_overlay.add_toast(t);
                 gtk::glib::ControlFlow::Break
             }
@@ -3419,7 +3967,11 @@ fn spawn_changelog_fetch(
                             t.elapsed().as_millis(),
                             versions.len()
                         );
-                        newest_full_ref = versions.first().map(|v| v.full_ref.clone());
+                        // versions are sorted ASCENDING by date — `.last()` is
+                        // the newest. Using `.first()` here picked the oldest
+                        // ref (e.g. Feb date-stamped tags that don't publish
+                        // SPDX SBOMs), breaking the diff every time.
+                        newest_full_ref = versions.last().map(|v| v.full_ref.clone());
                         sender.input(StatusViewInput::RegistryVersionsLoaded(versions));
                     }
                     Err(e) => println!(
@@ -3553,23 +4105,36 @@ fn spawn_changelog_fetch(
                     });
 
                 if booted_ref != target_ref {
+                    // Tell the UI we're starting so it can render the
+                    // "Comparing packages…" placeholder. Without this the
+                    // Stack section is silently blank for 30+ seconds on
+                    // slow connections.
+                    let _ = sender.input(StatusViewInput::SbomDiffStarted);
                     let sbom_sender = sender.clone();
                     tokio::spawn(async move {
-                        println!(
-                            "[debug] sbom_diff: deferred fetch booted_ref={} target_ref={}",
-                            booted_ref, target_ref
+                        tracing::debug!(
+                            "sbom_diff: deferred fetch booted_ref={} target_ref={}",
+                            booted_ref,
+                            target_ref
                         );
-                        if let Some(diff) =
-                            crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
+                        match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
                         {
-                            sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
+                            Some(diff) => {
+                                sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
+                            }
+                            None => {
+                                tracing::info!(
+                                    "sbom_diff: no diff available (registry didn't return SPDX referrers)"
+                                );
+                                sbom_sender.input(StatusViewInput::SbomDiffUnavailable);
+                            }
                         }
                     });
                 } else {
-                    println!("[debug] sbom_diff: skipped (booted == target, same image)");
+                    tracing::debug!("sbom_diff: skipped (booted == target, same image)");
                 }
             } else {
-                println!("[debug] sbom_diff: skipped (mock_identity active)");
+                tracing::debug!("sbom_diff: skipped (mock_identity active)");
             }
         });
     });
@@ -3585,12 +4150,32 @@ mod tests {
     // status JSON shape is `{ "status": { "booted": { "image": { ... } } } }`.
 
     #[test]
-    fn booted_summary_with_version_and_digest() {
+    fn booted_summary_with_image_digest_and_date() {
         let j = json!({
             "status": {
                 "booted": {
                     "image": {
-                        "version": "43.20260527.0",
+                        "image": { "image": "ghcr.io/projectbluefin/dakota:latest" },
+                        "imageDigest": "sha256:bc6d66c90d1e230b89f71a459fcd9f07fd72582b5a2a633f71885e7f6bf722ed",
+                        "timestamp": "2026-05-30T02:20:28Z"
+                    }
+                }
+            }
+        });
+        // Two-line subtitle: ref on line 1, "shaDIGEST · YYYY-MM-DD" on line 2.
+        assert_eq!(
+            parse_booted_image_summary(&j),
+            Some("ghcr.io/projectbluefin/dakota:latest\nbc6d66c9 · 2026-05-30".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_summary_with_image_and_digest_no_date() {
+        let j = json!({
+            "status": {
+                "booted": {
+                    "image": {
+                        "image": { "image": "ghcr.io/projectbluefin/dakota:latest" },
                         "imageDigest": "sha256:abcdef1234567890"
                     }
                 }
@@ -3598,18 +4183,18 @@ mod tests {
         });
         assert_eq!(
             parse_booted_image_summary(&j),
-            Some("43.20260527.0  ·  shaabcdef12".to_string())
+            Some("ghcr.io/projectbluefin/dakota:latest\nabcdef12".to_string())
         );
     }
 
     #[test]
-    fn booted_summary_with_version_only() {
+    fn booted_summary_with_image_only() {
         let j = json!({
-            "status": { "booted": { "image": { "version": "43.20260527.0" } } }
+            "status": { "booted": { "image": { "image": { "image": "ghcr.io/projectbluefin/dakota:latest" } } } }
         });
         assert_eq!(
             parse_booted_image_summary(&j),
-            Some("43.20260527.0".to_string())
+            Some("ghcr.io/projectbluefin/dakota:latest".to_string())
         );
     }
 
@@ -3620,9 +4205,10 @@ mod tests {
                 "booted": { "image": { "imageDigest": "sha256:cafe1234ffff5678" } }
             }
         });
+        // Digest-only (no image ref): renders as just the second-line piece.
         assert_eq!(
             parse_booted_image_summary(&j),
-            Some("shacafe1234".to_string())
+            Some("cafe1234".to_string())
         );
     }
 
@@ -3636,7 +4222,7 @@ mod tests {
         });
         assert_eq!(
             parse_booted_image_summary(&j),
-            Some("sha00ff11ee".to_string())
+            Some("00ff11ee".to_string())
         );
     }
 
@@ -3650,6 +4236,272 @@ mod tests {
     fn booted_summary_empty_image_returns_none() {
         let j = json!({ "status": { "booted": { "image": {} } } });
         assert_eq!(parse_booted_image_summary(&j), None);
+    }
+
+    // ── parse_booted_tag_suffix ──────────────────────────────────────────
+    // Pulls the tag suffix from the booted image ref so the changelog page
+    // can pair the booted build with its registry_versions entry.
+
+    #[test]
+    fn booted_tag_suffix_extracts_tag() {
+        let j = json!({
+            "status": {
+                "booted": {
+                    "image": { "image": { "image": "ghcr.io/projectbluefin/dakota:stable-daily-43.20260530" } }
+                }
+            }
+        });
+        assert_eq!(
+            parse_booted_tag_suffix(&j),
+            Some("stable-daily-43.20260530".to_string())
+        );
+    }
+
+    #[test]
+    fn booted_tag_suffix_missing_image_returns_none() {
+        let j = json!({ "status": { "booted": {} } });
+        assert_eq!(parse_booted_tag_suffix(&j), None);
+    }
+
+    #[test]
+    fn booted_tag_suffix_untagged_image_returns_none() {
+        // No `:tag` separator → nothing to extract.
+        let j = json!({
+            "status": { "booted": { "image": { "image": { "image": "ghcr.io/projectbluefin/dakota" } } } }
+        });
+        assert_eq!(parse_booted_tag_suffix(&j), None);
+    }
+
+    // ── build_stack_items ────────────────────────────────────────────────
+    // Constructs the from→to rows the changelog Stack renders. Marks
+    // `bumped=true` only when the value actually moved so the renderer
+    // can highlight just the components that changed.
+
+    fn fake_image_version(
+        version: &str,
+        kernel: &str,
+        revision: &str,
+        created_iso: &str,
+    ) -> ImageVersion {
+        ImageVersion {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 5, 30).unwrap(),
+            full_ref: format!("ghcr.io/example/image:{version}"),
+            version: version.to_string(),
+            kernel: kernel.to_string(),
+            revision: revision.to_string(),
+            created: chrono::DateTime::parse_from_rfc3339(created_iso)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        }
+    }
+
+    #[test]
+    fn stack_items_empty_without_target() {
+        assert!(build_stack_items(None, None, None).is_empty());
+    }
+
+    #[test]
+    fn stack_items_marks_changed_components_as_bumped() {
+        let booted = fake_image_version(
+            "stable-daily-43.20260527",
+            "6.13.4-200.fc41",
+            "abc1234deadbeef",
+            "2026-05-27T12:00:00Z",
+        );
+        let target = fake_image_version(
+            "stable-daily-43.20260530",
+            "6.13.5-201.fc41",
+            "def5678feedface",
+            "2026-05-30T12:00:00Z",
+        );
+        let items = build_stack_items(Some(&booted), Some(&target), None);
+        let by_label: std::collections::HashMap<&str, &StackItem> =
+            items.iter().map(|i| (i.label, i)).collect();
+        assert!(by_label["Image"].bumped);
+        assert!(by_label["Kernel"].bumped);
+        assert!(by_label["Revision"].bumped);
+        assert!(by_label["Built"].bumped);
+        assert_eq!(
+            by_label["Image"].current.as_deref(),
+            Some("stable-daily-43.20260527")
+        );
+        assert_eq!(by_label["Image"].target, "stable-daily-43.20260530");
+        assert_eq!(by_label["Revision"].target, "def5678");
+    }
+
+    #[test]
+    fn stack_items_marks_unchanged_components_not_bumped() {
+        // Same booted as target — every row is bumped=false. Used when the
+        // user is browsing the changelog for the version they're already on.
+        let v = fake_image_version(
+            "stable-daily-43.20260530",
+            "6.13.5-201.fc41",
+            "def5678feedface",
+            "2026-05-30T12:00:00Z",
+        );
+        let items = build_stack_items(Some(&v), Some(&v), None);
+        for item in &items {
+            assert!(!item.bumped, "{} should not be bumped", item.label);
+        }
+    }
+
+    #[test]
+    fn stack_items_without_booted_treat_target_as_bumped() {
+        // bootc-status missing → every component is unknown on the "from"
+        // side and should render as bumped so the user sees the values they
+        // would land on.
+        let target = fake_image_version(
+            "stable-daily-43.20260530",
+            "6.13.5-201.fc41",
+            "def5678feedface",
+            "2026-05-30T12:00:00Z",
+        );
+        let items = build_stack_items(None, Some(&target), None);
+        for item in &items {
+            assert!(item.bumped, "{} should be bumped", item.label);
+            assert!(item.current.is_none());
+        }
+    }
+
+    // ── Dakota scenarios ─────────────────────────────────────────────────
+    // Dakota's registry data is bare: no kernel annotation anywhere, an
+    // empty revision on some builds, and a `version` annotation that may
+    // be just a date ("20260530") rather than the Bluefin-style dated
+    // stream ("stable-daily-43.20260530"). These cases verify the Stack
+    // section degrades sensibly.
+
+    #[test]
+    fn stack_items_dakota_no_kernel_either_side_hides_kernel_row() {
+        // Both sides empty kernel → row should be omitted entirely so the
+        // user doesn't see "— → —".
+        let booted = fake_image_version("20260527", "", "abc1234", "2026-05-27T12:00:00Z");
+        let target = fake_image_version("20260530", "", "def5678", "2026-05-30T12:00:00Z");
+        let items = build_stack_items(Some(&booted), Some(&target), None);
+        assert!(
+            !items.iter().any(|i| i.label == "Kernel"),
+            "Kernel row should be hidden when both sides are empty"
+        );
+        // Image / Revision / Built still appear.
+        assert!(items.iter().any(|i| i.label == "Image"));
+        assert!(items.iter().any(|i| i.label == "Revision"));
+        assert!(items.iter().any(|i| i.label == "Built"));
+    }
+
+    #[test]
+    fn stack_items_dakota_uses_host_kernel_as_fallback() {
+        // Registry side has no kernel, but uname -r is known — show the
+        // host kernel on the current side so the user can at least see what
+        // they're actually running.
+        let booted = fake_image_version("20260527", "", "abc1234", "2026-05-27T12:00:00Z");
+        let target = fake_image_version("20260530", "", "def5678", "2026-05-30T12:00:00Z");
+        let items = build_stack_items(Some(&booted), Some(&target), Some("7.0.7"));
+        let kernel = items.iter().find(|i| i.label == "Kernel");
+        assert!(kernel.is_some(), "Kernel row should be present when host_kernel is known");
+        let k = kernel.unwrap();
+        assert_eq!(k.current.as_deref(), Some("7.0.7"));
+        assert_eq!(k.target, "");
+        // One-sided data → not flagged as bumped (we can't know if it
+        // actually changed).
+        assert!(!k.bumped);
+    }
+
+    #[test]
+    fn stack_items_dakota_omits_revision_when_target_missing() {
+        let target = fake_image_version("20260530", "", "", "2026-05-30T12:00:00Z");
+        let items = build_stack_items(None, Some(&target), None);
+        assert!(
+            !items.iter().any(|i| i.label == "Revision"),
+            "Revision should be hidden when target revision is empty"
+        );
+    }
+
+    // ── extract_yyyymmdd_date ────────────────────────────────────────────
+
+    #[test]
+    fn extract_date_from_bare_date() {
+        assert_eq!(
+            extract_yyyymmdd_date("20260530"),
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 30)
+        );
+    }
+
+    #[test]
+    fn extract_date_from_dotted_stream_tag() {
+        assert_eq!(
+            extract_yyyymmdd_date("latest.20260530"),
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 30)
+        );
+    }
+
+    #[test]
+    fn extract_date_from_dashed_bluefin_tag() {
+        assert_eq!(
+            extract_yyyymmdd_date("stable-daily-43.20260602"),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
+        );
+    }
+
+    #[test]
+    fn extract_date_rejects_non_date_runs() {
+        // 8-digit hex sha is not a date.
+        assert_eq!(extract_yyyymmdd_date("abc12345"), None);
+        // 12-digit run shouldn't be sliced into a date.
+        assert_eq!(extract_yyyymmdd_date("000020260530"), None);
+        assert_eq!(extract_yyyymmdd_date("latest"), None);
+    }
+
+    // ── find_booted_match ────────────────────────────────────────────────
+
+    #[test]
+    fn find_booted_match_exact_version() {
+        let v1 = fake_image_version(
+            "stable-daily-43.20260527",
+            "6.13.4",
+            "abc1234",
+            "2026-05-27T12:00:00Z",
+        );
+        let v2 = fake_image_version(
+            "stable-daily-43.20260530",
+            "6.13.5",
+            "def5678",
+            "2026-05-30T12:00:00Z",
+        );
+        let versions = vec![v1, v2];
+        let hit = find_booted_match(&versions, "stable-daily-43.20260530");
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().version, "stable-daily-43.20260530");
+    }
+
+    #[test]
+    fn find_booted_match_substring_handles_dakota_anchor() {
+        // Dakota's os-release IMAGE_VERSION="20260530", but the registry
+        // entry's version annotation is "latest.20260530". Substring match
+        // gets us there.
+        let v = fake_image_version("latest.20260530", "", "abc1234", "2026-05-30T12:00:00Z");
+        let versions = vec![v];
+        let hit = find_booted_match(&versions, "20260530");
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn find_booted_match_date_fallback() {
+        // Booted anchor is "latest" (no date), but we know the host's
+        // booted date — wait, anchor would carry the date in the os-release
+        // form. This guards the parse path: anchor "20260530" matches v.date
+        // even if the version string is something unrelated.
+        let v = fake_image_version("local-build", "", "abc1234", "2026-05-30T12:00:00Z");
+        let mut v_dated = v.clone();
+        v_dated.date = chrono::NaiveDate::from_ymd_opt(2026, 5, 30).unwrap();
+        let versions = vec![v_dated];
+        let hit = find_booted_match(&versions, "20260530");
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn find_booted_match_returns_none_for_unrelated_anchor() {
+        let v = fake_image_version("latest.20260530", "", "abc1234", "2026-05-30T12:00:00Z");
+        let versions = vec![v];
+        assert!(find_booted_match(&versions, "foobar").is_none());
     }
 
     // ── parse_os_release_field ───────────────────────────────────────────

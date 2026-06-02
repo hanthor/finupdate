@@ -1,3 +1,6 @@
+// Trait/types are a frontend-agnostic seam that no callsite uses yet.
+#![allow(dead_code)]
+
 //! Backend trait for finupdate operations — the seam between the GTK frontend
 //! and the underlying bootc/registry/uupd machinery.
 //!
