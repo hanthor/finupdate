@@ -935,23 +935,6 @@ impl SimpleComponent for StatusView {
         status_pill.set_valign(gtk::Align::Center);
         hero_row.add_suffix(&status_pill);
 
-        // Hero (i) info button — opens the Image Source subpage for the
-        // booted image (registry, tag, variant toggles, signature policy).
-        // Distinct from the Update Available row's (i) below, which shows
-        // the "what's new" changelog for the *available* update. Per user
-        // direction: top row's info button is about THIS image, banner
-        // row's is about the update being offered.
-        let hero_info_btn = gtk::Button::from_icon_name("dialog-information-symbolic");
-        hero_info_btn.add_css_class("flat");
-        hero_info_btn.add_css_class("circular");
-        hero_info_btn.set_tooltip_text(Some("About this image"));
-        hero_info_btn.set_valign(gtk::Align::Center);
-        let image_info_sender = sender.input_sender().clone();
-        hero_info_btn.connect_clicked(move |_| {
-            image_info_sender.emit(StatusViewInput::ShowPage("source".to_string()));
-        });
-        hero_row.add_suffix(&hero_info_btn);
-
         // "Restart Tonight" — scheduled-reboot button shown only when a
         // deployment is staged (reboot_pending). Schedules the host to reboot
         // at 02:00 (next occurrence) via `shutdown -r 02:00`, matching macOS
