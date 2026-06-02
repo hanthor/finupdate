@@ -308,13 +308,13 @@ enum SbomResult {
 }
 
 async fn sbom_diff_for_panel(booted: &ImageRef, target_full_ref: &str) -> SbomResult {
-    // Standalone app uses a digest-pinned booted_ref derived from
-    // bootc-status JSON; the panel runs through the service which is
-    // os-release-aware. For now, the booted ref is the as_string form —
-    // which works on Bluefin but diffs latest-vs-latest on Dakota. The
-    // service's `current_image()` is the right seam to fix that
-    // eventually (it would need to expose the actual booted digest).
-    let booted_ref = booted.as_string();
+    // Prefer the digest-pinned booted form so the diff compares two
+    // distinct manifests on images whose floating tag updates between
+    // fetches (Dakota's `:latest` is the canonical case). Falls back to
+    // the tag form when the service couldn't get a digest from
+    // bootc-status — diff is still meaningful on Bluefin where the
+    // tag is dated.
+    let booted_ref = booted.as_digest_pinned_string();
     if booted_ref == target_full_ref {
         return SbomResult::Skipped;
     }

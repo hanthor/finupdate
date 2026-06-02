@@ -107,11 +107,17 @@ impl Registry for HttpRegistry {
 
     async fn detect_booted_image(&self) -> Option<ImageRef> {
         let client = crate::registry_client::RegistryClient::detect().await?;
+        // Best-effort digest from bootc-status JSON. When unavailable
+        // (Dakota's composefs deploy errors, os-release fallback, etc.)
+        // we leave it empty — `as_digest_pinned_string` then degrades to
+        // the tag form.
+        let digest = read_booted_image_digest().unwrap_or_default();
         Some(ImageRef {
             registry: "ghcr.io".to_string(),
             org: client.org().to_string(),
             image: client.image().to_string(),
             tag: client.stream().to_string(),
+            digest,
         })
     }
 
@@ -136,12 +142,23 @@ impl Registry for HttpRegistry {
 ///
 /// Mirrors the canonical bootc spec format. Frontends construct one of these
 /// from user input or from a previous `current_image()` call.
+///
+/// `digest` is populated when the source knows the actual booted manifest
+/// (today that's bootc-status JSON; os-release fallback leaves it empty).
+/// SBOM diffs need a digest-pinned ref to avoid the
+/// "latest-vs-latest = empty diff" degenerate on images whose floating
+/// tag updates between fetches (Dakota's `:latest`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ImageRef {
     pub registry: String,
     pub org: String,
     pub image: String,
     pub tag: String,
+    /// `sha256:xxx…` digest of the booted manifest, when known. Empty
+    /// strings serialise out so existing settings JSON round-trips
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub digest: String,
 }
 
 impl ImageRef {
@@ -158,11 +175,24 @@ impl ImageRef {
             org,
             image,
             tag: tag.to_string(),
+            digest: String::new(),
         })
     }
 
     pub fn as_string(&self) -> String {
         format!("{}/{}/{}:{}", self.registry, self.org, self.image, self.tag)
+    }
+
+    /// Digest-pinned reference (`registry/org/image@sha256:…`) when the
+    /// caller knows the actual manifest digest. Falls back to
+    /// [`Self::as_string`] when `digest` is empty — useful for callers
+    /// that want "use the most specific form available".
+    pub fn as_digest_pinned_string(&self) -> String {
+        if self.digest.is_empty() {
+            self.as_string()
+        } else {
+            format!("{}/{}/{}@{}", self.registry, self.org, self.image, self.digest)
+        }
     }
 }
 
@@ -443,6 +473,7 @@ impl UpdaterService for BootcUpdaterService {
             org: fam.org.to_string(),
             image: target_image.to_string(),
             tag: default_stream.to_string(),
+            digest: String::new(),
         })
     }
 
@@ -463,6 +494,7 @@ impl UpdaterService for BootcUpdaterService {
             org: fam.org.to_string(),
             image: target_image.to_string(),
             tag: stream.to_string(),
+            digest: String::new(),
         })
     }
 
@@ -514,11 +546,146 @@ fn feature_subtitle(feat: &str) -> &'static str {
     }
 }
 
+/// Read the booted manifest digest (`sha256:…`) from `bootc status --json`.
+///
+/// Returns None when bootc-status can't be reached (Dakota's composefs
+/// deploy error, no bootc, not running as root from inside a sandbox).
+/// The caller treats None as "fall back to the tag form" — meaningful
+/// SBOM diffs need the digest; image-identity display doesn't.
+///
+/// Uses a 3-second timeout so the panel's first paint isn't blocked on a
+/// hung subprocess. `bootc status` typically returns in <100ms when
+/// everything's healthy.
+fn read_booted_image_digest() -> Option<String> {
+    use std::time::Duration;
+
+    let cmd_path = if crate::update_worker::is_flatpak() {
+        "flatpak-spawn"
+    } else {
+        "bootc"
+    };
+    let args: &[&str] = if crate::update_worker::is_flatpak() {
+        &["--host", "bootc", "status", "--json"]
+    } else {
+        &["status", "--json"]
+    };
+
+    let mut cmd = std::process::Command::new(cmd_path);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+
+    // 3-second timeout via a polling child wait — std doesn't ship a
+    // timeout API. Long enough for a slow polkit prompt to resolve,
+    // short enough that a wedged bootc doesn't freeze the UI.
+    let mut child = cmd.spawn().ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if start.elapsed() > Duration::from_secs(3) => {
+                let _ = child.kill();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    parse_booted_digest(&json)
+}
+
+/// Pure-function counterpart of [`read_booted_image_digest`] — extracted
+/// for unit testing without spawning `bootc status`.
+fn parse_booted_digest(json: &serde_json::Value) -> Option<String> {
+    let s = json
+        .pointer("/status/booted/image/imageDigest")
+        .and_then(|v| v.as_str())?
+        .trim()
+        .to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone};
+    use serde_json::json;
     use std::sync::Mutex;
+
+    // ── ImageRef digest API ───────────────────────────────────────────────
+
+    #[test]
+    fn imageref_as_digest_pinned_uses_digest_when_set() {
+        let r = ImageRef {
+            registry: "ghcr.io".to_string(),
+            org: "projectbluefin".to_string(),
+            image: "dakota".to_string(),
+            tag: "latest".to_string(),
+            digest: "sha256:bc6d66c9".to_string(),
+        };
+        assert_eq!(
+            r.as_digest_pinned_string(),
+            "ghcr.io/projectbluefin/dakota@sha256:bc6d66c9"
+        );
+    }
+
+    #[test]
+    fn imageref_as_digest_pinned_falls_back_to_tag_when_empty() {
+        let r = ImageRef {
+            registry: "ghcr.io".to_string(),
+            org: "projectbluefin".to_string(),
+            image: "dakota".to_string(),
+            tag: "latest".to_string(),
+            digest: String::new(),
+        };
+        assert_eq!(
+            r.as_digest_pinned_string(),
+            "ghcr.io/projectbluefin/dakota:latest"
+        );
+    }
+
+    #[test]
+    fn imageref_parse_initialises_empty_digest() {
+        let r = ImageRef::parse("ghcr.io/projectbluefin/dakota:latest").unwrap();
+        assert_eq!(r.digest, "");
+        // Round-trips through as_string without the digest.
+        assert_eq!(r.as_string(), "ghcr.io/projectbluefin/dakota:latest");
+    }
+
+    // ── parse_booted_digest ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_booted_digest_pulls_from_status_json() {
+        let j = json!({
+            "status": {
+                "booted": {
+                    "image": {
+                        "imageDigest": "sha256:bc6d66c90d1e230b89f71a459fcd9f07fd72582b"
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            parse_booted_digest(&j),
+            Some("sha256:bc6d66c90d1e230b89f71a459fcd9f07fd72582b".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_booted_digest_returns_none_when_field_missing() {
+        let j = json!({ "status": { "booted": { "image": {} } } });
+        assert_eq!(parse_booted_digest(&j), None);
+    }
+
+    #[test]
+    fn parse_booted_digest_returns_none_on_empty_string() {
+        let j = json!({ "status": { "booted": { "image": { "imageDigest": "  " } } } });
+        assert_eq!(parse_booted_digest(&j), None);
+    }
 
     // ── feature_display_name / feature_subtitle ───────────────────────────
 
@@ -713,6 +880,7 @@ mod tests {
             org: "projectbluefin".to_string(),
             image: "dakota".to_string(),
             tag: "latest".to_string(),
+            digest: String::new(),
         }
     }
 
@@ -763,6 +931,7 @@ mod tests {
             org: "ublue-os".to_string(),
             image: "bluefin".to_string(),
             tag: "stable".to_string(),
+            digest: String::new(),
         }));
         let svc = BootcUpdaterService::with_registry(reg);
         let fam = svc
@@ -786,6 +955,7 @@ mod tests {
             org: "some-other-org".to_string(),
             image: "random-image".to_string(),
             tag: "latest".to_string(),
+            digest: String::new(),
         }));
         let svc = BootcUpdaterService::with_registry(reg);
         assert!(svc.current_family().await.unwrap().is_none());

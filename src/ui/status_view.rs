@@ -3932,6 +3932,7 @@ fn spawn_changelog_fetch(
                     org: parts[1].to_string(),
                     image: parts[2..].join("/"),
                     tag: stream,
+                    digest: String::new(),
                 };
                 let svc = crate::service::global();
 
