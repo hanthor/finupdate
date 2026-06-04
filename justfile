@@ -126,6 +126,20 @@ flatpak-run: flatpak dock run
 clean-flatpak:
     rm -rf _flatpak .flatpak-builder
 
+# Build + install libfinupdate (the cdylib + header + pkg-config file) into
+# a prefix so a downstream gnome-control-center build can link against it.
+# Used by Dakota's BuildStream patch; see cc-panel/README.md.
+panel-install prefix="/usr/local":
+    sudo build-aux/install-libfinupdate.sh {{ prefix }}
+
+# Dev loop for the embedded panel widgets — builds the cdylib + a tiny
+# GTK harness (examples/panel-demo/) that hosts the FFI widgets in a
+# standalone window. Iterate on src/changelog_widget.rs or
+# src/rebase_widget.rs without round-tripping through a patched
+# gnome-control-center build.
+panel-demo:
+    examples/panel-demo/build-and-run.sh
+
 # Create the toolbox and install build + GUI-test deps (one-time setup).
 # Uses fedora-toolbox (which ships dnf) rather than the sealed Bluefin Dakota
 # image, which has no package manager.
