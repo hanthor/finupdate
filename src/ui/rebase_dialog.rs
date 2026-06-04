@@ -2237,6 +2237,7 @@ mod tests {
             org: "ublue-os".to_string(),
             image: image.to_string(),
             tag: "stable".to_string(),
+            digest: String::new(),
         }
     }
 
@@ -2409,6 +2410,7 @@ mod tests {
             org: "projectbluefin".to_string(),
             image: "dakota-nvidia".to_string(),
             tag: "latest".to_string(),
+            digest: String::new(),
         };
         let (dx, nvidia) = derive_initial_toggle_state(&dakota_info(), Some(&img));
         assert!(!dx);

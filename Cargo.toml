@@ -61,6 +61,24 @@ async-trait = "0.1"
 # rustls-tls: no system OpenSSL needed inside the Flatpak sandbox.
 oci-client = { version = "0.15", default-features = false, features = ["rustls-tls"] }
 
+[lib]
+# `cdylib` produces `libfinupdate.so` for the C-side gnome-control-center
+# panel to link against. `rlib` is needed for the GUI / CLI bins below to
+# import the lib. Both targets share the same source tree (src/lib.rs).
+crate-type = ["lib", "cdylib"]
+name = "finupdate"
+path = "src/lib.rs"
+
+[build-dependencies]
+# Generates `finupdate.h` from the #[no_mangle] surface in src/ffi.rs so the
+# C panel doesn't have to maintain the prototypes by hand. Runs in build.rs
+# and writes to `target/<profile>/include/finupdate.h`.
+#
+# >=0.29 is required for Edition 2024 — earlier versions don't parse the
+# `#[unsafe(no_mangle)]` attribute wrapping syn introduced for the new
+# `unsafe_attr_outside_unsafe` lint, so the generated header is empty.
+cbindgen = "0.29"
+
 [[bin]]
 name = "finupdate"
 path = "src/main.rs"
