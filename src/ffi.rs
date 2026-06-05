@@ -46,6 +46,7 @@ use std::sync::Arc;
 
 use gtk::glib::translate::IntoGlibPtr;
 use gtk::prelude::*;
+use relm4::{Component, ComponentController};
 
 use crate::service::{self, UpdaterService};
 
@@ -76,6 +77,10 @@ pub extern "C" fn finupdate_new() -> *mut Handle {
     else {
         return ptr::null_mut();
     };
+
+    // Initialize Gtk and Libadwaita on the Rust side so that widget
+    // builders do not panic when called from C/GObject host contexts.
+    let _ = adw::init();
 
     // Lazily initialise the process-wide service the same way the GUI
     // does. The C panel will be the only caller in its process, so this
@@ -210,6 +215,37 @@ pub unsafe extern "C" fn finupdate_check_for_updates(
         };
         callback(result, user_data_addr as *mut c_void);
     });
+}
+
+/// Construct the main updates panel widget for embedding in a host container —
+/// the gnome-control-center updates panel uses this to display the entire app.
+///
+/// Returns a `GtkWidget *` (typed as `void *`; cast on the C side).
+///
+/// MUST be called from the thread that owns the GLib main loop.
+///
+/// # Safety
+///
+/// `handle` must be a valid non-NULL pointer returned by [`finupdate_new`].
+/// Caller must be on the GLib main thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn finupdate_panel_widget_new(handle: *mut Handle) -> *mut c_void {
+    let Some(_) = (unsafe { handle.as_ref() }) else {
+        return ptr::null_mut();
+    };
+
+    let controller = crate::app::UpdatesPanel::builder()
+        .launch(true)
+        .detach();
+
+    let widget = controller.widget().clone();
+
+    // Tie the lifecycle of the Relm4 controller to the GTK widget
+    unsafe {
+        widget.set_data("finupdate-controller", controller);
+    }
+
+    IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget.upcast::<gtk::Widget>()) as *mut c_void
 }
 
 /// Construct the rebase/image-switch widget for embedding in a host

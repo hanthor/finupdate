@@ -1,4 +1,4 @@
-//! Top-level application component.
+//! Top-level application component and inner updates panel.
 //!
 //! ## relm4 Design Rationale
 //!
@@ -8,7 +8,7 @@
 //!    It is the sole orchestrator — child components communicate UP via `Output` messages
 //!    and receive commands DOWN via `emit()` on their controller handle.
 //!
-//! 2. **Message-driven state** — all state transitions happen through `AppMsg` variants
+//! 2. **Message-driven state** — all state transitions happen through `UpdatesPanelMsg` variants
 //!    processed in a single `update()` method. This makes state transitions explicit,
 //!    traceable (via `tracing`), and impossible to miss. No widget callbacks mutate
 //!    state directly.
@@ -31,19 +31,10 @@
 //!
 //! ## Component hierarchy
 //!
-//!   App (this)
-//!   └── StatusView (content area, owns LogView)
-//!       └── LogView (scrollable text output)
-//!
-//! ## Why SimpleComponent (not Component)?
-//!
-//! `SimpleComponent` is sufficient because:
-//! - We don't need `CommandOutput` (we use manual thread + channel instead for streaming)
-//! - We don't produce output messages (top-level component has no parent)
-//! - The simpler trait reduces boilerplate
-//!
-//! Use full `Component` with `CommandOutput` when you need a single async result
-//! (not streaming). Use `AsyncComponent` when the init itself is async.
+//!   App (window shell)
+//!   └── UpdatesPanel (core updates logic)
+//!       └── StatusView (content area, owns LogView)
+//!           └── LogView (scrollable text output)
 
 use adw::prelude::*;
 use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
@@ -82,42 +73,31 @@ pub enum PreflightStatus {
     Unknown,
 }
 
-/// Top-level model.
-pub struct App {
-    state: AppState,
-    preflight_status: PreflightStatus,
-    /// Selected developer-mode simulation scenario.
-    sim_scenario: SimulationScenario,
-    /// Accumulated output lines from the uupd process.
-    log_lines: Vec<String>,
-    /// Toast overlay reference for showing transient notifications.
-    toast_overlay: adw::ToastOverlay,
-    /// Child component: the main status/content view.
-    status_view: Controller<StatusView>,
-    /// Handle to cancel a running update (sends kill signal to subprocess).
-    cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Reference to header bar for dynamic subtitle updates.
-    header_bar: adw::HeaderBar,
-    /// Title widget in the header bar — title shows the current page name,
-    /// subtitle shows the app name. Same idiom as gnome-control-center: the
-    /// headerbar title swaps as the user navigates between panels.
-    window_title: adw::WindowTitle,
-    /// Back button in header bar
-    back_btn: gtk::Button,
-    /// Currently visible subpage ("main", "history", etc.)
-    current_page: String,
-    /// Banner shown when developer mode is active.
-    dev_banner: adw::Banner,
-    /// Persistent user preferences.
-    settings: Settings,
-    /// D-Bus progress publisher for the GNOME Shell panel extension.
-    progress_dbus: ProgressDBus,
+// ─── UpdatesPanel Component (Core Widget) ──────────────────────────────────
+
+/// Core updates panel model.
+pub struct UpdatesPanel {
+    pub state: AppState,
+    pub preflight_status: PreflightStatus,
+    pub sim_scenario: SimulationScenario,
+    pub log_lines: Vec<String>,
+    pub toast_overlay: adw::ToastOverlay,
+    pub status_view: Controller<StatusView>,
+    pub cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub current_page: String,
+    pub dev_banner: adw::Banner,
+    pub settings: Settings,
+    pub progress_dbus: ProgressDBus,
+
+    // Embedded navigation support
+    pub is_embedded: bool,
+    pub embedded_header: adw::HeaderBar,
+    pub embedded_title: adw::WindowTitle,
 }
 
-/// Messages the App component can receive.
+/// Messages the UpdatesPanel component can receive.
 #[derive(Debug)]
-#[allow(dead_code)]
-pub enum AppMsg {
+pub enum UpdatesPanelMsg {
     /// User clicked "Update" — optionally bypass the metered-network confirmation.
     StartUpdate { skip_metered_check: bool },
     /// User clicked "Check" on the main view — open the check dialog.
@@ -163,97 +143,60 @@ pub enum AppMsg {
     SetSimScenario(SimulationScenario),
     /// Quit the application.
     Quit,
-    /// Window close was requested — check if we should allow it.
-    CloseRequest,
     /// Navigate between pages
     PageChanged(String),
-    /// Back button clicked
+    /// Go back to main page
     GoBack,
     /// Show "What's new" / changelog for the latest available version.
-    /// Wired to Ctrl+W so the action is reachable from the GUI test suite —
-    /// the corresponding banner button is not exposed in the AT-SPI tree
-    /// because libadwaita ActionRow doesn't enumerate suffix children.
     ShowWhatsNew,
     /// Show "What's new" / changelog filtered to a specific image tag.
-    /// Used by the rebase dialog so the user can preview the diff against
-    /// their booted image before deciding to rebase.
     ShowChangelogForTag(String),
-    /// Dismiss the staged-reboot banner. Wired to Ctrl+Backspace for the
-    /// same reason as ShowWhatsNew.
+    /// Dismiss the staged-reboot banner.
     DismissBanner,
-    /// Open the powerwash confirmation dialog (menu / Advanced dialog).
+    /// Open the powerwash confirmation dialog.
     TriggerPowerwash,
-    /// Open the factory-reset confirmation dialog (menu / Advanced dialog).
+    /// Open the factory-reset confirmation dialog.
     TriggerFactoryReset,
-    /// Navigate the StatusView stack to a specific subpage ("source",
-    /// "history", "main"). Used by the Advanced dialog's action rows so a
-    /// click on "Image Source" pushes the user to that subpage from
-    /// wherever they were.
+    /// Navigate the StatusView stack to a specific subpage.
     ShowStatusPage(String),
 }
 
+/// Outputs emitted by UpdatesPanel to its parent.
+#[derive(Debug, Clone)]
+pub enum UpdatesPanelOutput {
+    PageChanged(String),
+}
+
 #[relm4::component(pub)]
-impl SimpleComponent for App {
-    type Init = ();
-    type Input = AppMsg;
-    type Output = ();
+impl SimpleComponent for UpdatesPanel {
+    type Init = bool; // is_embedded
+    type Input = UpdatesPanelMsg;
+    type Output = UpdatesPanelOutput;
 
     view! {
         #[root]
-        adw::ApplicationWindow {
-            set_title: Some("Finupdate"),
-            set_default_size: (750, 700),
-            set_width_request: 400,
-            set_height_request: 500,
+        gtk::Box {
+            set_orientation: gtk::Orientation::Vertical,
 
-            adw::ToolbarView {
-                add_top_bar = &model.header_bar.clone() -> adw::HeaderBar {
-                    set_title_widget: Some(&model.window_title.clone()),
-                    pack_start = &model.back_btn.clone() -> gtk::Button {
-                        connect_clicked[sender] => move |_| {
-                            sender.input(AppMsg::GoBack);
-                        }
-                    },
-                    pack_end = &gtk::MenuButton {
-                        set_icon_name: "open-menu-symbolic",
-                        set_tooltip_text: Some("Main Menu"),
-                        set_menu_model: Some(&main_menu),
-                    },
-                },
-
-                add_top_bar = &model.dev_banner.clone() -> adw::Banner {
-                    set_title: "Developer Mode — updates are simulated",
-                    set_revealed: model.settings.dev_mode,
-                },
-
-                #[wrap(Some)]
-                set_content = &model.toast_overlay.clone() -> adw::ToastOverlay {
-                    set_child: Some(model.status_view.widget()),
-                },
-            }
-        }
-    }
-
-    menu! {
-        // Hamburger menu — kept minimal to match gnome-control-center which
-        // only exposes app-level items here (Keyboard Shortcuts / About /
-        // Quit). Panel-specific stuff (Image Source, Image History, Rebase,
-        // Powerwash, Factory Reset, settings) lives in the Advanced dialog
-        // reached from the "Advanced…" row on the main page.
-        main_menu: {
-            section! {
-                "_Keyboard Shortcuts" => ShortcutsAction,
-                "_About Finupdate" => AboutAction,
+            append = &model.embedded_header.clone() -> adw::HeaderBar {
+                #[watch]
+                set_visible: model.is_embedded && model.current_page != "main",
             },
-            section! {
-                "_Quit" => QuitAction,
-            }
+
+            append = &model.dev_banner.clone() -> adw::Banner {
+                set_title: "Developer Mode — updates are simulated",
+                set_revealed: model.settings.dev_mode,
+            },
+
+            append = &model.toast_overlay.clone() -> adw::ToastOverlay {
+                set_child: Some(model.status_view.widget()),
+                set_vexpand: true,
+            },
         }
     }
 
-    /// Initialize the component tree.
     fn init(
-        _init: Self::Init,
+        is_embedded: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -262,39 +205,24 @@ impl SimpleComponent for App {
             StatusView::builder()
                 .launch(AppState::Idle)
                 .forward(sender.input_sender(), |output| match output {
-                    StatusViewOutput::StartUpdate => AppMsg::StartUpdate {
+                    StatusViewOutput::StartUpdate => UpdatesPanelMsg::StartUpdate {
                         skip_metered_check: false,
                     },
-                    StatusViewOutput::CancelUpdate => AppMsg::CancelUpdate,
-                    StatusViewOutput::Reboot => AppMsg::RequestReboot,
-                    StatusViewOutput::ShowRebase => AppMsg::ShowRebaseDialog,
-                    StatusViewOutput::OpenCheckDialog => AppMsg::OpenCheckDialog,
-                    StatusViewOutput::PageChanged(page) => AppMsg::PageChanged(page),
-                    StatusViewOutput::OpenAdvanced => AppMsg::ShowPreferences,
+                    StatusViewOutput::CancelUpdate => UpdatesPanelMsg::CancelUpdate,
+                    StatusViewOutput::Reboot => UpdatesPanelMsg::RequestReboot,
+                    StatusViewOutput::ShowRebase => UpdatesPanelMsg::ShowRebaseDialog,
+                    StatusViewOutput::OpenCheckDialog => UpdatesPanelMsg::OpenCheckDialog,
+                    StatusViewOutput::PageChanged(page) => UpdatesPanelMsg::PageChanged(page),
+                    StatusViewOutput::OpenAdvanced => UpdatesPanelMsg::ShowPreferences,
                 });
 
         let toast_overlay = adw::ToastOverlay::new();
-        let header_bar = adw::HeaderBar::new();
-        // Headerbar title widget — title is the current page name, subtitle is
-        // the app name. Same idiom as gnome-control-center About: header shows
-        // "About" with no subtitle (because there's only the panel name worth
-        // showing). Our root page sets title="Finupdate" with no subtitle for
-        // the same effect; subpages set title=<page name> subtitle="Finupdate".
-        let window_title = adw::WindowTitle::new("Finupdate", "");
         let dev_banner = adw::Banner::new("Developer Mode — updates are simulated");
 
         let settings = Settings::load();
 
         inject_app_css();
 
-        let back_btn = gtk::Button::builder()
-            .icon_name("go-previous-symbolic")
-            .visible(false)
-            .build();
-
-        // Initial scenario from settings.json (set by behave smoke tests via
-        // _write_settings(sim_scenario="...") or by the --sim CLI flag).
-        // Default Success when unset or unparseable.
         let initial_sim_scenario = match settings.sim_scenario.as_deref() {
             Some("Failure") | Some("failure") => SimulationScenario::Failure,
             Some("AlreadyUpToDate") | Some("up-to-date") | Some("uptodate") => {
@@ -302,65 +230,75 @@ impl SimpleComponent for App {
             }
             _ => SimulationScenario::Success,
         };
-        let model = App {
+
+        // Embedded navigation setup
+        let embedded_header = adw::HeaderBar::new();
+        let embedded_title = adw::WindowTitle::new("Finupdate", "");
+        embedded_header.set_title_widget(Some(&embedded_title));
+        
+        let back_btn = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .build();
+        let back_sender = sender.input_sender().clone();
+        back_btn.connect_clicked(move |_| {
+            back_sender.emit(UpdatesPanelMsg::GoBack);
+        });
+        embedded_header.pack_start(&back_btn);
+
+        let model = UpdatesPanel {
             state: AppState::Idle,
             preflight_status: PreflightStatus::Checking,
             sim_scenario: initial_sim_scenario,
             log_lines: Vec::new(),
-            toast_overlay: toast_overlay.clone(),
+            toast_overlay,
             status_view,
             cancel_tx: None,
-            header_bar,
-            window_title,
-            back_btn,
             current_page: "main".to_string(),
             dev_banner,
             settings,
             progress_dbus: ProgressDBus::new(),
+            is_embedded,
+            embedded_header,
+            embedded_title,
         };
 
         let widgets = view_output!();
 
-        // ─── Actions ────────────────────────────────────────────────────
+        // ─── Action Registrations ───
         let about_action: RelmAction<AboutAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::ShowAbout);
+                sender.emit(UpdatesPanelMsg::ShowAbout);
             })
         };
 
         let preferences_action: RelmAction<PreferencesAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::ShowPreferences);
+                sender.emit(UpdatesPanelMsg::ShowPreferences);
             })
         };
 
         let quit_action: RelmAction<QuitAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::Quit);
+                sender.emit(UpdatesPanelMsg::Quit);
             })
         };
 
-        let shortcuts_action: RelmAction<ShortcutsAction> = {
-            let root_clone = root.clone();
-            RelmAction::new_stateless(move |_| {
-                show_shortcuts_window(&root_clone);
-            })
-        };
+        let root_clone = root.clone();
+        let shortcuts_action: RelmAction<ShortcutsAction> = RelmAction::new_stateless(move |_| {
+            if let Some(window) = root_clone.root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+                show_shortcuts_window(&window);
+            }
+        });
 
         let rebase_action: RelmAction<RebaseAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::ShowRebaseDialog);
+                sender.emit(UpdatesPanelMsg::ShowRebaseDialog);
             })
         };
-
-        // Source / History page navigation no longer needs dedicated
-        // actions — clicks happen via the Advanced dialog's System group
-        // rows, which dispatch AppMsg::ShowStatusPage directly through the
-        // app input sender.
 
         let mut group = RelmActionGroup::<WindowActionGroup>::new();
         group.add_action(about_action);
@@ -372,88 +310,61 @@ impl SimpleComponent for App {
         let install_action: RelmAction<InstallAction> = {
             let sender = sender.input_sender().clone();
             RelmAction::new_stateless(move |_| {
-                sender.emit(AppMsg::InstallFromCheck);
+                sender.emit(UpdatesPanelMsg::InstallFromCheck);
             })
         };
         group.add_action(install_action);
 
-        // Banner & destructive action accelerators — see action declarations
-        // at the bottom of the file for context.
         let whats_new_action: RelmAction<WhatsNewAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| s.emit(AppMsg::ShowWhatsNew))
+            RelmAction::new_stateless(move |_| s.emit(UpdatesPanelMsg::ShowWhatsNew))
         };
         group.add_action(whats_new_action);
 
         let restart_action: RelmAction<RestartAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| s.emit(AppMsg::RequestReboot))
+            RelmAction::new_stateless(move |_| s.emit(UpdatesPanelMsg::RequestReboot))
         };
         group.add_action(restart_action);
 
         let dismiss_action: RelmAction<DismissBannerAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| s.emit(AppMsg::DismissBanner))
+            RelmAction::new_stateless(move |_| s.emit(UpdatesPanelMsg::DismissBanner))
         };
         group.add_action(dismiss_action);
 
         let powerwash_action: RelmAction<PowerwashAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| s.emit(AppMsg::TriggerPowerwash))
+            RelmAction::new_stateless(move |_| s.emit(UpdatesPanelMsg::TriggerPowerwash))
         };
         group.add_action(powerwash_action);
 
         let factory_reset_action: RelmAction<FactoryResetAction> = {
             let s = sender.input_sender().clone();
-            RelmAction::new_stateless(move |_| s.emit(AppMsg::TriggerFactoryReset))
+            RelmAction::new_stateless(move |_| s.emit(UpdatesPanelMsg::TriggerFactoryReset))
         };
         group.add_action(factory_reset_action);
 
         group.register_for_widget(&root);
 
-        // ─── Keyboard Shortcuts ─────────────────────────────────────────
+        // Keyboard Shortcuts settings
         let app = relm4::main_application();
         app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
         app.set_accelerators_for_action::<ShortcutsAction>(&["<primary>question"]);
         app.set_accelerators_for_action::<PreferencesAction>(&["<primary>comma"]);
         app.set_accelerators_for_action::<InstallAction>(&["<primary>i"]);
-        // Ctrl+Shift+R opens the Rebase / Version History dialog. Used by the
-        // GUI test suite to drive rollback flows without menu navigation.
         app.set_accelerators_for_action::<RebaseAction>(&["<primary><shift>r"]);
-        // Banner buttons — see action declarations for why these need
-        // accelerators (libadwaita ActionRow suffix children aren't enumerable
-        // via AT-SPI, so the GUI test suite can't click them directly).
         app.set_accelerators_for_action::<WhatsNewAction>(&["<primary>w"]);
         app.set_accelerators_for_action::<RestartAction>(&["<primary><shift>b"]);
         app.set_accelerators_for_action::<DismissBannerAction>(&["<primary>BackSpace"]);
-        // Powerwash and Factory Reset deliberately have NO accelerator —
-        // destructive actions shouldn't have keyboard shortcuts a user could
-        // hit by mistake. They live in the hamburger menu and require an
-        // intentional click; the in-dialog confirmation gates the actual
-        // destructive call.
 
-        // ─── Close Request Handler ──────────────────────────────────────
-        // Intercept window close to warn if an update is in progress.
-        let close_sender = sender.input_sender().clone();
-        root.connect_close_request(move |_| {
-            close_sender.emit(AppMsg::CloseRequest);
-            // Inhibit default close — we handle it in update().
-            gtk::glib::Propagation::Stop
-        });
-
-        // When mock_identity is set, skip the real preflight subprocess entirely
-        // and pretend an update is available so the banner-buttons surface (Install,
-        // What's new, Discard) are reachable in tests. The downstream banner state
-        // machine already gates real actions behind dry_run / dev_mode.
+        // Preflight update check
         if model.settings.mock_identity.is_some() {
             let input_sender = sender.input_sender().clone();
             gtk::glib::idle_add_local_once(move || {
-                input_sender.emit(AppMsg::PreflightResult(PreflightStatus::UpdateAvailable));
+                input_sender.emit(UpdatesPanelMsg::PreflightResult(PreflightStatus::UpdateAvailable));
             });
         } else {
-            // Defer preflight check until the GLib main loop is running to avoid
-            // racing with component initialization (the thread could finish before
-            // the relm4 message loop processes the first idle).
             let input_sender = sender.input_sender().clone();
             gtk::glib::idle_add_local_once(move || {
                 std::thread::spawn(move || {
@@ -462,8 +373,6 @@ impl SimpleComponent for App {
                         .build()
                         .expect("Failed to create tokio runtime");
                     rt.block_on(async move {
-                        // Use `pkexec bootc upgrade --check` to detect pending updates.
-                        // Exit 0 = update available, 77 = up to date, other = unknown.
                         let mut cmd = if std::path::Path::new("/.flatpak-info").exists() {
                             let mut c = tokio::process::Command::new("flatpak-spawn");
                             c.args(["--host", "pkexec", "bootc", "upgrade", "--check"]);
@@ -473,7 +382,6 @@ impl SimpleComponent for App {
                             c.args(["bootc", "upgrade", "--check"]);
                             c
                         };
-                        // Add a 15-second timeout to prevent hanging on slow/unavailable systems.
                         let timeout = std::time::Duration::from_secs(15);
                         let status = tokio::select! {
                             result = cmd.status() => {
@@ -493,15 +401,13 @@ impl SimpleComponent for App {
                             },
                             None => PreflightStatus::Unknown,
                         };
-                        input_sender.emit(AppMsg::PreflightResult(result));
+                        input_sender.emit(UpdatesPanelMsg::PreflightResult(result));
                     });
                 });
             });
-        } // end if/else for mock_identity preflight short-circuit
+        }
 
-        // Prefetch image version history in the background so the rebase
-        // dialog opens with the calendar already populated. Results land in
-        // the registry cache; we don't need to plumb them through the model.
+        // Prefetch image version history
         gtk::glib::idle_add_local_once(|| {
             std::thread::spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -511,10 +417,6 @@ impl SimpleComponent for App {
                 rt.block_on(async {
                     let svc = crate::service::global();
                     if let Ok(image) = svc.current_image().await {
-                        // Same window size the rebase dialog asks for when
-                        // the user clicks "Load older builds" — so a single
-                        // prefetch covers both the initial open and the
-                        // expanded calendar.
                         let _ = svc.list_versions(&image, 120).await;
                     }
                 });
@@ -526,8 +428,7 @@ impl SimpleComponent for App {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            AppMsg::StartUpdate { skip_metered_check } => {
-                // Prevent double-starts.
+            UpdatesPanelMsg::StartUpdate { skip_metered_check } => {
                 if self.state == AppState::Updating {
                     return;
                 }
@@ -550,135 +451,42 @@ impl SimpleComponent for App {
                     let update_sender = sender.input_sender().clone();
                     dialog.connect_response(None, move |_, response| {
                         if response == "proceed" {
-                            update_sender.emit(AppMsg::StartUpdate {
+                            update_sender.emit(UpdatesPanelMsg::StartUpdate {
                                 skip_metered_check: true,
                             });
                         }
                     });
 
-                    if let Some(root) = self.status_view.widget().root() {
-                        if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                            dialog.present(Some(window));
-                        }
-                    }
-
+                    let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                    dialog.present(Some(&parent_widget));
                     return;
                 }
 
-                // Unified install flow: route every update through the same
-                // modal dialog the "Check for updates" button opens. The
-                // dialog runs the orchestrator with inline per-module logs
-                // in expandable rows — no separate fullscreen "Updating"
-                // page anymore. Skips the old `self.state = Updating` +
-                // background worker code that duplicated what the dialog
-                // does itself.
                 tracing::info!("Routing StartUpdate through the update modal");
-                sender.input(AppMsg::OpenCheckDialog);
+                sender.input(UpdatesPanelMsg::OpenCheckDialog);
                 return;
-
-                // ── Dead code path retained until the fullscreen "updating"
-                //    stack page is fully removed from status_view.rs.
-                #[allow(unreachable_code)]
-                {
-                self.state = AppState::Updating;
-                self.log_lines.clear();
-                self.progress_dbus
-                    .update("updating", 0.0, "Starting update…");
-
-                // Update header subtitle to indicate activity.
-                self.update_subtitle();
-
-                // Forward state to the child view.
-                self.status_view
-                    .emit(StatusViewInput::StateChanged(AppState::Updating));
-                self.status_view.emit(StatusViewInput::ClearLog);
-
-                // Create a cancellation channel for this update run.
-                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-                self.cancel_tx = Some(cancel_tx);
-
-                // Spawn the async update worker on a background thread.
-                // cancel_rx is passed INTO the worker so it can kill the real process.
-                let input_sender = sender.input_sender().clone();
-                // `dry_run` routes the orchestrator down the same simulated path
-                // as `dev_mode`, so `pkexec finupdate-runner` is never spawned.
-                let dev_mode = self.settings.dev_mode || self.settings.dry_run;
-                let sim_scenario = self.sim_scenario;
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create tokio runtime");
-
-                    rt.block_on(async move {
-                        let mut rx = if dev_mode {
-                            tracing::info!(
-                                ?sim_scenario,
-                                "Developer mode active — running simulated update"
-                            );
-                            println!(
-                                "[debug] app: developer mode update run start, scenario={:?}",
-                                sim_scenario
-                            );
-                            run_simulated(sim_scenario, cancel_rx).await
-                        } else {
-                            println!("[debug] app: starting real update worker");
-                            UpdateWorker::new().run(cancel_rx).await
-                        };
-
-                        while let Some(event) = rx.recv().await {
-                            match event {
-                                UpdateEvent::Output(line) => {
-                                    input_sender.emit(AppMsg::OutputLine(line));
-                                }
-                                UpdateEvent::ModuleStarted(module) => {
-                                    input_sender.emit(AppMsg::ModuleStarted(module));
-                                }
-                                UpdateEvent::ModuleFinished(module, status) => {
-                                    input_sender.emit(AppMsg::ModuleFinished(module, status));
-                                }
-                                UpdateEvent::Complete => {
-                                    input_sender.emit(AppMsg::UpdateComplete);
-                                    break;
-                                }
-                                UpdateEvent::UpToDate => {
-                                    input_sender.emit(AppMsg::UpdateUpToDate);
-                                    break;
-                                }
-                                UpdateEvent::Error(err) => {
-                                    input_sender.emit(AppMsg::UpdateFailed(err));
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                });
-                } // close #[allow(unreachable_code)] block
             }
 
-            AppMsg::OpenCheckDialog => {
+            UpdatesPanelMsg::OpenCheckDialog => {
                 self.progress_dbus
                     .update("checking", 0.0, "Checking for updates…");
-                if let Some(root) = self.status_view.widget().root() {
-                    if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        let result_sender = sender.input_sender().clone();
-                        let install_sender = sender.input_sender().clone();
-                        show_update_check_dialog(
-                            window,
-                            self.settings.dev_mode || self.settings.dry_run,
-                            self.sim_scenario,
-                            move |result| {
-                                result_sender.emit(AppMsg::CheckComplete(result));
-                            },
-                            move || {
-                                install_sender.emit(AppMsg::InstallFromCheck);
-                            },
-                        );
-                    }
-                }
+                let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                let result_sender = sender.input_sender().clone();
+                let install_sender = sender.input_sender().clone();
+                show_update_check_dialog(
+                    &parent_widget,
+                    self.settings.dev_mode || self.settings.dry_run,
+                    self.sim_scenario,
+                    move |result| {
+                        result_sender.emit(UpdatesPanelMsg::CheckComplete(result));
+                    },
+                    move || {
+                        install_sender.emit(UpdatesPanelMsg::InstallFromCheck);
+                    },
+                );
             }
 
-            AppMsg::CheckComplete(result) => {
+            UpdatesPanelMsg::CheckComplete(result) => {
                 tracing::info!(
                     system_update = result.system_update,
                     sources = result.sources_with_updates,
@@ -696,20 +504,18 @@ impl SimpleComponent for App {
                 ));
             }
 
-            AppMsg::InstallFromCheck => {
-                // Trigger a full update (same as StartUpdate but skip metered check since
-                // user explicitly chose to install from the dialog).
-                sender.input(AppMsg::StartUpdate {
+            UpdatesPanelMsg::InstallFromCheck => {
+                sender.input(UpdatesPanelMsg::StartUpdate {
                     skip_metered_check: true,
                 });
             }
 
-            AppMsg::OutputLine(line) => {
+            UpdatesPanelMsg::OutputLine(line) => {
                 self.log_lines.push(line.clone());
                 self.status_view.emit(StatusViewInput::AppendLog(line));
             }
 
-            AppMsg::ModuleStarted(module) => {
+            UpdatesPanelMsg::ModuleStarted(module) => {
                 let key = module.key();
                 tracing::debug!("Module started: {}", key);
                 let module_count = match module {
@@ -726,13 +532,13 @@ impl SimpleComponent for App {
                     .emit(StatusViewInput::ModuleStarted(module));
             }
 
-            AppMsg::ModuleFinished(module, status) => {
+            UpdatesPanelMsg::ModuleFinished(module, status) => {
                 tracing::debug!("Module finished: {} {:?}", module.key(), status);
                 self.status_view
                     .emit(StatusViewInput::ModuleFinished(module, status));
             }
 
-            AppMsg::UpdateComplete => {
+            UpdatesPanelMsg::UpdateComplete => {
                 tracing::info!("System update completed successfully");
                 self.state = AppState::Complete;
                 self.cancel_tx = None;
@@ -742,7 +548,6 @@ impl SimpleComponent for App {
                 self.status_view
                     .emit(StatusViewInput::StateChanged(AppState::Complete));
 
-                // Send a desktop notification if window is not focused.
                 send_notification(
                     "update-complete",
                     "System Update Complete",
@@ -750,7 +555,7 @@ impl SimpleComponent for App {
                 );
             }
 
-            AppMsg::UpdateUpToDate => {
+            UpdatesPanelMsg::UpdateUpToDate => {
                 tracing::info!("System is already up to date (uupd exit 77)");
                 self.state = AppState::UpToDate;
                 self.cancel_tx = None;
@@ -760,28 +565,26 @@ impl SimpleComponent for App {
                     .emit(StatusViewInput::StateChanged(AppState::UpToDate));
             }
 
-            AppMsg::UpdateFailed(err) => {
+            UpdatesPanelMsg::UpdateFailed(err) => {
                 tracing::error!("System update failed: {}", err);
                 self.state = AppState::Error(err.clone());
                 self.cancel_tx = None;
                 self.progress_dbus.update("error", 0.0, &err);
                 self.update_subtitle();
 
-                // Notify the user if window is backgrounded.
                 send_notification("update-failed", "System Update Failed", &err);
                 self.status_view
                     .emit(StatusViewInput::StateChanged(AppState::Error(err)));
             }
 
-            AppMsg::CancelUpdate => {
+            UpdatesPanelMsg::CancelUpdate => {
                 if let Some(tx) = self.cancel_tx.take() {
                     tracing::info!("User requested update cancellation");
                     let _ = tx.send(());
                 }
             }
 
-            AppMsg::RequestReboot => {
-                // HIG: Destructive actions require confirmation.
+            UpdatesPanelMsg::RequestReboot => {
                 let dialog = adw::AlertDialog::builder()
                     .heading("Restart System?")
                     .body("The system will restart to apply updates. Save any open work before continuing.")
@@ -796,18 +599,15 @@ impl SimpleComponent for App {
                 let reboot_sender = sender.input_sender().clone();
                 dialog.connect_response(None, move |_, response| {
                     if response == "restart" {
-                        reboot_sender.emit(AppMsg::ConfirmReboot);
+                        reboot_sender.emit(UpdatesPanelMsg::ConfirmReboot);
                     }
                 });
 
-                if let Some(root) = self.status_view.widget().root() {
-                    if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        dialog.present(Some(window));
-                    }
-                }
+                let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                dialog.present(Some(&parent_widget));
             }
 
-            AppMsg::ConfirmReboot => {
+            UpdatesPanelMsg::ConfirmReboot => {
                 if self.settings.dev_mode || self.settings.dry_run {
                     let reason = if self.settings.dry_run && !self.settings.dev_mode {
                         "dry-run"
@@ -851,40 +651,18 @@ impl SimpleComponent for App {
                 }
             }
 
-            AppMsg::ShowRebaseDialog => {
-                let window_opt = self
-                    .status_view
-                    .widget()
-                    .root()
-                    .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
-                    .or_else(|| {
-                        // Fallback: ask the GtkApplication for its active window.
-                        // status_view.widget().root() returns None when the
-                        // accelerator fires before the StatusView's gtk::Stack
-                        // has been parented into the toplevel.
-                        relm4::main_application()
-                            .active_window()
-                            .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
+            UpdatesPanelMsg::ShowRebaseDialog => {
+                let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                let suppress_real = self.settings.dev_mode || self.settings.dry_run;
+                let s = sender.input_sender().clone();
+                let on_show_changelog: std::rc::Rc<dyn Fn(String)> =
+                    std::rc::Rc::new(move |tag| {
+                        s.emit(UpdatesPanelMsg::ShowChangelogForTag(tag));
                     });
-                match window_opt {
-                    Some(window) => {
-                        let suppress_real = self.settings.dev_mode || self.settings.dry_run;
-                        let s = sender.input_sender().clone();
-                        let on_show_changelog: std::rc::Rc<dyn Fn(String)> =
-                            std::rc::Rc::new(move |tag| {
-                                s.emit(AppMsg::ShowChangelogForTag(tag));
-                            });
-                        show_rebase_dialog(&window, suppress_real, on_show_changelog);
-                    }
-                    None => {
-                        tracing::warn!(
-                            "ShowRebaseDialog: no ApplicationWindow found via either status_view root or main_application active_window"
-                        );
-                    }
-                }
+                show_rebase_dialog(&parent_widget, suppress_real, on_show_changelog);
             }
 
-            AppMsg::ShowAbout => {
+            UpdatesPanelMsg::ShowAbout => {
                 let about = adw::AboutDialog::builder()
                     .application_name("Finupdate")
                     .application_icon(config::APP_ID)
@@ -897,43 +675,34 @@ impl SimpleComponent for App {
                     .comments("A friendly system update frontend for Bluefin")
                     .build();
 
-                if let Some(root) = self.status_view.widget().root() {
-                    if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        about.present(Some(window));
-                    }
-                }
+                let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                about.present(Some(&parent_widget));
             }
 
-            AppMsg::ShowPreferences => {
-                if let Some(root) = self.status_view.widget().root() {
-                    if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        let s1 = sender.input_sender().clone();
-                        let s2 = sender.input_sender().clone();
-                        show_preferences(window, self.settings.clone(), s1, move |updated| {
-                            s2.emit(AppMsg::SettingsChanged(updated));
-                        });
-                    }
-                }
+            UpdatesPanelMsg::ShowPreferences => {
+                let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
+                let s1 = sender.input_sender().clone();
+                let s2 = sender.input_sender().clone();
+                show_preferences(&parent_widget, self.settings.clone(), s1, move |updated| {
+                    s2.emit(UpdatesPanelMsg::SettingsChanged(updated));
+                });
             }
 
-            AppMsg::SettingsChanged(new_settings) => {
+            UpdatesPanelMsg::SettingsChanged(new_settings) => {
                 tracing::debug!("Settings updated: dev_mode={}", new_settings.dev_mode);
                 self.settings = new_settings.clone();
                 self.dev_banner.set_revealed(self.settings.dev_mode);
-                // Forward to StatusView so the front-page Auto Updates
-                // SwitchRow stays in sync with the Advanced dialog (and any
-                // other future settings-aware widgets on the main page).
                 self.status_view
                     .emit(StatusViewInput::SettingsChanged(new_settings));
             }
 
-            AppMsg::PreflightResult(status) => {
+            UpdatesPanelMsg::PreflightResult(status) => {
                 self.preflight_status = status.clone();
                 self.status_view
                     .emit(StatusViewInput::PreflightResult(status));
             }
 
-            AppMsg::PageChanged(page) => {
+            UpdatesPanelMsg::PageChanged(page) => {
                 self.current_page = page.clone();
                 let page_label = match page.as_str() {
                     "main" => "Finupdate",
@@ -942,87 +711,58 @@ impl SimpleComponent for App {
                     "changelog" => "What’s New",
                     _ => "Finupdate",
                 };
-                // Drive the headerbar's WindowTitle: page name on top, app
-                // name as subtitle on subpages. Same shape as control-center
-                // panels — title swaps as you navigate.
-                self.window_title.set_title(page_label);
-                self.window_title
-                    .set_subtitle(if page == "main" { "" } else { "Finupdate" });
-                // Window title (used by GNOME Shell's task list) keeps the
-                // expanded form so the user can identify the open page.
-                if let Some(root) = self.status_view.widget().root() {
-                    if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                        let win_title = if page == "main" {
-                            "Finupdate".to_string()
-                        } else {
-                            format!("Finupdate — {}", page_label)
-                        };
-                        window.set_title(Some(&win_title));
-                    }
-                }
-                self.back_btn.set_visible(page != "main");
+                self.embedded_title.set_title(page_label);
+                sender.output(UpdatesPanelOutput::PageChanged(page)).unwrap();
             }
 
-            AppMsg::GoBack => {
+            UpdatesPanelMsg::GoBack => {
                 self.status_view
                     .emit(StatusViewInput::ShowPage("main".to_string()));
             }
 
-            AppMsg::ShowWhatsNew => {
-                // Forward to status_view as a SelectChangelogVersion with the
-                // currently-displayed selected tag. status_view re-renders the
-                // changelog page and switches the stack to it.
+            UpdatesPanelMsg::ShowWhatsNew => {
                 self.status_view
                     .emit(StatusViewInput::SelectChangelogVersion(String::new()));
             }
 
-            AppMsg::ShowChangelogForTag(tag) => {
+            UpdatesPanelMsg::ShowChangelogForTag(tag) => {
                 self.status_view
                     .emit(StatusViewInput::SelectChangelogVersion(tag));
             }
 
-            AppMsg::DismissBanner => {
+            UpdatesPanelMsg::DismissBanner => {
                 self.status_view.emit(StatusViewInput::DismissBanner);
             }
 
-            AppMsg::TriggerPowerwash => {
+            UpdatesPanelMsg::TriggerPowerwash => {
                 self.status_view
                     .emit(StatusViewInput::TogglePin("powerwash".to_string()));
             }
 
-            AppMsg::TriggerFactoryReset => {
+            UpdatesPanelMsg::TriggerFactoryReset => {
                 self.status_view
                     .emit(StatusViewInput::TogglePin("factory".to_string()));
             }
 
-            AppMsg::ShowStatusPage(page) => {
+            UpdatesPanelMsg::ShowStatusPage(page) => {
                 self.status_view.emit(StatusViewInput::ShowPage(page));
             }
 
-            AppMsg::ToggleDevMode(enabled) => {
+            UpdatesPanelMsg::ToggleDevMode(enabled) => {
                 tracing::info!("Developer mode toggled via menu: {}", enabled);
                 self.settings.dev_mode = enabled;
                 self.settings.save();
                 self.dev_banner.set_revealed(enabled);
             }
 
-            AppMsg::SetSimScenario(scenario) => {
+            UpdatesPanelMsg::SetSimScenario(scenario) => {
                 tracing::info!(?scenario, "Selected developer simulation scenario");
                 self.sim_scenario = scenario;
             }
 
-            AppMsg::Quit => {
-                // If update in progress, treat like close request (ask first).
+            UpdatesPanelMsg::Quit => {
                 if self.state == AppState::Updating {
-                    sender.input(AppMsg::CloseRequest);
-                } else {
-                    relm4::main_application().quit();
-                }
-            }
-
-            AppMsg::CloseRequest => {
-                if self.state == AppState::Updating {
-                    // Warn user that an update is running.
+                    let root_widget = self.status_view.widget().clone();
                     let dialog = adw::AlertDialog::builder()
                         .heading("Update in Progress")
                         .body("An update is currently running. Closing now may leave your system in an inconsistent state.")
@@ -1040,13 +780,10 @@ impl SimpleComponent for App {
                         }
                     });
 
-                    if let Some(root) = self.status_view.widget().root() {
-                        if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                            dialog.present(Some(window));
-                        }
+                    if let Some(window) = root_widget.root().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+                        dialog.present(Some(&window));
                     }
                 } else {
-                    // Not updating — close immediately.
                     relm4::main_application().quit();
                 }
             }
@@ -1054,7 +791,7 @@ impl SimpleComponent for App {
     }
 }
 
-impl App {
+impl UpdatesPanel {
     /// Update the header bar subtitle to reflect current state.
     fn update_subtitle(&self) {
         let subtitle = match &self.state {
@@ -1064,27 +801,210 @@ impl App {
             AppState::UpToDate => Some("Already up to date"),
             AppState::Error(_) => Some("Update failed"),
         };
-        // AdwHeaderBar doesn't have subtitle — set window title instead.
-        if let Some(root) = self.status_view.widget().root() {
-            if let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() {
-                let title = match subtitle {
-                    Some(s) => format!("System Update — {}", s),
-                    None => "System Update".to_string(),
+        if let Some(window) = self.status_view.widget().root().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+            let title = match subtitle {
+                Some(s) => format!("System Update — {}", s),
+                None => "System Update".to_string(),
+            };
+            window.set_title(Some(&title));
+        }
+    }
+}
+
+// ─── Standalone Window Wrapper Component (App) ─────────────────────────────
+
+/// Top-level standalone window model.
+pub struct App {
+    header_bar: adw::HeaderBar,
+    window_title: adw::WindowTitle,
+    back_btn: gtk::Button,
+    current_page: String,
+    updates_panel: Controller<UpdatesPanel>,
+}
+
+/// Messages the App component can receive.
+#[derive(Debug)]
+pub enum AppMsg {
+    UpdatesPanelOutput(UpdatesPanelOutput),
+    GoBack,
+    CloseRequest,
+}
+
+#[relm4::component(pub)]
+impl SimpleComponent for App {
+    type Init = ();
+    type Input = AppMsg;
+    type Output = ();
+
+    view! {
+        #[root]
+        adw::ApplicationWindow {
+            set_title: Some("Finupdate"),
+            set_default_size: (750, 700),
+            set_width_request: 400,
+            set_height_request: 500,
+
+            adw::ToolbarView {
+                add_top_bar = &model.header_bar.clone() -> adw::HeaderBar {
+                    set_title_widget: Some(&model.window_title.clone()),
+                    pack_start = &model.back_btn.clone() -> gtk::Button {
+                        connect_clicked[sender] => move |_| {
+                            sender.input(AppMsg::GoBack);
+                        }
+                    },
+                    pack_end = &gtk::MenuButton {
+                        set_icon_name: "open-menu-symbolic",
+                        set_tooltip_text: Some("Main Menu"),
+                        set_menu_model: Some(&main_menu),
+                    },
+                },
+
+                #[wrap(Some)]
+                set_content = model.updates_panel.widget(),
+            }
+        }
+    }
+
+    menu! {
+        main_menu: {
+            section! {
+                "_Keyboard Shortcuts" => ShortcutsAction,
+                "_About Finupdate" => AboutAction,
+            },
+            section! {
+                "_Quit" => QuitAction,
+            }
+        }
+    }
+
+    fn init(
+        _init: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let updates_panel = UpdatesPanel::builder()
+            .launch(false)
+            .forward(sender.input_sender(), |output| match output {
+                UpdatesPanelOutput::PageChanged(page) => AppMsg::UpdatesPanelOutput(UpdatesPanelOutput::PageChanged(page)),
+            });
+
+        let header_bar = adw::HeaderBar::new();
+        let window_title = adw::WindowTitle::new("Finupdate", "");
+        let back_btn = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .visible(false)
+            .build();
+
+        // Standalone Window actions
+        let updates_panel_sender = updates_panel.sender().clone();
+        let about_action: RelmAction<AboutAction> = {
+            let s = updates_panel_sender.clone();
+            RelmAction::new_stateless(move |_| {
+                s.send(UpdatesPanelMsg::ShowAbout).unwrap();
+            })
+        };
+
+        let updates_panel_sender2 = updates_panel.sender().clone();
+        let quit_action: RelmAction<QuitAction> = {
+            let s = updates_panel_sender2.clone();
+            RelmAction::new_stateless(move |_| {
+                s.send(UpdatesPanelMsg::Quit).unwrap();
+            })
+        };
+
+        let root_clone = root.clone();
+        let shortcuts_action: RelmAction<ShortcutsAction> = RelmAction::new_stateless(move |_| {
+            show_shortcuts_window(&root_clone);
+        });
+
+        let mut group = RelmActionGroup::<WindowActionGroup>::new();
+        group.add_action(about_action);
+        group.add_action(quit_action);
+        group.add_action(shortcuts_action);
+        group.register_for_widget(&root);
+
+        let close_sender = sender.input_sender().clone();
+        root.connect_close_request(move |_| {
+            close_sender.emit(AppMsg::CloseRequest);
+            gtk::glib::Propagation::Stop
+        });
+
+        let model = App {
+            header_bar,
+            window_title,
+            back_btn,
+            current_page: "main".to_string(),
+            updates_panel,
+        };
+
+        let widgets = view_output!();
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
+        match msg {
+            AppMsg::UpdatesPanelOutput(UpdatesPanelOutput::PageChanged(page)) => {
+                self.current_page = page.clone();
+                let page_label = match page.as_str() {
+                    "main" => "Finupdate",
+                    "history" => "Version History",
+                    "source" => "Image Source",
+                    "changelog" => "What’s New",
+                    _ => "Finupdate",
                 };
-                window.set_title(Some(&title));
+                self.window_title.set_title(page_label);
+                self.window_title
+                    .set_subtitle(if page == "main" { "" } else { "Finupdate" });
+                
+                if let Some(window) = self.updates_panel.widget().root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+                    let win_title = if page == "main" {
+                        "Finupdate".to_string()
+                    } else {
+                        format!("Finupdate — {}", page_label)
+                    };
+                    window.set_title(Some(&win_title));
+                }
+                self.back_btn.set_visible(page != "main");
+            }
+            AppMsg::GoBack => {
+                self.updates_panel
+                    .emit(UpdatesPanelMsg::ShowStatusPage("main".to_string()));
+            }
+            AppMsg::CloseRequest => {
+                if self.updates_panel.model().state == AppState::Updating {
+                    let dialog = adw::AlertDialog::builder()
+                        .heading("Update in Progress")
+                        .body("An update is currently running. Closing now may leave your system in an inconsistent state.")
+                        .build();
+
+                    dialog.add_response("cancel", "_Keep Waiting");
+                    dialog.add_response("close", "_Close Anyway");
+                    dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
+                    dialog.set_default_response(Some("cancel"));
+                    dialog.set_close_response("cancel");
+
+                    dialog.connect_response(None, move |_, response| {
+                        if response == "close" {
+                            relm4::main_application().quit();
+                        }
+                    });
+
+                    if let Some(window) = self.updates_panel.widget().root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+                        dialog.present(Some(&window));
+                    }
+                } else {
+                    relm4::main_application().quit();
+                }
             }
         }
     }
 }
 
+// ─── Dialog and Helper Functions ──────────────────────────────────────────
+
 /// Show the keyboard shortcuts window.
 fn show_shortcuts_window(window: &adw::ApplicationWindow) {
-    // Must list every accelerator wired in init() above — this dialog is the
-    // only place users can discover the bindings. The GUI test suite relies
-    // on `Ctrl+Shift+R` (rollback scenarios) and `Ctrl+Alt+P` /
-    // `Ctrl+Alt+F` (destructive flows); they're easy to miss without this
-    // overview. Group titles match GNOME HIG: "Application", "Updates",
-    // "System".
     let shortcuts = gtk::ShortcutsWindow::builder()
         .transient_for(window)
         .modal(true)
@@ -1127,7 +1047,7 @@ fn show_shortcuts_window(window: &adw::ApplicationWindow) {
     section.add_group(&updates_group);
 
     let system_group = gtk::ShortcutsGroup::builder().title("System").build();
-    for (title, accel) in [("Open Rebase / Version History", "<Primary><Shift>r")] {
+    for (title, accel) in [("Open Version History", "<Primary><Shift>r")] {
         system_group.add_shortcut(
             &gtk::ShortcutsShortcut::builder()
                 .title(title)
@@ -1136,15 +1056,12 @@ fn show_shortcuts_window(window: &adw::ApplicationWindow) {
         );
     }
     section.add_group(&system_group);
-    // Note: Powerwash and Factory Reset are intentionally absent here —
-    // destructive actions don't get keyboard shortcuts. Hamburger menu only.
 
     shortcuts.add_section(&section);
     shortcuts.set_visible(true);
 }
 
 /// Send a desktop notification via GApplication.
-/// Notifications appear in the system notification area if the app is backgrounded.
 fn send_notification(id: &str, title: &str, body: &str) {
     let app = relm4::main_application();
     let notification = gtk::gio::Notification::new(title);
@@ -1163,9 +1080,6 @@ relm4::new_stateless_action!(QuitAction, WindowActionGroup, "quit");
 relm4::new_stateless_action!(ShortcutsAction, WindowActionGroup, "show-shortcuts");
 relm4::new_stateless_action!(RebaseAction, WindowActionGroup, "rebase-history");
 relm4::new_stateless_action!(InstallAction, WindowActionGroup, "install");
-// Banner button & dangerous-action accelerators — see AppMsg variant docs for
-// why these exist (libadwaita ActionRow doesn't expose suffix buttons in the
-// AT-SPI tree, so the GUI test suite can't click them directly).
 relm4::new_stateless_action!(WhatsNewAction, WindowActionGroup, "whats-new");
 relm4::new_stateless_action!(RestartAction, WindowActionGroup, "restart");
 relm4::new_stateless_action!(DismissBannerAction, WindowActionGroup, "dismiss-banner");
@@ -1173,18 +1087,6 @@ relm4::new_stateless_action!(PowerwashAction, WindowActionGroup, "powerwash");
 relm4::new_stateless_action!(FactoryResetAction, WindowActionGroup, "factory-reset");
 
 fn inject_app_css() {
-    // Minimal CSS layer. Status colours, banner icons, and hero icons now use
-    // built-in Adwaita classes (.accent, .success, .warning, .error, .caption)
-    // instead of bespoke pills / gradient boxes — matches gnome-control-center.
-    //
-    // What's left:
-    //   - .destructive-title  — adw::ActionRow doesn't expose a "danger" style
-    //                           for the title label; this just tints it red on
-    //                           the Factory Reset row.
-    //   - .deploy-indicator-* — small coloured dots in the deployment list.
-    //                           Equivalent to control-center's connection-
-    //                           strength dots; no built-in class for "current
-    //                           deployment marker" specifically.
     let css = gtk::CssProvider::new();
     css.load_from_string(
         r#"
@@ -1229,16 +1131,10 @@ mod tests {
     use std::sync::Once;
 
     static INIT: Once = Once::new();
-    // Whether the GTK initialisation in this process succeeded.
     static GTK_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    /// Try to initialise GTK once.  Returns `true` if it succeeded.
     fn try_init_gtk() -> bool {
         INIT.call_once(|| {
-            // broadway backend does not require a physical display –
-            // it serves a WebSocket. `broadwayd` must be running and
-            // `BROADWAY_DISPLAY` / `GDK_BACKEND` must be set by the
-            // caller (CI workflow or developer environment).
             if std::env::var("GDK_BACKEND").is_err() {
                 unsafe {
                     std::env::set_var("GDK_BACKEND", "broadway");
@@ -1255,7 +1151,6 @@ mod tests {
 
             let gtk_ok = gtk::init().is_ok() && adw::init().is_ok();
             if gtk_ok {
-                // Ensure process-wide global service is initialized.
                 service::init(service::BootcUpdaterService::new());
             }
             GTK_OK.store(gtk_ok, std::sync::atomic::Ordering::SeqCst);
@@ -1270,38 +1165,34 @@ mod tests {
             return;
         }
 
-        // Create a Relm4 app controller
-        let controller = App::builder().launch(()).detach();
+        // Test inner UpdatesPanel directly
+        let controller = UpdatesPanel::builder().launch(false).detach();
 
-        // Assert initial state
         assert_eq!(controller.model().state, AppState::Idle);
         assert_eq!(controller.model().current_page, "main");
 
-        // Send messages to toggle dev mode and sim scenario
         controller
             .sender()
-            .send(AppMsg::ToggleDevMode(true))
+            .send(UpdatesPanelMsg::ToggleDevMode(true))
             .unwrap();
         controller
             .sender()
-            .send(AppMsg::SetSimScenario(SimulationScenario::Success))
+            .send(UpdatesPanelMsg::SetSimScenario(SimulationScenario::Success))
             .unwrap();
 
-        // Wait briefly for the Relm4 message loop to process
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         assert!(controller.model().settings.dev_mode);
         assert_eq!(controller.model().sim_scenario, SimulationScenario::Success);
 
-        // Test page navigation
         controller
             .sender()
-            .send(AppMsg::PageChanged("preferences".to_string()))
+            .send(UpdatesPanelMsg::PageChanged("preferences".to_string()))
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(controller.model().current_page, "preferences");
 
-        controller.sender().send(AppMsg::GoBack).unwrap();
+        controller.sender().send(UpdatesPanelMsg::GoBack).unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(controller.model().current_page, "main");
     }

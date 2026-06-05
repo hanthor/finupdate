@@ -7,14 +7,18 @@
 //! Also exposed via cdylib: see [`ffi`] for the C ABI consumed by the
 //! gnome-control-center panel under `cc-panel/`.
 
+pub mod app;
 pub mod changelog_widget;
 pub mod config;
+pub mod dbus_progress;
 pub mod ffi;
+pub mod gpu;
 pub mod orchestrator;
 pub mod rebase_widget;
 pub mod registry_client;
 pub mod sbom_diff;
 pub mod service;
 pub mod settings;
+pub mod ui;
 pub mod update_worker;
 pub mod uupd_compat;
