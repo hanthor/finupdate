@@ -44,6 +44,8 @@ pub struct SbomDiffResult {
     pub upgraded: Vec<PackageDiff>,
     pub removed: Vec<String>,
     pub added: Vec<PackageDiff>,
+    #[serde(default)]
+    pub stack_info: HashMap<String, (String, String)>,
 }
 
 // ── Internal SPDX types ───────────────────────────────────────────────────────
@@ -58,16 +60,111 @@ struct SpdxPackage {
     name: String,
     #[serde(rename = "versionInfo")]
     version_info: Option<String>,
+    #[serde(rename = "SPDXID")]
+    spdx_id: Option<String>,
+}
+
+fn is_newer_version(
+    name: &str,
+    new_ver: &str,
+    new_spdx_id: &str,
+    old_ver: &str,
+    old_spdx_id: &str,
+) -> bool {
+    if new_ver == "unknown" || new_ver.is_empty() {
+        return false;
+    }
+    if old_ver == "unknown" || old_ver.is_empty() {
+        return true;
+    }
+
+    // Check if either is a long git commit hash (e.g. 40-char or 64-char hex)
+    let is_hash = |s: &str| -> bool {
+        s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit())
+    };
+
+    if is_hash(old_ver) && !is_hash(new_ver) {
+        return true;
+    }
+    if is_hash(new_ver) && !is_hash(old_ver) {
+        return false;
+    }
+
+    // Specific component prioritization based on SPDXID containing element names
+    let pref_score = |name: &str, spdx_id: &str| -> i32 {
+        match name {
+            "linux" => {
+                if spdx_id.contains("components-linux.bst") { 2 } else { 0 }
+            }
+            "gnome-control-center" => {
+                if spdx_id.contains("gnome-control-center.bst") { 2 } else { 0 }
+            }
+            "mesa" => {
+                if spdx_id.contains("mesa-mesa.bst") { 2 }
+                else if spdx_id.contains("mesa.bst") { 1 }
+                else { 0 }
+            }
+            "podman" => {
+                if spdx_id.contains("podman.bst") { 2 } else { 0 }
+            }
+            "bootc" => {
+                if spdx_id.contains("bootc.bst") { 2 } else { 0 }
+            }
+            "systemd" => {
+                if spdx_id.contains("systemd-base.bst") { 2 }
+                else if spdx_id.contains("systemd.bst") { 1 }
+                else { 0 }
+            }
+            "pipewire" => {
+                if spdx_id.contains("pipewire-base.bst") { 2 }
+                else if spdx_id.contains("pipewire.bst") { 1 }
+                else { 0 }
+            }
+            "flatpak" => {
+                if spdx_id.contains("flatpak.bst") { 2 } else { 0 }
+            }
+            _ => 0,
+        }
+    };
+
+    let new_score = pref_score(name, new_spdx_id);
+    let old_score = pref_score(name, old_spdx_id);
+
+    if new_score > old_score {
+        return true;
+    }
+    if old_score > new_score {
+        return false;
+    }
+
+    // Prefer version strings containing dots
+    let new_has_dots = new_ver.contains('.');
+    let old_has_dots = old_ver.contains('.');
+    if new_has_dots && !old_has_dots {
+        return true;
+    }
+    if old_has_dots && !new_has_dots {
+        return false;
+    }
+
+    false
 }
 
 fn parse_spdx(bytes: &[u8]) -> Option<HashMap<String, String>> {
     let doc: SpdxDocument = serde_json::from_slice(bytes).ok()?;
-    let mut map = HashMap::new();
+    let mut map: HashMap<String, (String, String)> = HashMap::new();
     for pkg in doc.packages.unwrap_or_default() {
         let ver = pkg.version_info.unwrap_or_else(|| "unknown".to_string());
-        map.insert(pkg.name, ver);
+        let spdx_id = pkg.spdx_id.unwrap_or_default();
+        if let Some((existing_ver, existing_spdx_id)) = map.get(&pkg.name) {
+            if is_newer_version(&pkg.name, &ver, &spdx_id, existing_ver, existing_spdx_id) {
+                map.insert(pkg.name, (ver, spdx_id));
+            }
+        } else {
+            map.insert(pkg.name, (ver, spdx_id));
+        }
     }
-    Some(map)
+    Some(map.into_iter().map(|(k, (v, _))| (k, v)).collect())
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -371,11 +468,57 @@ pub fn diff_packages(
     removed.sort();
     added.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let stack_info = extract_stack_info(booted_map, target_map);
+
     SbomDiffResult {
         upgraded,
         removed,
         added,
+        stack_info,
     }
+}
+
+/// Key software stack components to surface in the changelog Stack section.
+/// Each entry is (display_label, sbom_package_name).
+const STACK_COMPONENTS: &[(&str, &str)] = &[
+    ("Kernel", "linux"),
+    ("GNOME", "gnome-control-center"),
+    ("Mesa", "mesa"),
+    ("Podman", "podman"),
+    ("Nvidia", "NVIDIA-Linux-x86"),
+    ("bootc", "bootc"),
+    ("systemd", "systemd"),
+    ("pipewire", "pipewire"),
+    ("Flatpak", "flatpak"),
+];
+
+/// Extract (booted_version, target_version) pairs for each known stack
+/// component. Only includes components where at least one side has a
+/// meaningful (non-empty, non-"unknown") version string.
+fn extract_stack_info(
+    booted_map: &HashMap<String, String>,
+    target_map: &HashMap<String, String>,
+) -> HashMap<String, (String, String)> {
+    let is_meaningful = |v: &str| -> bool { !v.is_empty() && v != "unknown" };
+
+    let mut out = HashMap::new();
+    for (label, pkg_name) in STACK_COMPONENTS {
+        let booted_ver = booted_map
+            .get(*pkg_name)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let target_ver = target_map
+            .get(*pkg_name)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        if is_meaningful(booted_ver) || is_meaningful(target_ver) {
+            out.insert(
+                label.to_string(),
+                (booted_ver.to_string(), target_ver.to_string()),
+            );
+        }
+    }
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -463,6 +606,24 @@ mod tests {
         let m = parse_spdx(json).unwrap();
         assert_eq!(m.get("kernel"), Some(&"7.0.7".to_string()));
         assert_eq!(m.get("bash"), Some(&"5.2.32".to_string()));
+    }
+
+    #[test]
+    fn parse_spdx_merges_duplicates_intelligently() {
+        let json = br#"{
+            "packages": [
+                {"name": "linux", "versionInfo": "6.8.0-git-commit-hash-long-hex-32chars", "SPDXID": "SPDXRef-other.bst"},
+                {"name": "linux", "versionInfo": "6.8.9", "SPDXID": "SPDXRef-components-linux.bst"},
+                {"name": "linux", "versionInfo": "unknown", "SPDXID": "SPDXRef-components-linux.bst"},
+                {"name": "systemd", "versionInfo": "255.4-1.fc40", "SPDXID": "SPDXRef-systemd.bst"},
+                {"name": "systemd", "versionInfo": "255.4", "SPDXID": "SPDXRef-systemd-base.bst"}
+            ]
+        }"#;
+        let m = parse_spdx(json).unwrap();
+        // Priorities components-linux.bst with 6.8.9 over git commit and unknown.
+        assert_eq!(m.get("linux"), Some(&"6.8.9".to_string()));
+        // Prioritizes systemd-base.bst over systemd.bst when versions are otherwise compatible.
+        assert_eq!(m.get("systemd"), Some(&"255.4".to_string()));
     }
 
     #[test]

@@ -144,6 +144,7 @@ fn spawn_stack_fetch(
 ) {
     let (stack_tx, stack_rx) = mpsc::channel::<StackResult>();
     let (sbom_tx, sbom_rx) = mpsc::channel::<SbomResult>();
+    let stack_group_for_sbom = stack_group.clone();
 
     let booted_for_async = booted.clone();
     let svc = service.clone();
@@ -236,6 +237,53 @@ fn spawn_stack_fetch(
 
         match result {
             SbomResult::Ok(diff) => {
+                if let Some(stack_group) = stack_group_for_sbom.upgrade() {
+                    let _ = remove_row_by_title(stack_group.upcast_ref(), "Kernel");
+
+                    let targets = [
+                        ("Kernel", vec!["Kernel"]),
+                        ("Gnome", vec!["GNOME", "Gnome"]),
+                        ("Mesa", vec!["Mesa"]),
+                        ("Podman", vec!["Podman"]),
+                        ("Nvidia", vec!["Nvidia", "NVIDIA"]),
+                        ("bootc", vec!["bootc"]),
+                        ("systemd", vec!["systemd"]),
+                        ("pipewire", vec!["pipewire"]),
+                        ("flatpak", vec!["Flatpak", "flatpak"]),
+                    ];
+                    for &(label, ref keys) in &targets {
+                        let mut found = None;
+                        for key in keys {
+                            if let Some(versions) = diff.stack_info.get(*key) {
+                                found = Some(versions);
+                                break;
+                            }
+                        }
+                        if let Some((booted_ver, target_ver)) = found {
+                            let row = adw::ActionRow::builder().title(label).build();
+                            let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                            diff_box.set_valign(gtk::Align::Center);
+
+                            let current = if booted_ver.is_empty() { "—" } else { booted_ver.as_str() };
+                            let from = caption_label(current, &["dim-label", "monospace"]);
+                            let arrow = caption_label("→", &["dim-label"]);
+                            let bumped = booted_ver != target_ver;
+                            let to_classes: &[&str] = if bumped {
+                                &["monospace", "success"]
+                            } else {
+                                &["dim-label", "monospace"]
+                            };
+                            let to = caption_label(target_ver, to_classes);
+
+                            diff_box.append(&from);
+                            diff_box.append(&arrow);
+                            diff_box.append(&to);
+                            row.add_suffix(&diff_box);
+                            stack_group.add(&row);
+                        }
+                    }
+                }
+
                 if !diff.upgraded.is_empty() {
                     updated.set_title(&format!("Updated  ·  {}", diff.upgraded.len()));
                     updated.set_visible(true);
@@ -707,6 +755,27 @@ fn host_kernel_string() -> Option<String> {
     }
     let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+fn remove_row_by_title(parent: &gtk::Widget, title: &str) -> bool {
+    let mut child = parent.first_child();
+    while let Some(c) = child {
+        if let Some(row) = c.downcast_ref::<adw::ActionRow>() {
+            if row.title() == title {
+                if let Some(p) = row.parent() {
+                    if let Some(list_box) = p.downcast_ref::<gtk::ListBox>() {
+                        list_box.remove(row);
+                        return true;
+                    }
+                }
+            }
+        }
+        if remove_row_by_title(&c, title) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
 }
 
 // Suppress dead_code on the Rc-typed weak-ref glue some callers may want
