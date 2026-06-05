@@ -14,4 +14,4 @@ X-GNOME-Bugzilla-Product=gnome-control-center
 X-GNOME-Bugzilla-Component=Updates
 X-GNOME-Bugzilla-Version=@VERSION@
 # Translators: Search keywords for the Updates panel
-Keywords=update;upgrade;bootc;image;rebase;rollback;
+Keywords=update;upgrade;bootc;image;switch;pin;rollback;

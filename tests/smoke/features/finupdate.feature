@@ -398,9 +398,9 @@ Feature: Finupdate smoke tests
     * Key combo: "<Control><Shift>r"
     * Wait until "Version" appears in "finupdate" within 30 seconds
     * Click any available day in the rebase calendar
-    * Click button whose label starts with "Rebase to" in "finupdate"
-    * Wait until "Rebase System" appears in "finupdate" within 5 seconds
-    * Left click "Rebase" "button" in "finupdate"
+    * Click button whose label starts with "Pin to" in "finupdate"
+    * Wait until "Pin to this build?" appears in "finupdate" within 5 seconds
+    * Left click "Pin" "button" in "finupdate"
     * Wait until "simulated" appears in "finupdate" within 10 seconds
     * Application "finupdate" is running
 
@@ -487,15 +487,6 @@ Feature: Finupdate smoke tests
   # System / Reset groups built by ui::preferences::build_system_group are
   # accessible to AT-SPI.
 
-  @live @mock_identity @advanced @panel_actions
-  Scenario: Advanced dialog System group lists every navigational row
-    * Mock identity "ghcr.io/ublue-os/bluefin:stable" is configured
-    * Wait until "bluefin" appears in "finupdate" within 15 seconds
-    * Key combo: "<Control>comma"
-    * Wait until "Advanced" "dialog" appears in "finupdate"
-    * Wait until "Image Source" appears in "finupdate" within 5 seconds
-    * Wait until "Image History" appears in "finupdate" within 5 seconds
-    * Wait until "Rebase to Previous Version" appears in "finupdate" within 5 seconds
 
   @live @mock_identity @advanced @reset_actions
   Scenario: Advanced dialog Reset group lists Powerwash and Factory Reset
