@@ -559,6 +559,33 @@ fn feature_subtitle(feat: &str) -> &'static str {
 fn read_booted_image_digest() -> Option<String> {
     use std::time::Duration;
 
+    let run_cmd = |cmd_path: &str, args: &[&str]| -> Option<std::process::Output> {
+        let mut cmd = std::process::Command::new(cmd_path);
+        cmd.args(args);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().ok()?;
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        return child.wait_with_output().ok();
+                    } else {
+                        return None;
+                    }
+                }
+                Ok(None) if start.elapsed() > Duration::from_secs(3) => {
+                    let _ = child.kill();
+                    return None;
+                }
+                _ => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    };
+
     let cmd_path = if crate::update_worker::is_flatpak() {
         "flatpak-spawn"
     } else {
@@ -570,29 +597,21 @@ fn read_booted_image_digest() -> Option<String> {
         &["status", "--json"]
     };
 
-    let mut cmd = std::process::Command::new(cmd_path);
-    cmd.args(args);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
-
-    // 3-second timeout via a polling child wait — std doesn't ship a
-    // timeout API. Long enough for a slow polkit prompt to resolve,
-    // short enough that a wedged bootc doesn't freeze the UI.
-    let mut child = cmd.spawn().ok()?;
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => return None,
-            Ok(None) if start.elapsed() > Duration::from_secs(3) => {
-                let _ = child.kill();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    }
-    let output = child.wait_with_output().ok()?;
+    let output = if let Some(out) = run_cmd(cmd_path, args) {
+        out
+    } else {
+        let cmd_path_pk = if crate::update_worker::is_flatpak() {
+            "flatpak-spawn"
+        } else {
+            "pkexec"
+        };
+        let args_pk: &[&str] = if crate::update_worker::is_flatpak() {
+            &["--host", "pkexec", "bootc", "status", "--json"]
+        } else {
+            &["bootc", "status", "--json"]
+        };
+        run_cmd(cmd_path_pk, args_pk)?
+    };
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     parse_booted_digest(&json)

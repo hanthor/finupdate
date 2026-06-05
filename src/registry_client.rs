@@ -393,7 +393,7 @@ impl RegistryClient {
             "[debug] RegistryClient::detect_from_bootc() running {}",
             cmd_name
         );
-        let output = if crate::update_worker::is_flatpak() {
+        let mut output = if crate::update_worker::is_flatpak() {
             tokio::process::Command::new("flatpak-spawn")
                 .args(["--host", "bootc", "status", "--json"])
                 .output()
@@ -407,12 +407,27 @@ impl RegistryClient {
                 .ok()?
         };
 
-        println!(
-            "[debug] RegistryClient::detect_from_bootc() exit = {:?}",
-            output.status
-        );
         if !output.status.success() {
-            return None;
+            let pk_output = if crate::update_worker::is_flatpak() {
+                tokio::process::Command::new("flatpak-spawn")
+                    .args(["--host", "pkexec", "bootc", "status", "--json"])
+                    .output()
+                    .await
+            } else {
+                tokio::process::Command::new("pkexec")
+                    .args(["bootc", "status", "--json"])
+                    .output()
+                    .await
+            };
+            if let Ok(out) = pk_output {
+                if out.status.success() {
+                    output = out;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
         }
 
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;

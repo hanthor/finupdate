@@ -532,7 +532,7 @@ impl StatusView {
         // makes sense. `host_kernel` (uname -r) backstops the Kernel row for
         // Dakota, whose registry-side kernel is empty.
         let host_kernel = get_host_kernel();
-        let stack_items = build_stack_items(
+        let mut stack_items = build_stack_items(
             booted_version,
             real_version,
             if host_kernel == "—" {
@@ -541,6 +541,10 @@ impl StatusView {
                 Some(host_kernel.as_str())
             },
         );
+
+        if self.sbom_diff.is_some() {
+            stack_items.retain(|item| item.label != "Kernel");
+        }
 
         if !stack_items.is_empty() {
             let stack_list = gtk::ListBox::builder()
@@ -577,6 +581,61 @@ impl StatusView {
                 row.add_suffix(&diff_box);
                 stack_list.append(&row);
             }
+
+            if let Some(ref diff) = self.sbom_diff {
+                let targets = [
+                    ("Kernel", vec!["Kernel"]),
+                    ("Gnome", vec!["GNOME", "Gnome"]),
+                    ("Mesa", vec!["Mesa"]),
+                    ("Podman", vec!["Podman"]),
+                    ("Nvidia", vec!["Nvidia", "NVIDIA"]),
+                    ("bootc", vec!["bootc"]),
+                    ("systemd", vec!["systemd"]),
+                    ("pipewire", vec!["pipewire"]),
+                    ("flatpak", vec!["Flatpak", "flatpak"]),
+                ];
+                for &(label, ref keys) in &targets {
+                    let mut found = None;
+                    for key in keys {
+                        if let Some(versions) = diff.stack_info.get(*key) {
+                            found = Some(versions);
+                            break;
+                        }
+                    }
+                    if let Some((booted_ver, target_ver)) = found {
+                        let row = adw::ActionRow::builder().title(label).build();
+
+                        let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                        diff_box.set_valign(gtk::Align::Center);
+
+                        let current = if booted_ver.is_empty() { "—" } else { booted_ver.as_str() };
+                        let from_lbl = gtk::Label::new(Some(current));
+                        from_lbl.add_css_class("monospace");
+                        from_lbl.add_css_class("caption");
+                        from_lbl.add_css_class("dim-label");
+                        diff_box.append(&from_lbl);
+
+                        let arrow_lbl = gtk::Label::new(Some("→"));
+                        arrow_lbl.add_css_class("dim-label");
+                        diff_box.append(&arrow_lbl);
+
+                        let to_lbl = gtk::Label::new(Some(target_ver.as_str()));
+                        to_lbl.add_css_class("monospace");
+                        to_lbl.add_css_class("caption");
+                        let bumped = booted_ver != target_ver;
+                        if bumped {
+                            to_lbl.add_css_class("success");
+                        } else {
+                            to_lbl.add_css_class("dim-label");
+                        }
+                        diff_box.append(&to_lbl);
+
+                        row.add_suffix(&diff_box);
+                        stack_list.append(&row);
+                    }
+                }
+            }
+
             self.changelog_box.append(&stack_list);
         }
 
@@ -1381,7 +1440,7 @@ impl SimpleComponent for StatusView {
             .build();
         let nvidia_switch = adw::SwitchRow::builder()
             .title("NVIDIA drivers")
-            .subtitle("Picks the open kernel modules where available, falls back to the proprietary driver")
+            .subtitle("Required for NVIDIA GPUs")
             .build();
         variants_group.add(&dx_switch);
         variants_group.add(&nvidia_switch);
@@ -2523,6 +2582,21 @@ fn parse_os_release_field(content: &str, key: &str) -> Option<String> {
 /// "VERSION · sha1234567" when both are available, just one when only one is.
 /// Per user direction this is more informative than "Booted N days ago".
 fn read_booted_image_summary() -> Option<String> {
+    if let Some(mock) = Settings::load().mock_identity {
+        let full_ref = mock.full_ref();
+        let j = serde_json::json!({
+            "status": {
+                "booted": {
+                    "image": {
+                        "image": { "image": full_ref },
+                        "imageDigest": mock.digest,
+                        "timestamp": mock.booted_at
+                    }
+                }
+            }
+        });
+        return parse_booted_image_summary(&j);
+    }
     let json = get_cached_bootc_status()?;
     parse_booted_image_summary(&json)
 }
@@ -2588,6 +2662,9 @@ fn parse_booted_image_summary(json: &Value) -> Option<String> {
 /// `bootc status` which makes the JSON path unavailable; os-release still
 /// carries the booted build identity via `IMAGE_VERSION` / `VERSION_ID`.
 fn read_booted_tag_suffix() -> Option<String> {
+    if let Some(mock) = Settings::load().mock_identity {
+        return Some(mock.tag);
+    }
     if let Some(json) = get_cached_bootc_status() {
         if let Some(t) = parse_booted_tag_suffix(&json) {
             return Some(t);
@@ -2849,29 +2926,61 @@ fn get_cached_bootc_status() -> Option<Value> {
         }
     }
 
-    // `bootc status --json` is a read-only query and runs as the calling
-    // user — using pkexec here triggered a polkit prompt at every app
-    // launch, which is exactly the kind of friction we want to avoid.
-    let command_desc = if crate::update_worker::is_flatpak() {
-        "flatpak-spawn --host bootc status --json"
-    } else {
-        "bootc status --json"
-    };
-    println!("[debug] read_image_info: running {}", command_desc);
+    use std::time::Duration;
 
-    let output_result = if crate::update_worker::is_flatpak() {
-        Command::new("flatpak-spawn")
-            .args(["--host", "bootc", "status", "--json"])
-            .output()
-    } else {
-        Command::new("bootc").args(["status", "--json"]).output()
+    let run_cmd = |cmd_path: &str, args: &[&str]| -> Option<std::process::Output> {
+        let mut cmd = Command::new(cmd_path);
+        cmd.args(args);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().ok()?;
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        return child.wait_with_output().ok();
+                    } else {
+                        return None;
+                    }
+                }
+                Ok(None) if start.elapsed() > Duration::from_secs(3) => {
+                    let _ = child.kill();
+                    return None;
+                }
+                _ => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
     };
 
-    let output = output_result.ok()?;
-    println!("[debug] bootc status exit = {:?}", output.status);
-    if !output.status.success() {
-        return None;
-    }
+    let cmd_path = if crate::update_worker::is_flatpak() {
+        "flatpak-spawn"
+    } else {
+        "bootc"
+    };
+    let args: &[&str] = if crate::update_worker::is_flatpak() {
+        &["--host", "bootc", "status", "--json"]
+    } else {
+        &["status", "--json"]
+    };
+
+    let output = if let Some(out) = run_cmd(cmd_path, args) {
+        out
+    } else {
+        let cmd_path_pk = if crate::update_worker::is_flatpak() {
+            "flatpak-spawn"
+        } else {
+            "pkexec"
+        };
+        let args_pk: &[&str] = if crate::update_worker::is_flatpak() {
+            &["--host", "pkexec", "bootc", "status", "--json"]
+        } else {
+            &["bootc", "status", "--json"]
+        };
+        run_cmd(cmd_path_pk, args_pk)?
+    };
 
     let json: Value = serde_json::from_slice(&output.stdout).ok()?;
     let mut cache = BOOTC_STATUS_CACHE.lock().unwrap();
@@ -4072,24 +4181,27 @@ fn spawn_changelog_fetch(
             //    runtime's scope and only emits SbomDiffLoaded when the
             //    user has already seen commits + history rendered.
             //
-            //    Skip entirely when mock_identity is set — there's no real
-            //    booted image to diff against, so the fetch would either 404
-            //    or compare nonsense.
-            //
             //    IMPORTANT: Do NOT use strip_date_suffix() refs here. If both
             //    booted and target resolve to the same floating tag (e.g. both
             //    "ghcr.io/projectbluefin/dakota:latest") the diff is trivially
             //    empty. Use the actual full_ref from the newest registry version,
             //    and the actual booted image's digest from bootc status.
-            if Settings::load().mock_identity.is_none() {
-                // Prefer the actual date-stamped full_ref of the newest build;
-                // fall back to the stream tag only if we got no versions.
-                let target_ref = newest_full_ref
-                    .unwrap_or_else(|| format!("{}:{}", registry_uri, selected_tag));
+            let settings = Settings::load();
+            // Prefer the actual date-stamped full_ref of the newest build;
+            // fall back to the stream tag only if we got no versions.
+            let target_ref = newest_full_ref
+                .unwrap_or_else(|| format!("{}:{}", registry_uri, selected_tag));
 
-                // Get the booted image's actual digest-pinned ref from bootc
-                // status so we compare two distinct manifests, not "latest" vs "latest".
-                let booted_ref = get_cached_bootc_status()
+            // Get the booted image's actual digest-pinned ref from bootc
+            // status or mock_identity so we compare two distinct manifests.
+            let booted_ref = if let Some(ref mock) = settings.mock_identity {
+                if let Some(ref digest) = mock.digest {
+                    format!("{}/{}/{}@{}", mock.registry, mock.org, mock.image, digest)
+                } else {
+                    format!("{}/{}/{}:{}", mock.registry, mock.org, mock.image, mock.tag)
+                }
+            } else {
+                get_cached_bootc_status()
                     .and_then(|json| {
                         let booted = json.pointer("/status/booted")?;
                         let img = booted
@@ -4103,39 +4215,37 @@ fn spawn_changelog_fetch(
                     })
                     .unwrap_or_else(|| {
                         format!("{}:{}", registry_uri, read_selected_tag())
-                    });
+                    })
+            };
 
-                if booted_ref != target_ref {
-                    // Tell the UI we're starting so it can render the
-                    // "Comparing packages…" placeholder. Without this the
-                    // Stack section is silently blank for 30+ seconds on
-                    // slow connections.
-                    let _ = sender.input(StatusViewInput::SbomDiffStarted);
-                    let sbom_sender = sender.clone();
-                    tokio::spawn(async move {
-                        tracing::debug!(
-                            "sbom_diff: deferred fetch booted_ref={} target_ref={}",
-                            booted_ref,
-                            target_ref
-                        );
-                        match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
-                        {
-                            Some(diff) => {
-                                sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
-                            }
-                            None => {
-                                tracing::info!(
-                                    "sbom_diff: no diff available (registry didn't return SPDX referrers)"
-                                );
-                                sbom_sender.input(StatusViewInput::SbomDiffUnavailable);
-                            }
+            if booted_ref != target_ref {
+                // Tell the UI we're starting so it can render the
+                // "Comparing packages…" placeholder. Without this the
+                // Stack section is silently blank for 30+ seconds on
+                // slow connections.
+                let _ = sender.input(StatusViewInput::SbomDiffStarted);
+                let sbom_sender = sender.clone();
+                tokio::spawn(async move {
+                    tracing::debug!(
+                        "sbom_diff: deferred fetch booted_ref={} target_ref={}",
+                        booted_ref,
+                        target_ref
+                    );
+                    match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
+                    {
+                        Some(diff) => {
+                            sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
                         }
-                    });
-                } else {
-                    tracing::debug!("sbom_diff: skipped (booted == target, same image)");
-                }
+                        None => {
+                            tracing::info!(
+                                "sbom_diff: no diff available (registry didn't return SPDX referrers)"
+                            );
+                            sbom_sender.input(StatusViewInput::SbomDiffUnavailable);
+                        }
+                    }
+                });
             } else {
-                tracing::debug!("sbom_diff: skipped (mock_identity active)");
+                tracing::debug!("sbom_diff: skipped (booted == target, same image)");
             }
         });
     });
