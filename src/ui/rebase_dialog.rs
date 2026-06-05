@@ -37,7 +37,7 @@ pub type OnShowChangelog = Rc<dyn Fn(String)>;
 
 /// Open the rebase history dialog as a child of `parent`.
 pub fn show_rebase_dialog(
-    parent: &adw::ApplicationWindow,
+    parent: &gtk::Widget,
     dev_mode: bool,
     on_show_changelog: OnShowChangelog,
 ) {
@@ -307,7 +307,7 @@ fn start_version_fetch(
     stack: gtk::Stack,
     loaded_box: gtk::Box,
     dialog: adw::Dialog,
-    parent: adw::ApplicationWindow,
+    parent: gtk::Widget,
     error_page: adw::StatusPage,
     dev_mode: bool,
     variant: &str,
@@ -323,6 +323,23 @@ fn start_version_fetch(
     // open carries its own "Loading builds…" indicator. Just make sure the
     // error page isn't sticky from a previous failed run.
     error_page.set_description(Some("Check your internet connection and try again."));
+
+    build_loaded_page(
+        &loaded_box,
+        &stack,
+        &dialog,
+        &parent,
+        Vec::new(),
+        dev_mode,
+        current_family.clone(),
+        selected_features.clone(),
+        selected_stream.clone(),
+        booted_image.clone(),
+        None,
+        on_show_changelog.clone(),
+        true, // is_loading
+    );
+    stack.set_visible_child_name("loaded");
 
     let variant_str = variant.to_string();
     let result_slot: Arc<Mutex<Option<FetchResult>>> = Arc::new(Mutex::new(None));
@@ -479,12 +496,11 @@ fn spawn_fetch_thread(
 // ── Loaded page builder ──────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn build_loaded_page(
     container: &gtk::Box,
     stack: &gtk::Stack,
     dialog: &adw::Dialog,
-    parent: &adw::ApplicationWindow,
+    parent: &gtk::Widget,
     versions: Vec<ImageVersion>,
     dev_mode: bool,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
@@ -1305,12 +1321,12 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     progress_box.append(&elapsed_label);
 
     let progress_page = adw::StatusPage::builder()
-        .title("Rebasing…")
+        .title("Switching...")
         .description("Pulling the new image layers. This typically takes 2–5 minutes.")
         .build();
     progress_page.set_child(Some(&progress_box));
-    stack.add_named(&progress_page, Some("rebasing"));
-    stack.set_visible_child_name("rebasing");
+    stack.add_named(&progress_page, Some("switching"));
+    stack.set_visible_child_name("switching");
 
     // The bar pulses until we see a parseable Fraction event from bootc; from
     // that point on we drive `set_fraction` directly and stop pulsing. A flag
@@ -1402,7 +1418,7 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
             Ok(()) => {
                 // Show success page — user needs to reboot.
                 let done_page = adw::StatusPage::builder()
-                    .title("Rebase Complete")
+                    .title("Switch Complete")
                     .description("Restart your system to boot into the selected version.")
                     .icon_name("object-select-symbolic")
                     .build();
@@ -1422,7 +1438,7 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
             }
             Err(msg) => {
                 let fail_page = adw::StatusPage::builder()
-                    .title("Rebase Failed")
+                    .title("Switch Failed")
                     .description(msg)
                     .icon_name("dialog-error-symbolic")
                     .build();
@@ -1942,25 +1958,25 @@ fn derive_initial_toggle_state(
 /// Simulated rebase for dev mode — shows the progress UI then succeeds after a delay.
 fn run_rebase_simulated(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     tracing::warn!(
-        "Rebase suppressed — developer mode is active. \
+        "Switching suppressed — developer mode is active. \
          Would have called `bootc switch {}`.",
         full_ref
     );
 
     let progress_page = adw::StatusPage::builder()
-        .title("Rebasing… (simulated)")
+        .title("Switching... (simulated)")
         .description("Developer mode — no actual changes are being made.")
         .build();
     let spinner = gtk::Spinner::new();
     spinner.set_spinning(true);
     progress_page.set_child(Some(&spinner));
-    stack.add_named(&progress_page, Some("rebasing"));
-    stack.set_visible_child_name("rebasing");
+    stack.add_named(&progress_page, Some("switching"));
+    stack.set_visible_child_name("switchin");
 
     // Simulate a short delay then show success.
     glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
         let done_page = adw::StatusPage::builder()
-            .title("Rebase Complete (simulated)")
+            .title("Switch Complete (simulated)")
             .description(
                 "Developer mode — no changes were made.\nIn production, a restart would be needed.",
             )

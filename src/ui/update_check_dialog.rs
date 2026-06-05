@@ -121,7 +121,7 @@ const SOURCE_DEFS: &[(&str, &str, &str, &str)] = &[
 /// `on_result` is called when the check completes with the summary.
 /// `on_install` is called if the user clicks "Install all".
 pub fn show_update_check_dialog(
-    parent: &adw::ApplicationWindow,
+    parent: &gtk::Widget,
     dev_mode: bool,
     sim_scenario: SimulationScenario,
     on_result: impl Fn(CheckResult) + 'static,

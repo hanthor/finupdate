@@ -18,7 +18,7 @@ use adw::prelude::*;
 use relm4::gtk;
 use relm4::gtk::prelude::AccessibleExt;
 
-use crate::app::AppMsg;
+use crate::app::UpdatesPanelMsg;
 use crate::settings::{Settings, UpdateInterval};
 use crate::uupd_compat::{self, UupdConfig};
 
@@ -32,9 +32,9 @@ use crate::uupd_compat::{self, UupdConfig};
 /// Reset all live as panel-action rows in the dialog now (replacing the
 /// hamburger-menu approach, per gnome-control-center convention).
 pub fn show_preferences(
-    parent: &adw::ApplicationWindow,
+    parent: &gtk::Widget,
     mut settings: Settings,
-    app_sender: relm4::Sender<AppMsg>,
+    app_sender: relm4::Sender<UpdatesPanelMsg>,
     on_change: impl Fn(Settings) + 'static,
 ) {
     // Only read the timer state if uupd is actually installed.
@@ -313,7 +313,7 @@ fn build_network_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings
 fn build_system_group(
     page: &adw::PreferencesPage,
     _dialog: &adw::PreferencesDialog,
-    sender: relm4::Sender<AppMsg>,
+    sender: relm4::Sender<UpdatesPanelMsg>,
 ) {
     // Helper: build a chevron-suffixed activatable ActionRow with the given
     // title / subtitle. The on-activate callback receives nothing; the caller
@@ -349,7 +349,7 @@ fn build_system_group(
     {
         let s = sender.clone();
         powerwash_row.connect_activated(move |_| {
-            s.emit(AppMsg::TriggerPowerwash);
+            s.emit(UpdatesPanelMsg::TriggerPowerwash);
             // Don't close the dialog — the confirmation modal opens on top
             // and the user may want to back out and inspect other rows.
         });
@@ -364,7 +364,7 @@ fn build_system_group(
     {
         let s = sender.clone();
         factory_row.connect_activated(move |_| {
-            s.emit(AppMsg::TriggerFactoryReset);
+            s.emit(UpdatesPanelMsg::TriggerFactoryReset);
         });
     }
     reset_group.add(&factory_row);
