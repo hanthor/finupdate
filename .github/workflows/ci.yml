@@ -10,6 +10,9 @@ jobs:
   test:
     name: Test and Build
     runs-on: ubuntu-latest
+    env:
+      CARGO_HOME: /opt/cargo
+      RUSTUP_HOME: /opt/rustup
     container:
       image: fedora:44
 
