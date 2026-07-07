@@ -772,6 +772,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires real bootc/rpm-ostree on PATH"]
     async fn test_real_runner_system_only_skips_others() {
         let _lock = TEST_MUTEX.lock().await;
 
