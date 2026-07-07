@@ -264,7 +264,11 @@ fn spawn_stack_fetch(
                             let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                             diff_box.set_valign(gtk::Align::Center);
 
-                            let current = if booted_ver.is_empty() { "—" } else { booted_ver.as_str() };
+                            let current = if booted_ver.is_empty() {
+                                "—"
+                            } else {
+                                booted_ver.as_str()
+                            };
                             let from = caption_label(current, &["dim-label", "monospace"]);
                             let arrow = caption_label("→", &["dim-label"]);
                             let bumped = booted_ver != target_ver;
@@ -309,8 +313,7 @@ fn spawn_stack_fetch(
                             let row = adw::ActionRow::builder().title(&pkg.name).build();
                             let plus = caption_label("+", &["success", "monospace"]);
                             row.add_prefix(&plus);
-                            let ver =
-                                caption_label(&pkg.new_version, &["monospace", "success"]);
+                            let ver = caption_label(&pkg.new_version, &["monospace", "success"]);
                             row.add_suffix(&ver);
                             added.add(&row);
                         }
@@ -393,7 +396,10 @@ fn spawn_commits_fetch(
         if commits.is_empty() {
             return glib::ControlFlow::Break;
         }
-        let github_base = format!("https://github.com/{}/{}", commits[0].owner_org, commits[0].owner_repo);
+        let github_base = format!(
+            "https://github.com/{}/{}",
+            commits[0].owner_org, commits[0].owner_repo
+        );
         group.set_title(&format!("Commits  ·  {}", commits.len()));
         group.set_visible(true);
         for c in commits {
@@ -749,7 +755,10 @@ fn caption_label(text: &str, classes: &[&str]) -> gtk::Label {
 /// the flatpak-spawn fallback; the panel runs in the cc process (no
 /// sandbox) so a plain Command is enough.
 fn host_kernel_string() -> Option<String> {
-    let out = std::process::Command::new("uname").arg("-r").output().ok()?;
+    let out = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

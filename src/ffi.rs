@@ -234,9 +234,7 @@ pub unsafe extern "C" fn finupdate_panel_widget_new(handle: *mut Handle) -> *mut
         return ptr::null_mut();
     };
 
-    let controller = crate::app::UpdatesPanel::builder()
-        .launch(true)
-        .detach();
+    let controller = crate::app::UpdatesPanel::builder().launch(true).detach();
 
     let widget = controller.widget().clone();
 
@@ -245,7 +243,8 @@ pub unsafe extern "C" fn finupdate_panel_widget_new(handle: *mut Handle) -> *mut
         widget.set_data("finupdate-controller", controller);
     }
 
-    IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget.upcast::<gtk::Widget>()) as *mut c_void
+    IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget.upcast::<gtk::Widget>())
+        as *mut c_void
 }
 
 /// Construct the rebase/image-switch widget for embedding in a host
@@ -268,11 +267,8 @@ pub unsafe extern "C" fn finupdate_rebase_widget_new(handle: *mut Handle) -> *mu
     let Some(handle) = (unsafe { handle.as_ref() }) else {
         return ptr::null_mut();
     };
-    let widget: gtk::Widget = crate::rebase_widget::build_rebase_widget(
-        handle.service.clone(),
-        &handle.rt,
-    )
-    .upcast();
+    let widget: gtk::Widget =
+        crate::rebase_widget::build_rebase_widget(handle.service.clone(), &handle.rt).upcast();
     IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget) as *mut c_void
 }
 
@@ -302,11 +298,9 @@ pub unsafe extern "C" fn finupdate_changelog_widget_new(handle: *mut Handle) -> 
     let Some(handle) = (unsafe { handle.as_ref() }) else {
         return ptr::null_mut();
     };
-    let widget: gtk::Widget = crate::changelog_widget::build_changelog_widget(
-        handle.service.clone(),
-        &handle.rt,
-    )
-    .upcast();
+    let widget: gtk::Widget =
+        crate::changelog_widget::build_changelog_widget(handle.service.clone(), &handle.rt)
+            .upcast();
     // IntoGlibPtr transfers ownership of the floating ref to the caller,
     // who will sink it when adding to a container.
     IntoGlibPtr::<*mut gtk::ffi::GtkWidget>::into_glib_ptr(widget) as *mut c_void
@@ -411,7 +405,9 @@ pub unsafe extern "C" fn finupdate_apply_update_start(
     let user_data_addr = user_data as usize;
     handle.rt.spawn(async move {
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-        let mut rx = crate::update_worker::UpdateWorker::new().run(cancel_rx).await;
+        let mut rx = crate::update_worker::UpdateWorker::new()
+            .run(cancel_rx)
+            .await;
 
         while let Some(event) = rx.recv().await {
             emit_event(callback, user_data_addr as *mut c_void, event);

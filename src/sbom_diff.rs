@@ -79,9 +79,7 @@ fn is_newer_version(
     }
 
     // Check if either is a long git commit hash (e.g. 40-char or 64-char hex)
-    let is_hash = |s: &str| -> bool {
-        s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit())
-    };
+    let is_hash = |s: &str| -> bool { s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit()) };
 
     if is_hash(old_ver) && !is_hash(new_ver) {
         return true;
@@ -94,34 +92,66 @@ fn is_newer_version(
     let pref_score = |name: &str, spdx_id: &str| -> i32 {
         match name {
             "linux" => {
-                if spdx_id.contains("components-linux.bst") { 2 } else { 0 }
+                if spdx_id.contains("components-linux.bst") {
+                    2
+                } else {
+                    0
+                }
             }
             "gnome-control-center" => {
-                if spdx_id.contains("gnome-control-center.bst") { 2 } else { 0 }
+                if spdx_id.contains("gnome-control-center.bst") {
+                    2
+                } else {
+                    0
+                }
             }
             "mesa" => {
-                if spdx_id.contains("mesa-mesa.bst") { 2 }
-                else if spdx_id.contains("mesa.bst") { 1 }
-                else { 0 }
+                if spdx_id.contains("mesa-mesa.bst") {
+                    2
+                } else if spdx_id.contains("mesa.bst") {
+                    1
+                } else {
+                    0
+                }
             }
             "podman" => {
-                if spdx_id.contains("podman.bst") { 2 } else { 0 }
+                if spdx_id.contains("podman.bst") {
+                    2
+                } else {
+                    0
+                }
             }
             "bootc" => {
-                if spdx_id.contains("bootc.bst") { 2 } else { 0 }
+                if spdx_id.contains("bootc.bst") {
+                    2
+                } else {
+                    0
+                }
             }
             "systemd" => {
-                if spdx_id.contains("systemd-base.bst") { 2 }
-                else if spdx_id.contains("systemd.bst") { 1 }
-                else { 0 }
+                if spdx_id.contains("systemd-base.bst") {
+                    2
+                } else if spdx_id.contains("systemd.bst") {
+                    1
+                } else {
+                    0
+                }
             }
             "pipewire" => {
-                if spdx_id.contains("pipewire-base.bst") { 2 }
-                else if spdx_id.contains("pipewire.bst") { 1 }
-                else { 0 }
+                if spdx_id.contains("pipewire-base.bst") {
+                    2
+                } else if spdx_id.contains("pipewire.bst") {
+                    1
+                } else {
+                    0
+                }
             }
             "flatpak" => {
-                if spdx_id.contains("flatpak.bst") { 2 } else { 0 }
+                if spdx_id.contains("flatpak.bst") {
+                    2
+                } else {
+                    0
+                }
             }
             _ => 0,
         }
@@ -309,10 +339,7 @@ async fn find_spdx_referrer(client: &Client, image_ref: &Reference) -> Option<St
         .find(|m| m.artifact_type.as_deref() == Some(SPDX_ARTIFACT_TYPE))
         .map(|m| m.digest);
     if found.is_none() {
-        tracing::warn!(
-            "no SPDX referrer found in fallback index for {}",
-            image_ref
-        );
+        tracing::warn!("no SPDX referrer found in fallback index for {}", image_ref);
     }
     found
 }
@@ -503,14 +530,8 @@ fn extract_stack_info(
 
     let mut out = HashMap::new();
     for (label, pkg_name) in STACK_COMPONENTS {
-        let booted_ver = booted_map
-            .get(*pkg_name)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let target_ver = target_map
-            .get(*pkg_name)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let booted_ver = booted_map.get(*pkg_name).map(|s| s.as_str()).unwrap_or("");
+        let target_ver = target_map.get(*pkg_name).map(|s| s.as_str()).unwrap_or("");
         if is_meaningful(booted_ver) || is_meaningful(target_ver) {
             out.insert(
                 label.to_string(),

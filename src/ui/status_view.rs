@@ -608,7 +608,11 @@ impl StatusView {
                         let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                         diff_box.set_valign(gtk::Align::Center);
 
-                        let current = if booted_ver.is_empty() { "—" } else { booted_ver.as_str() };
+                        let current = if booted_ver.is_empty() {
+                            "—"
+                        } else {
+                            booted_ver.as_str()
+                        };
                         let from_lbl = gtk::Label::new(Some(current));
                         from_lbl.add_css_class("monospace");
                         from_lbl.add_css_class("caption");
@@ -2552,7 +2556,12 @@ fn read_os_release_field(key: &str) -> Option<String> {
     }
 
     // Fall back to direct file reading
-    for path in &["/run/host/etc/os-release", "/etc/os-release", "/usr/lib/os-release", "/usr/lib/os-release"] {
+    for path in &[
+        "/run/host/etc/os-release",
+        "/etc/os-release",
+        "/usr/lib/os-release",
+        "/usr/lib/os-release",
+    ] {
         if let Ok(content) = std::fs::read_to_string(path) {
             if let Some(v) = parse_os_release_field(&content, key) {
                 return Some(v);
@@ -2704,10 +2713,7 @@ fn parse_booted_tag_suffix(json: &Value) -> Option<String> {
 ///    is `20260530` and the registry side is `latest.20260530`.
 /// 3. `v.date == parsed_date(anchor)` — last resort when the version string
 ///    diverges entirely (Dakota's commit-sha tags annotate as `latest`).
-fn find_booted_match<'a>(
-    versions: &'a [ImageVersion],
-    anchor: &str,
-) -> Option<&'a ImageVersion> {
+fn find_booted_match<'a>(versions: &'a [ImageVersion], anchor: &str) -> Option<&'a ImageVersion> {
     if let Some(v) = versions.iter().find(|v| v.version == anchor) {
         return Some(v);
     }
@@ -2736,10 +2742,9 @@ fn extract_yyyymmdd_date(s: &str) -> Option<chrono::NaiveDate> {
             let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
             let next_ok = i + 8 == bytes.len() || !bytes[i + 8].is_ascii_digit();
             if prev_ok && next_ok {
-                if let Ok(d) = chrono::NaiveDate::parse_from_str(
-                    std::str::from_utf8(slice).ok()?,
-                    "%Y%m%d",
-                ) {
+                if let Ok(d) =
+                    chrono::NaiveDate::parse_from_str(std::str::from_utf8(slice).ok()?, "%Y%m%d")
+                {
                     return Some(d);
                 }
             }
@@ -4317,10 +4322,7 @@ mod tests {
             }
         });
         // Digest-only (no image ref): renders as just the second-line piece.
-        assert_eq!(
-            parse_booted_image_summary(&j),
-            Some("cafe1234".to_string())
-        );
+        assert_eq!(parse_booted_image_summary(&j), Some("cafe1234".to_string()));
     }
 
     #[test]
@@ -4331,10 +4333,7 @@ mod tests {
                 "booted": { "image": { "imageDigest": "00ff11ee22dd33cc" } }
             }
         });
-        assert_eq!(
-            parse_booted_image_summary(&j),
-            Some("00ff11ee".to_string())
-        );
+        assert_eq!(parse_booted_image_summary(&j), Some("00ff11ee".to_string()));
     }
 
     #[test]
@@ -4507,7 +4506,10 @@ mod tests {
         let target = fake_image_version("20260530", "", "def5678", "2026-05-30T12:00:00Z");
         let items = build_stack_items(Some(&booted), Some(&target), Some("7.0.7"));
         let kernel = items.iter().find(|i| i.label == "Kernel");
-        assert!(kernel.is_some(), "Kernel row should be present when host_kernel is known");
+        assert!(
+            kernel.is_some(),
+            "Kernel row should be present when host_kernel is known"
+        );
         let k = kernel.unwrap();
         assert_eq!(k.current.as_deref(), Some("7.0.7"));
         assert_eq!(k.target, "");

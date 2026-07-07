@@ -951,9 +951,8 @@ async fn fetch_version(
 
     // Drop sentinel "local-build" placeholders Dakota stamps onto squashed
     // commit-sha tags — those would render as bogus rows in the UI.
-    let drop_sentinels = |s: Option<String>| -> Option<String> {
-        s.filter(|v| v != "local-build" && !v.is_empty())
-    };
+    let drop_sentinels =
+        |s: Option<String>| -> Option<String> { s.filter(|v| v != "local-build" && !v.is_empty()) };
     let version = drop_sentinels(version).unwrap_or_else(|| date.format("%Y%m%d").to_string());
     let kernel = drop_sentinels(kernel).unwrap_or_default();
     let revision = drop_sentinels(revision)

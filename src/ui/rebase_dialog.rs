@@ -1282,7 +1282,10 @@ fn compute_stream_switch_action(
             return ("Currently Installed".to_string(), false, None);
         }
     }
-    let full_ref = format!("{}/{}/{}:{}", target.registry, target.org, target.image, selected_stream);
+    let full_ref = format!(
+        "{}/{}/{}:{}",
+        target.registry, target.org, target.image, selected_stream
+    );
     // Prefer the short "Switch to :stream" wording when only the stream
     // moved; fall back to "Switch to image:stream" when the image name
     // changes too (variant toggle), so the user sees exactly what they're

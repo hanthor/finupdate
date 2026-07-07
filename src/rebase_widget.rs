@@ -41,8 +41,8 @@ pub fn build_rebase_widget(
     let booted: Option<ImageRef> = runtime
         .block_on(async { service.current_image().await })
         .ok();
-    let family: Option<FamilyInfo> = runtime
-        .block_on(async { service.current_family().await.ok().flatten() });
+    let family: Option<FamilyInfo> =
+        runtime.block_on(async { service.current_family().await.ok().flatten() });
 
     // ── Variants group ─────────────────────────────────────────────────
     let variants_group = adw::PreferencesGroup::builder()
@@ -259,7 +259,11 @@ fn build_recompute(
         if is_current {
             switch_button.set_label("Currently Installed");
             switch_button.set_sensitive(false);
-        } else if booted.as_ref().map(|b| b.image == target.image).unwrap_or(false) {
+        } else if booted
+            .as_ref()
+            .map(|b| b.image == target.image)
+            .unwrap_or(false)
+        {
             switch_button.set_label(&format!("Switch to :{}", stream));
             switch_button.set_sensitive(true);
         } else {
@@ -386,9 +390,6 @@ mod tests {
 
     #[test]
     fn resolve_features_dx_plus_nvidia() {
-        assert_eq!(
-            resolve_features(true, true),
-            vec!["dx", "nvidia", "open"]
-        );
+        assert_eq!(resolve_features(true, true), vec!["dx", "nvidia", "open"]);
     }
 }

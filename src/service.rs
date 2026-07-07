@@ -191,7 +191,10 @@ impl ImageRef {
         if self.digest.is_empty() {
             self.as_string()
         } else {
-            format!("{}/{}/{}@{}", self.registry, self.org, self.image, self.digest)
+            format!(
+                "{}/{}/{}@{}",
+                self.registry, self.org, self.image, self.digest
+            )
         }
     }
 }
@@ -371,9 +374,7 @@ pub fn global() -> Arc<dyn UpdaterService> {
 /// Safe to call concurrently; `OnceLock::get_or_init` serialises the
 /// first construction.
 pub fn ensure_initialised() -> Arc<dyn UpdaterService> {
-    SERVICE
-        .get_or_init(|| BootcUpdaterService::new())
-        .clone()
+    SERVICE.get_or_init(|| BootcUpdaterService::new()).clone()
 }
 
 /// Default in-process implementation backed by the existing registry_client

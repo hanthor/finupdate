@@ -235,7 +235,7 @@ impl SimpleComponent for UpdatesPanel {
         let embedded_header = adw::HeaderBar::new();
         let embedded_title = adw::WindowTitle::new("Finupdate", "");
         embedded_header.set_title_widget(Some(&embedded_title));
-        
+
         let back_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
             .build();
@@ -288,7 +288,10 @@ impl SimpleComponent for UpdatesPanel {
 
         let root_clone = root.clone();
         let shortcuts_action: RelmAction<ShortcutsAction> = RelmAction::new_stateless(move |_| {
-            if let Some(window) = root_clone.root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+            if let Some(window) = root_clone
+                .root()
+                .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
+            {
                 show_shortcuts_window(&window);
             }
         });
@@ -362,7 +365,9 @@ impl SimpleComponent for UpdatesPanel {
         if model.settings.mock_identity.is_some() {
             let input_sender = sender.input_sender().clone();
             gtk::glib::idle_add_local_once(move || {
-                input_sender.emit(UpdatesPanelMsg::PreflightResult(PreflightStatus::UpdateAvailable));
+                input_sender.emit(UpdatesPanelMsg::PreflightResult(
+                    PreflightStatus::UpdateAvailable,
+                ));
             });
         } else {
             let input_sender = sender.input_sender().clone();
@@ -655,10 +660,9 @@ impl SimpleComponent for UpdatesPanel {
                 let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
                 let suppress_real = self.settings.dev_mode || self.settings.dry_run;
                 let s = sender.input_sender().clone();
-                let on_show_changelog: std::rc::Rc<dyn Fn(String)> =
-                    std::rc::Rc::new(move |tag| {
-                        s.emit(UpdatesPanelMsg::ShowChangelogForTag(tag));
-                    });
+                let on_show_changelog: std::rc::Rc<dyn Fn(String)> = std::rc::Rc::new(move |tag| {
+                    s.emit(UpdatesPanelMsg::ShowChangelogForTag(tag));
+                });
                 show_rebase_dialog(&parent_widget, suppress_real, on_show_changelog);
             }
 
@@ -712,7 +716,9 @@ impl SimpleComponent for UpdatesPanel {
                     _ => "Finupdate",
                 };
                 self.embedded_title.set_title(page_label);
-                sender.output(UpdatesPanelOutput::PageChanged(page)).unwrap();
+                sender
+                    .output(UpdatesPanelOutput::PageChanged(page))
+                    .unwrap();
             }
 
             UpdatesPanelMsg::GoBack => {
@@ -780,7 +786,10 @@ impl SimpleComponent for UpdatesPanel {
                         }
                     });
 
-                    if let Some(window) = root_widget.root().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+                    if let Some(window) = root_widget
+                        .root()
+                        .and_then(|w| w.downcast::<gtk::Window>().ok())
+                    {
                         dialog.present(Some(&window));
                     }
                 } else {
@@ -801,7 +810,12 @@ impl UpdatesPanel {
             AppState::UpToDate => Some("Already up to date"),
             AppState::Error(_) => Some("Update failed"),
         };
-        if let Some(window) = self.status_view.widget().root().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+        if let Some(window) = self
+            .status_view
+            .widget()
+            .root()
+            .and_then(|w| w.downcast::<gtk::Window>().ok())
+        {
             let title = match subtitle {
                 Some(s) => format!("System Update — {}", s),
                 None => "System Update".to_string(),
@@ -882,11 +896,14 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let updates_panel = UpdatesPanel::builder()
-            .launch(false)
-            .forward(sender.input_sender(), |output| match output {
-                UpdatesPanelOutput::PageChanged(page) => AppMsg::UpdatesPanelOutput(UpdatesPanelOutput::PageChanged(page)),
-            });
+        let updates_panel =
+            UpdatesPanel::builder()
+                .launch(false)
+                .forward(sender.input_sender(), |output| match output {
+                    UpdatesPanelOutput::PageChanged(page) => {
+                        AppMsg::UpdatesPanelOutput(UpdatesPanelOutput::PageChanged(page))
+                    }
+                });
 
         let header_bar = adw::HeaderBar::new();
         let window_title = adw::WindowTitle::new("Finupdate", "");
@@ -956,8 +973,13 @@ impl SimpleComponent for App {
                 self.window_title.set_title(page_label);
                 self.window_title
                     .set_subtitle(if page == "main" { "" } else { "Finupdate" });
-                
-                if let Some(window) = self.updates_panel.widget().root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+
+                if let Some(window) = self
+                    .updates_panel
+                    .widget()
+                    .root()
+                    .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
+                {
                     let win_title = if page == "main" {
                         "Finupdate".to_string()
                     } else {
@@ -990,7 +1012,12 @@ impl SimpleComponent for App {
                         }
                     });
 
-                    if let Some(window) = self.updates_panel.widget().root().and_then(|r| r.downcast::<adw::ApplicationWindow>().ok()) {
+                    if let Some(window) = self
+                        .updates_panel
+                        .widget()
+                        .root()
+                        .and_then(|r| r.downcast::<adw::ApplicationWindow>().ok())
+                    {
                         dialog.present(Some(&window));
                     }
                 } else {

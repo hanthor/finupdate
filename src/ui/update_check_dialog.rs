@@ -174,7 +174,10 @@ pub fn show_update_check_dialog(
     let mut sources = Vec::with_capacity(SOURCE_DEFS.len());
 
     for &(_key, name, sub, icon) in SOURCE_DEFS {
-        let row = adw::ExpanderRow::builder().title(name).subtitle(sub).build();
+        let row = adw::ExpanderRow::builder()
+            .title(name)
+            .subtitle(sub)
+            .build();
         row.add_prefix(&gtk::Image::from_icon_name(icon));
 
         // Status stack: waiting / checking (spinner) / found / uptodate
@@ -423,8 +426,7 @@ pub fn show_update_check_dialog(
                                 updates_found,
                                 if updates_found == 1 { "" } else { "s" }
                             ));
-                            s.summary_label
-                                .set_label("Reboot to apply system changes.");
+                            s.summary_label.set_label("Reboot to apply system changes.");
                         } else {
                             s.title_label.set_label("Everything is up to date");
                             s.summary_label
@@ -601,7 +603,10 @@ enum CheckEvent {
     /// row's log buffer so the user can expand it and see what happened.
     /// `module` is the key (system/flatpak/brew/distrobox); `line` is the
     /// log content with no trailing newline.
-    LogLine { module: String, line: String },
+    LogLine {
+        module: String,
+        line: String,
+    },
     Done,
     Error(String),
 }
