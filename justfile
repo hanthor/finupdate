@@ -140,6 +140,18 @@ panel-install prefix="/usr/local":
 panel-demo:
     examples/panel-demo/build-and-run.sh
 
+# End-to-end toolbox loop for the gnome-control-center "Updates" panel:
+# installs libfinupdate, clones gnome-control-center, drops in the
+# vendored panel sources, patches the cc-panel loader + panels meson,
+# builds inside the toolbox, and saves the loader/meson diffs as .patch
+# files (build-aux/cc-panel-patches/) ready to paste into the dakota
+# override element. See build-aux/test-cc-panel-in-toolbox.sh.
+#
+# Run the result with:
+#   target/cc-panel-toolbox/gnome-control-center/builddir/shell/gnome-control-center updates
+toolbox-test-cc-panel:
+    build-aux/test-cc-panel-in-toolbox.sh
+
 # Create the toolbox and install build + GUI-test deps (one-time setup).
 # Uses fedora-toolbox (which ships dnf) rather than the sealed Bluefin Dakota
 # image, which has no package manager.
