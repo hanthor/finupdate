@@ -12,7 +12,7 @@ lightweight VPS with GTK 4.14 and cannot build this crate.
 
 ## Done
 
-### Correctness — five real bugs, all found by running the app
+### Correctness — seven real bugs, all found by running the app
 
 See `docs/BUGS-FOUND.md` for the full write-ups and measurements.
 
@@ -29,6 +29,12 @@ See `docs/BUGS-FOUND.md` for the full write-ups and measurements.
 4. **`block_on` inside a runtime** panic in `detect_bootc_image_info`; also
    memoised, since it re-ran the whole detection chain per rendered row.
 5. **GApplication rejected the app's own CLI flags.**
+6. **Window could not reach the HIG 360px minimum.** `gtk::Stack` is
+   homogeneous by default, so it requested the widest of *all* pages including
+   hidden ones. Content minimum 579px → 240px.
+7. **Late async results panicked after component teardown.**
+   `ComponentSender::input()` unwraps internally, so `let _ =` was cosmetic;
+   background deliveries now use the fallible `input_sender().send(..)`.
 
 Plus a **flaky test** (`test_is_uupd_installed`, ~1 run in 3): two modules
 mutated the process-global `PATH` under separate mutexes. Now share
@@ -77,12 +83,12 @@ tree must land before screenshot baselines are treated as stable.
 
 | # | Finding | State |
 |---|---|---|
-| 3 | `AdwNavigationView` instead of hand-rolled `gtk::Stack` navigation | open — **do first**, moves the widget tree |
-| 1 | Window cannot reach 360px; a child's minimum width dominates | partial — measure with `root.measure()` and bisect, don't guess |
-| 2 | GSettings migration (currently hand-rolled JSON) | open — swaps storage, not pixels; safer *after* the suite |
-| 5 | Access keys (`use-underline`) | open — mechanical |
-| 4 | Tooltips on remaining icon-only controls | partial |
-| 6 | Preferences search | **done** |
+| 3 | `AdwNavigationView` instead of hand-rolled `gtk::Stack` navigation | **open — do first**, it moves the widget tree, so it should land before screenshot baselines are treated as stable. Buys edge-swipe back, automatic back-button handling, per-page titles, and focus restoration. `ffi.rs` already assumes this shape for the panel. |
+| 2 | GSettings migration (currently hand-rolled JSON) | **open** — swaps a storage backend without moving pixels, so it is safer with the suite in place. Matters for the panel: gnome-control-center expects settings exposed through GSettings so Settings' search can index them. |
+| 1 | Adaptive width | ✅ fixed |
+| 4 | Tooltips | ✅ fixed |
+| 5 | Access keys | ✅ fixed |
+| 6 | Preferences search | ✅ fixed |
 
 ### 2. cc-panel end-to-end
 
