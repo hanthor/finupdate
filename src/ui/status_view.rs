@@ -240,6 +240,9 @@ pub struct StatusView {
     /// for sha tags) while bootc switch needs the actual sha — we look it up
     /// here on selection.
     tag_raws: Rc<RefCell<Vec<String>>>,
+    /// Handler id for `tag_row`'s `selected` notification, so it can be blocked
+    /// while the model is repopulated. See `AvailableTagsLoaded`.
+    tag_row_handler: gtk::glib::SignalHandlerId,
     history_list_box: gtk::ListBox,
     images_count_label: gtk::Label,
     changelog_box: gtk::Box,
@@ -1397,7 +1400,7 @@ impl SimpleComponent for StatusView {
         tag_row.set_sensitive(tags.len() > 1);
         let select_sender = sender.input_sender().clone();
         let tag_raws_for_select = tag_raws.clone();
-        tag_row.connect_selected_notify(move |row| {
+        let tag_row_handler = tag_row.connect_selected_notify(move |row| {
             // Look up the raw tag by selected index — display strings may be
             // "Build YYYY-MM-DD" for sha-tagged manifests, but bootc switch
             // needs the actual sha-hex tag string.
@@ -1468,11 +1471,7 @@ impl SimpleComponent for StatusView {
         {
             let slot = slot.clone();
             std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio runtime");
-                let detected = rt.block_on(async {
+                let detected = crate::runtime::block_on(async {
                     let svc = crate::service::global();
                     let family = svc.current_family().await.ok().flatten();
                     let image = svc.current_image().await.ok();
@@ -1740,6 +1739,7 @@ impl SimpleComponent for StatusView {
             tag_row: tag_row.clone(),
             tag_model: tag_model.clone(),
             tag_raws: tag_raws.clone(),
+            tag_row_handler,
             history_list_box: history_list_box.clone(),
             images_count_label,
             changelog_box: changelog_box.clone(),
@@ -1915,22 +1915,12 @@ impl SimpleComponent for StatusView {
             }
 
             StatusViewInput::ScheduleRebootTonight => {
-                // Honour the dry_run guard — never call shutdown(8) on a
-                // test/dev host. Surface what we *would* have done via toast.
-                let settings = Settings::load();
-                if settings.dry_run || settings.dev_mode {
-                    tracing::warn!(
-                        "Reboot Tonight suppressed (dry_run={}, dev_mode={}). \
-                         Would have called: pkexec shutdown -r 02:00",
-                        settings.dry_run,
-                        settings.dev_mode
-                    );
-                    let t = adw::Toast::new("Restart scheduled for 02:00 (dry-run)");
-                    t.set_timeout(4);
-                    self.toast_overlay.add_toast(t);
-                } else {
-                    schedule_reboot_tonight(&self.toast_overlay);
-                }
+                // Suppression is decided inside schedule_reboot_tonight() via
+                // the privileged() chokepoint, so this arm no longer re-derives
+                // the dry_run/dev_mode guard. The toast copy still differs
+                // between the two outcomes, which is why the helper returns
+                // whether it actually dispatched.
+                schedule_reboot_tonight(&self.toast_overlay);
             }
 
             StatusViewInput::CopyLog => {
@@ -2308,14 +2298,29 @@ impl SimpleComponent for StatusView {
                 // strings; keep a parallel raw-tag list so the SelectTag
                 // dispatcher can map index → real tag (sha hash for dakota,
                 // verbatim for stream/dated tags).
-                while self.tag_model.n_items() > 0 {
-                    self.tag_model.remove(0);
-                }
-                let mut raws = Vec::with_capacity(tags.len());
-                for t in &tags {
-                    self.tag_model.append(&t.display);
-                    raws.push(t.raw.clone());
-                }
+                // Block `selected_notify` for the whole repopulation.
+                //
+                // Without this the widget storms itself: removing and appending
+                // items each move the selection, so the handler fired once per
+                // model mutation — roughly 2N times for N tags — and every one
+                // of those carried a *different* raw tag, so the idempotency
+                // guard in SelectTag let it through. A single launch against an
+                // image with 612 published tags issued **1213 changelog fetches
+                // and 1216 SBOM diffs**, each spawning a thread and hitting
+                // GHCR/GitHub. That saturated the GTK main loop (so the window
+                // never painted), exhausted the process thread limit, and burned
+                // the API rate limits that then made everything time out.
+                //
+                // The selection is restored explicitly below, after unblocking.
+                self.tag_row.block_signal(&self.tag_row_handler);
+
+                // splice() replaces the contents in one model mutation rather
+                // than 2N, which is both cheaper and emits a single change.
+                let displays: Vec<&str> = tags.iter().map(|t| t.display.as_str()).collect();
+                self.tag_model
+                    .splice(0, self.tag_model.n_items(), &displays);
+
+                let raws: Vec<String> = tags.iter().map(|t| t.raw.clone()).collect();
                 let active_idx = raws
                     .iter()
                     .position(|raw| raw == &self.selected_tag)
@@ -2323,6 +2328,8 @@ impl SimpleComponent for StatusView {
                 *self.tag_raws.borrow_mut() = raws;
                 self.tag_row.set_selected(active_idx);
                 self.tag_row.set_sensitive(tags.len() > 1);
+
+                self.tag_row.unblock_signal(&self.tag_row_handler);
             }
 
             StatusViewInput::GithubCommitsLoaded(commits) => {
@@ -2453,36 +2460,28 @@ fn apply_auto_updates_setting(active: bool) {
     settings.auto_updates = active;
     settings.save();
 
-    // Dry-run / dev_mode: persist the preference but don't actually toggle the
-    // host systemd timer. Logs the would-have-run command so testers can see
-    // what real mode would do.
-    if settings.dry_run || settings.dev_mode {
-        let verb = if active { "enable" } else { "disable" };
-        tracing::warn!(
-            "uupd.timer toggle suppressed (dry_run={}, dev_mode={}). \
-             Would have called `pkexec systemctl {} --now uupd.timer`.",
-            settings.dry_run,
-            settings.dev_mode,
-            verb
-        );
-        return;
-    }
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
+    let verb = if active { "enable" } else { "disable" };
+
+    // Same command as uupd_compat::set_uupd_timer — this is the synchronous
+    // twin used from the switch row. Both now share the chokepoint, so the
+    // journal sees an identical `set_uupd_timer` entry whichever path fires.
+    let mut cmd = match crate::privileged::privileged(
+        "set_uupd_timer",
+        serde_json::json!({ "enable": active }),
+        &["systemctl", verb, "--now", "uupd.timer"],
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        // The preference is already persisted above; suppressing only withholds
+        // the host-side effect, which is exactly what dry-run promises.
+        crate::privileged::Exec::Suppressed => return,
+        crate::privileged::Exec::Run(cmd) => cmd,
+    };
 
     std::thread::spawn(move || {
-        let args = if active {
-            ["enable", "--now", "uupd.timer"]
-        } else {
-            ["disable", "--now", "uupd.timer"]
-        };
-
-        let status = if crate::update_worker::is_flatpak() {
-            Command::new("flatpak-spawn")
-                .args(["--host", "pkexec", "systemctl"])
-                .args(args)
-                .status()
-        } else {
-            Command::new("pkexec").arg("systemctl").args(args).status()
-        };
+        let status = cmd.status();
 
         match status {
             Ok(status) if status.success() => {}
@@ -2993,22 +2992,59 @@ fn get_cached_bootc_status() -> Option<Value> {
     Some(json)
 }
 
+/// Memoised result of [`detect_bootc_image_info`].
+///
+/// Without this the function is pathologically expensive. `read_selected_tag()`
+/// is called from per-row rendering code (`status_view.rs:422`, `:437`, `:470`)
+/// — once per version row — and each call previously performed the *entire*
+/// detection chain: build a tokio runtime, run `current_image()`, and shell out
+/// to `bootc status`. Rendering the tag list for an image with hundreds of
+/// published tags therefore tried to create hundreds of runtimes and threads,
+/// which exhausted the process thread limit and killed the app with
+/// "OS can't spawn worker thread: Resource temporarily unavailable".
+///
+/// The booted image cannot change while the process is running, so a single
+/// resolution per process is correct. `Option<Option<_>>`: the outer layer is
+/// "have we looked yet", the inner is "did detection succeed" — a failed
+/// detection is cached too, otherwise every row would retry the failing
+/// subprocess.
+static BOOTC_IMAGE_INFO_CACHE: std::sync::OnceLock<Option<(String, String, String)>> =
+    std::sync::OnceLock::new();
+
 fn detect_bootc_image_info() -> Option<(String, String, String)> {
+    BOOTC_IMAGE_INFO_CACHE
+        .get_or_init(detect_bootc_image_info_uncached)
+        .clone()
+}
+
+fn detect_bootc_image_info_uncached() -> Option<(String, String, String)> {
     // Delegate to the UpdaterService. current_image() already encapsulates the
     // full precedence chain (mock_identity → FINUPDATE_IMAGE → bootc status →
     // os-release) inside RegistryClient::detect_with_settings, so this site
     // just transforms the resulting ImageRef into the (title, registry_uri,
     // selected_tag) triple the UI is shaped around.
     //
-    // We block on the async call because every caller here runs on the GTK
-    // thread, which is not a tokio runtime. The actual I/O it kicks off (a
-    // bootc-status subprocess) is the same one the legacy implementation did
-    // synchronously, so there's no change in user-perceived latency.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    let image = rt.block_on(async { crate::service::global().current_image().await.ok() })?;
+    // This must work from two different kinds of caller:
+    //
+    //   * the GTK main thread (UI construction — status_view.rs:1065, :422),
+    //     which is not a tokio runtime, and
+    //   * a tokio worker (the changelog fetch path reaches read_selected_tag
+    //     at :4226 while already inside the runtime).
+    //
+    // Building a current-thread runtime inline works for the first and panics
+    // for the second with "Cannot start a runtime from within a runtime",
+    // which crashed the app on launch as soon as the changelog fetch raced UI
+    // construction. Running the async call on a dedicated thread that owns its
+    // own runtime is correct from either context.
+    //
+    // The cost is one short-lived thread per call, which is acceptable: this
+    // sits behind BOOTC_STATUS_CACHE and is only hit while building UI.
+    let image = std::thread::spawn(|| {
+        crate::runtime::block_on(async { crate::service::global().current_image().await.ok() })
+    })
+    .join()
+    .ok()
+    .flatten()?;
 
     let title = format!("{}/{}", image.org, image.image);
     let registry_uri = format!("{}/{}/{}", image.registry, image.org, image.image);
@@ -3356,24 +3392,31 @@ fn run_bootc_install_reset(toast_overlay: &adw::ToastOverlay, label: &'static st
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let toast_overlay = toast_overlay.clone();
 
+    let settings = Settings::load();
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
+
+    // The most destructive command in the app — it redeploys the factory image
+    // and erases user data. Nothing about it may run under dry-run, and the
+    // journal must record the exact argv so a test can prove the guard held.
+    let mut cmd = match crate::privileged::privileged(
+        "factory_reset",
+        serde_json::json!({ "label": label }),
+        &["bootc", "install", "reset", "--experimental", "--apply"],
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        crate::privileged::Exec::Suppressed => {
+            let t = adw::Toast::new(&format!("{label} staged (dry-run, no commands run)"));
+            t.set_timeout(4);
+            toast_overlay.add_toast(t);
+            return;
+        }
+        crate::privileged::Exec::Run(cmd) => cmd,
+    };
+
     std::thread::spawn(move || {
-        let cmd_result = if crate::update_worker::is_flatpak() {
-            Command::new("flatpak-spawn")
-                .args([
-                    "--host",
-                    "pkexec",
-                    "bootc",
-                    "install",
-                    "reset",
-                    "--experimental",
-                    "--apply",
-                ])
-                .output()
-        } else {
-            Command::new("pkexec")
-                .args(["bootc", "install", "reset", "--experimental", "--apply"])
-                .output()
-        };
+        let cmd_result = cmd.output();
 
         let summary = match cmd_result {
             Ok(out) if out.status.success() => {
@@ -3440,16 +3483,28 @@ fn run_unpin_to_stream(
     let toast_overlay = toast_overlay.clone();
     let target_for_thread = target_ref.clone();
 
+    let settings = Settings::load();
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
+
+    let mut cmd = match crate::privileged::privileged(
+        "unpin",
+        serde_json::json!({ "target": target_ref, "stream": stream_tag }),
+        &["bootc", "switch", &target_for_thread],
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        crate::privileged::Exec::Suppressed => {
+            let t = adw::Toast::new("Unpin staged (dry-run, no commands run)");
+            t.set_timeout(4);
+            toast_overlay.add_toast(t);
+            return;
+        }
+        crate::privileged::Exec::Run(cmd) => cmd,
+    };
+
     std::thread::spawn(move || {
-        let cmd_result = if crate::update_worker::is_flatpak() {
-            Command::new("flatpak-spawn")
-                .args(["--host", "pkexec", "bootc", "switch", &target_for_thread])
-                .output()
-        } else {
-            Command::new("pkexec")
-                .args(["bootc", "switch", &target_for_thread])
-                .output()
-        };
+        let cmd_result = cmd.output();
 
         let summary = match cmd_result {
             Ok(out) if out.status.success() => {
@@ -3502,6 +3557,29 @@ fn run_unpin_to_stream(
 /// today; if after, it's tomorrow morning — both readings of "tonight" are
 /// reasonable. We toast either way so the user knows it landed.
 fn schedule_reboot_tonight(toast_overlay: &adw::ToastOverlay) {
+    // Ask the chokepoint for the command. It journals the intent either way,
+    // so a GUI test can assert `schedule_reboot` was requested with
+    // `shutdown -r 02:00` without the host ever being scheduled to reboot.
+    let settings = Settings::load();
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
+
+    let mut cmd = match crate::privileged::privileged(
+        "schedule_reboot",
+        serde_json::json!({ "when": "02:00" }),
+        &["shutdown", "-r", "02:00"],
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        crate::privileged::Exec::Suppressed => {
+            let t = adw::Toast::new("Restart scheduled for 02:00 (dry-run)");
+            t.set_timeout(4);
+            toast_overlay.add_toast(t);
+            return;
+        }
+        crate::privileged::Exec::Run(cmd) => cmd,
+    };
+
     // adw::ToastOverlay is GObject-but-not-Send, so we run shutdown(8) on a
     // std::thread and pipe the summary back via mpsc that's drained on the
     // GLib main loop (where the overlay is touchable). Same shape as
@@ -3510,15 +3588,7 @@ fn schedule_reboot_tonight(toast_overlay: &adw::ToastOverlay) {
     let toast_overlay = toast_overlay.clone();
 
     std::thread::spawn(move || {
-        let result = if crate::update_worker::is_flatpak() {
-            Command::new("flatpak-spawn")
-                .args(["--host", "pkexec", "shutdown", "-r", "02:00"])
-                .output()
-        } else {
-            Command::new("pkexec")
-                .args(["shutdown", "-r", "02:00"])
-                .output()
-        };
+        let result = cmd.output();
 
         let summary = match result {
             Ok(out) if out.status.success() => {
@@ -3657,14 +3727,31 @@ fn run_powerwash(toast_overlay: &adw::ToastOverlay) {
 ///
 /// `args[0]` is the program name, `args[1..]` are arguments. Exit-code-zero is
 /// success; anything else is failure with the last line of stderr as the tail.
+/// Run an unprivileged host command as one step of a multi-step destructive
+/// operation (powerwash's flatpak/distrobox teardown).
+///
+/// Routed through the [`privileged`](crate::privileged) chokepoint with
+/// `Privilege::Host` — these don't need root, but they *are* destructive, so
+/// dry-run must withhold them and the journal must record them. A suppressed
+/// step reports success so the caller's summary reflects what would have
+/// happened.
 fn run_host_command(label: &'static str, args: &[&str]) -> (&'static str, bool, String) {
-    let output = if crate::update_worker::is_flatpak() {
-        let mut full = vec!["--host"];
-        full.extend_from_slice(args);
-        Command::new("flatpak-spawn").args(&full).output()
-    } else {
-        Command::new(args[0]).args(&args[1..]).output()
+    let settings = Settings::load();
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
+
+    let mut cmd = match crate::privileged::privileged(
+        label,
+        serde_json::json!({ "step": label }),
+        args,
+        crate::privileged::Privilege::Host,
+        suppressed,
+    ) {
+        crate::privileged::Exec::Suppressed => return (label, true, String::new()),
+        crate::privileged::Exec::Run(cmd) => cmd,
     };
+
+    let output = cmd.output();
     match output {
         Ok(out) if out.status.success() => (label, true, String::new()),
         Ok(out) => {
@@ -4019,12 +4106,7 @@ fn spawn_changelog_fetch(
     sender: ComponentSender<StatusView>,
 ) {
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-
-        rt.block_on(async move {
+        crate::runtime::block_on(async move {
             let total_start = std::time::Instant::now();
             println!(
                 "[debug] changelog: starting fetch for registry_uri={}",

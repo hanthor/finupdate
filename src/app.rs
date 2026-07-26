@@ -183,9 +183,19 @@ impl SimpleComponent for UpdatesPanel {
                 set_visible: model.is_embedded && model.current_page != "main",
             },
 
+            // Two distinct safety states deserve two distinct messages. Saying
+            // "updates are simulated" during a dry run would be a lie: the real
+            // orchestrator, registry and rebase code all run — only the
+            // privileged commands at the end are withheld.
             append = &model.dev_banner.clone() -> adw::Banner {
-                set_title: "Developer Mode — updates are simulated",
-                set_revealed: model.settings.dev_mode,
+                #[watch]
+                set_title: if model.settings.dev_mode {
+                    "Developer Mode — updates are simulated"
+                } else {
+                    "Dry run — actions are recorded, your system is not modified"
+                },
+                #[watch]
+                set_revealed: model.settings.dev_mode || model.settings.dry_run,
             },
 
             append = &model.toast_overlay.clone() -> adw::ToastOverlay {
@@ -373,19 +383,24 @@ impl SimpleComponent for UpdatesPanel {
             let input_sender = sender.input_sender().clone();
             gtk::glib::idle_add_local_once(move || {
                 std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create tokio runtime");
-                    rt.block_on(async move {
-                        let mut cmd = if std::path::Path::new("/.flatpak-info").exists() {
-                            let mut c = tokio::process::Command::new("flatpak-spawn");
-                            c.args(["--host", "pkexec", "bootc", "upgrade", "--check"]);
-                            c
-                        } else {
-                            let mut c = tokio::process::Command::new("pkexec");
-                            c.args(["bootc", "upgrade", "--check"]);
-                            c
+                    crate::runtime::block_on(async move {
+                        // Read-only probe, so it is journalled but deliberately
+                        // NOT suppressed: dry-run withholds commands that
+                        // *change* the system, and blocking this one would
+                        // leave the hero stuck on "Checking…" with no way to
+                        // ever learn whether an update exists. Passing
+                        // Suppressed::No keeps every privileged invocation
+                        // visible in the journal while letting reads proceed.
+                        let mut cmd = match crate::privileged::privileged_async(
+                            "bootc_upgrade_check",
+                            serde_json::json!({ "read_only": true }),
+                            &["bootc", "upgrade", "--check"],
+                            crate::privileged::Privilege::Pkexec,
+                            crate::action_journal::Suppressed::No,
+                        ) {
+                            crate::privileged::ExecAsync::Run(c) => c,
+                            // Unreachable: Suppressed::No never blocks.
+                            crate::privileged::ExecAsync::Suppressed => return,
                         };
                         let timeout = std::time::Duration::from_secs(15);
                         let status = tokio::select! {
@@ -415,11 +430,7 @@ impl SimpleComponent for UpdatesPanel {
         // Prefetch image version history
         gtk::glib::idle_add_local_once(|| {
             std::thread::spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime for prefetch");
-                rt.block_on(async {
+                crate::runtime::block_on(async {
                     let svc = crate::service::global();
                     if let Ok(image) = svc.current_image().await {
                         let _ = svc.list_versions(&image, 120).await;
@@ -613,46 +624,36 @@ impl SimpleComponent for UpdatesPanel {
             }
 
             UpdatesPanelMsg::ConfirmReboot => {
-                if self.settings.dev_mode || self.settings.dry_run {
-                    let reason = if self.settings.dry_run && !self.settings.dev_mode {
-                        "dry-run"
-                    } else {
-                        "developer mode"
-                    };
-                    tracing::warn!(
-                        "Reboot suppressed — {} is active. \
-                         Would have called `systemctl reboot`.",
-                        reason
-                    );
-                    let toast = adw::Toast::new(&format!("Reboot suppressed ({})", reason));
-                    toast.set_timeout(3);
-                    self.toast_overlay.add_toast(toast);
+                let suppressed = crate::action_journal::Suppressed::from_flags(
+                    self.settings.dev_mode,
+                    self.settings.dry_run,
+                );
+                let reason = if self.settings.dry_run && !self.settings.dev_mode {
+                    "dry-run"
                 } else {
-                    tracing::info!("User confirmed system reboot");
-                    std::thread::spawn(|| {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("Failed to create tokio runtime");
+                    "developer mode"
+                };
 
-                        rt.block_on(async {
-                            let result = if crate::update_worker::is_flatpak() {
-                                tokio::process::Command::new("flatpak-spawn")
-                                    .args(["--host", "systemctl", "reboot"])
-                                    .status()
-                                    .await
-                            } else {
-                                tokio::process::Command::new("systemctl")
-                                    .arg("reboot")
-                                    .status()
-                                    .await
-                            };
-
-                            if let Err(e) = result {
+                match crate::privileged::privileged_async(
+                    "reboot",
+                    serde_json::json!({}),
+                    &["systemctl", "reboot"],
+                    crate::privileged::Privilege::Pkexec,
+                    suppressed,
+                ) {
+                    crate::privileged::ExecAsync::Suppressed => {
+                        let toast = adw::Toast::new(&format!("Reboot suppressed ({})", reason));
+                        toast.set_timeout(3);
+                        self.toast_overlay.add_toast(toast);
+                    }
+                    crate::privileged::ExecAsync::Run(mut cmd) => {
+                        tracing::info!("User confirmed system reboot");
+                        crate::runtime::spawn(async move {
+                            if let Err(e) = cmd.status().await {
                                 tracing::error!("Failed to initiate reboot: {}", e);
                             }
                         });
-                    });
+                    }
                 }
             }
 
@@ -854,14 +855,34 @@ impl SimpleComponent for App {
         #[root]
         adw::ApplicationWindow {
             set_title: Some("Finupdate"),
+            // Overridable at runtime via FINUPDATE_WINDOW_SIZE — applied in
+            // init() below, since relm4's view! macro needs a literal pair here.
             set_default_size: (750, 700),
-            set_width_request: 400,
-            set_height_request: 500,
+            // HIG requires a primary window to work down to 360px. The old
+            // 400px floor made that impossible, and mattered beyond phones:
+            // gnome-control-center resizes its content pane from the shell's
+            // own breakpoints, so a panel that refuses to narrow forces the
+            // whole Settings window wider than the user asked for.
+            set_width_request: 360,
+            set_height_request: 480,
+
+            // Narrow layout: the window title collapses to the app name alone
+            // so the subtitle can't force horizontal overflow in the header.
+            add_breakpoint = adw::Breakpoint::new(
+                adw::BreakpointCondition::new_length(
+                    adw::BreakpointConditionLengthType::MaxWidth,
+                    500.0,
+                    adw::LengthUnit::Sp,
+                )
+            ) {
+                add_setter: (&model.window_title, "subtitle", Some(&"".to_value())),
+            },
 
             adw::ToolbarView {
                 add_top_bar = &model.header_bar.clone() -> adw::HeaderBar {
                     set_title_widget: Some(&model.window_title.clone()),
                     pack_start = &model.back_btn.clone() -> gtk::Button {
+                        set_tooltip_text: Some("Back"),
                         connect_clicked[sender] => move |_| {
                             sender.input(AppMsg::GoBack);
                         }
@@ -907,10 +928,15 @@ impl SimpleComponent for App {
 
         let header_bar = adw::HeaderBar::new();
         let window_title = adw::WindowTitle::new("Finupdate", "");
+        // Icon-only controls need both a tooltip and an accessible label —
+        // without them the control is unusable with a screen reader and
+        // unlabelled for AT-SPI-driven tests.
         let back_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
+            .tooltip_text("Back")
             .visible(false)
             .build();
+        back_btn.update_property(&[gtk::accessible::Property::Label("Back")]);
 
         // Standalone Window actions
         let updates_panel_sender = updates_panel.sender().clone();
@@ -955,6 +981,29 @@ impl SimpleComponent for App {
         };
 
         let widgets = view_output!();
+
+        // Applied *after* view_output!(), which sets the production default
+        // size — doing it earlier just gets overwritten.
+        if let Some((w, h)) = parse_window_size() {
+            root.set_default_size(w, h);
+        }
+
+        // FINUPDATE_MEASURE=1 reports the window's real minimum width once the
+        // tree is built. HIG wants a primary window usable at 360px, and
+        // lowering `width-request` alone does not achieve that if some child
+        // demands more — this says which number we are actually up against,
+        // instead of guessing at candidates. Bisect by hiding subtrees.
+        if std::env::var_os("FINUPDATE_MEASURE").is_some() {
+            let content = root.content();
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(child) = content {
+                    let (min_w, nat_w, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
+                    tracing::info!(
+                        "MEASURE content min_width={min_w} nat_width={nat_w}"
+                    );
+                }
+            });
+        }
 
         ComponentParts { model, widgets }
     }
@@ -1031,6 +1080,25 @@ impl SimpleComponent for App {
 // ─── Dialog and Helper Functions ──────────────────────────────────────────
 
 /// Show the keyboard shortcuts window.
+/// Parse `FINUPDATE_WINDOW_SIZE` (e.g. `360x640`) into a default window size.
+///
+/// Test-only affordance. Broadway derives the rendered surface from the GTK
+/// window's own size, not the browser viewport, so the screenshot suite has no
+/// other way to capture the narrow breakpoint layout. Returns None (keeping the
+/// production default) when unset or malformed.
+fn parse_window_size() -> Option<(i32, i32)> {
+    let raw = std::env::var("FINUPDATE_WINDOW_SIZE").ok()?;
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    let w = w.trim().parse::<i32>().ok()?;
+    let h = h.trim().parse::<i32>().ok()?;
+    // Guard against a typo silently producing an unusable window.
+    if w < 200 || h < 200 {
+        tracing::warn!("ignoring FINUPDATE_WINDOW_SIZE={raw}: below 200x200");
+        return None;
+    }
+    Some((w, h))
+}
+
 fn show_shortcuts_window(window: &adw::ApplicationWindow) {
     let shortcuts = gtk::ShortcutsWindow::builder()
         .transient_for(window)

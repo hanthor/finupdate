@@ -1,26 +1,113 @@
-# Finupdate Implementation Plan
+# Finupdate — current state and remaining work
 
-This plan outlines the specific improvements to be implemented in the `finupdate` project:
+Updated 2026-07-26. The previous version of this file listed six task groups all
+marked `[x]`; every one of them predated the work below and several were no
+longer true. Treat this as the live picture.
 
-## 1. Code Cleanup & Refactoring
-- **Task 1.1:** [x] Remove obsolete comment forwarders in `src/ui/rebase_dialog.rs` to keep the UI module completely clean.
+All builds and tests run on **himachal** (`~/dev/hanthor/finupdate`, toolbox
+`finupdate`, Fedora 43 / GTK 4.20.4 / libadwaita 1.8.6). The local machine is a
+lightweight VPS with GTK 4.14 and cannot build this crate.
 
-## 2. Test Improvements & Integration Testing Mocking (Strategy B)
-- **Task 2.1:** [x] Implement robust mock-subprocess integration tests inside `src/orchestrator.rs` targeting the output scanner and the stream event loop. 
-- **Task 2.2:** [x] Verify that `parse_line` and event propagation correctly process start, completion, failure, and output events in a simulated process run.
+---
 
-## 3. Code Coverage Setup (Strategy D)
-- **Task 3.1:** [x] Integrate `coverage` recipe in the project's `justfile` using `cargo-llvm-cov` to allow developers to generate block coverage reports locally.
+## Done
 
-## 4. Architecture Improvements
-- **Task 4.1:** [x] Implement an in-memory/on-disk caching layer for OCI Registry queries within `src/registry_client.rs` to optimize repeat queries when interacting with rebase and changelog pages.
+### Correctness — five real bugs, all found by running the app
 
-## 5. CI/CD Integration
-- **Task 5.1:** [x] Establish a comprehensive GitHub Actions CI pipeline in `.github/workflows/ci.yml` that automatically installs system dependencies (`libadwaita`, `gtk4`), runs formatting/clippy checks, executes all unit & integration tests, and generates code coverage metrics.
+See `docs/BUGS-FOUND.md` for the full write-ups and measurements.
 
-## 6. Real Shell Script & System Call Testing
-- **Task 6.1:** [x] Implement `FINUPDATE_TEST_BREW_BIN` testing hook in `data/finupdate-runner` to support mock-executable paths.
-- **Task 6.2:** [x] Establish comprehensive system command mocking (for `bootc`, `flatpak`, `su`/`brew`, `distrobox`) using custom mock binary creation in isolated test paths.
-- **Task 6.3:** [x] Add real-script execution test cases (`test_real_runner_full_success_with_mocks` and `test_real_runner_system_only_skips_others`) executing `data/finupdate-runner` directly and asserting that correct system calls, parameters, and events are processed under full success and system-only modes.
-- **Task 6.4:** [x] Implement mock systemctl and pkexec commands to cover timer installation, status, and control logic in `src/uupd_compat.rs` unit tests, driving code coverage up from 55% to over 80%.
+1. **Every GUI update was silently simulated.** `--dev-mode` persisted itself
+   into `settings.json`, and `Settings::default()` set `dev_mode: true` for any
+   plain `cargo build`. Fixed: CLI flags are per-run only
+   (`settings::RuntimeOverrides`), dev builds default to `dry_run` instead, and
+   `--no-dev-mode` / `--no-dry-run` exist to escape either.
+2. **Startup storm: 1213 changelog fetches + 1216 SBOM diffs per launch.**
+   Repopulating the tag dropdown fired `selected_notify` ~2× per tag. Fixed with
+   a blocked handler around a single `splice()`. → 1 fetch, 2 diffs, 11 threads.
+3. **Ten ad-hoc tokio runtimes** causing thread exhaustion. Consolidated into
+   `src/runtime.rs`.
+4. **`block_on` inside a runtime** panic in `detect_bootc_image_info`; also
+   memoised, since it re-ran the whole detection chain per rendered row.
+5. **GApplication rejected the app's own CLI flags.**
 
+Plus a **flaky test** (`test_is_uupd_installed`, ~1 run in 3): two modules
+mutated the process-global `PATH` under separate mutexes. Now share
+`src/test_support.rs::env_lock()`. 5/5 clean runs.
+
+### Dry-run is structural, not remembered
+
+`src/privileged.rs` is the single chokepoint — you cannot obtain a runnable
+`Command` without passing a suppression state, so a newly added destructive
+action cannot silently execute under dry-run. `src/action_journal.rs` records
+every intent as JSONL with the exact `would_run` argv.
+
+Converted: `switch_image`, `unpin`, `factory_reset`, `powerwash` steps,
+`reboot`, `schedule_reboot`, `set_uupd_timer` (both duplicate implementations),
+`write_uupd_config`. Read-only probes route through the same chokepoint with
+`Suppressed::No` — journalled, but still executed.
+
+### GUI test suite
+
+`tests/gui/` — Broadway + Playwright + the action journal. Runs headless with no
+GNOME session and no `gnome-ponytail-daemon`, which was the blocker that stalled
+GUI coverage. See `docs/GUI_TESTING.md`.
+
+### Packaging
+
+`meson setup && ninja` builds the full packaging path. `libfinupdate.so` builds,
+exports all 10 FFI symbols, installs via `install-libfinupdate.sh`, resolves
+through `pkg-config`, and `examples/panel-demo` compiles and links against it.
+
+---
+
+## Remaining
+
+### 1. Flatpak build blocked on the host — needs a decision
+
+```
+error: Failed to export bpf: System failure beyond the control of libseccomp
+```
+
+Identical with `flatpak run org.flatpak.Builder` and native `flatpak-builder`,
+so it is a host-level bubblewrap/seccomp problem on himachal, not a manifest or
+code issue. The meson path underneath it builds fine. Options: fix the host, try
+another machine (dilli lacks native `flatpak-builder`), or build in CI.
+
+### 2. HIG findings — see `docs/GNOME-HIG-AUDIT.md`
+
+Ordered by the sequencing that avoids wasted work: changes that move the widget
+tree must land before screenshot baselines are treated as stable.
+
+| # | Finding | State |
+|---|---|---|
+| 3 | `AdwNavigationView` instead of hand-rolled `gtk::Stack` navigation | open — **do first**, moves the widget tree |
+| 1 | Window cannot reach 360px; a child's minimum width dominates | partial — measure with `root.measure()` and bisect, don't guess |
+| 2 | GSettings migration (currently hand-rolled JSON) | open — swaps storage, not pixels; safer *after* the suite |
+| 5 | Access keys (`use-underline`) | open — mechanical |
+| 4 | Tooltips on remaining icon-only controls | partial |
+| 6 | Preferences search | **done** |
+
+### 3. Known open bug
+
+Late async results panic after component teardown (`AvailableTagsLoaded` on a
+dropped relm4 controller). Much rarer since the storm fix took in-flight fetches
+from ~1200 to 1, but the race remains. Use the fallible `sender.send`, or hold a
+cancellation token per component.
+
+### 4. cc-panel end-to-end
+
+`wip/cc-panel-toolbox` on himachal holds a full gnome-control-center build
+harness (`build-aux/test-cc-panel-in-toolbox.sh` plus dakota PR #743 patches),
+committed but unmerged. Needs validating and merging.
+
+### 5. Crate split (deliberately deferred)
+
+Borrow gtk-office-suite's `-core`/UI split: extract `finupdate-core` from the
+already-GTK-free modules, then break up `src/ui/status_view.rs` (4894 lines) and
+`src/ui/rebase_dialog.rs` (2438). Mechanical and test-covered.
+
+**Greenfield was considered and rejected.** Only five dead-code warnings exist
+across ~21k lines, three of which are new helpers; 291 tests pass; the
+`UpdaterService` / `FixtureRegistry` / headless-CLI abstraction already exists.
+A rewrite would discard `registry_client.rs`, `sbom_diff.rs`, and
+`orchestrator.rs` — the parts that encode how ublue actually publishes images.

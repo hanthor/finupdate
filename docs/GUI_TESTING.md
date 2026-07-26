@@ -1,119 +1,142 @@
 # GUI Testing for Finupdate
 
-## Test Framework
+Two suites, for two different jobs.
 
-Finupdate uses [behave](https://behave.readthedocs.io/) with [dogtail](https://en.wix.com/en/dogtail/) for GUI automation via AT-SPI (Assistive Technology Service Provider Interface).
+| | `just gui-test` (primary) | `just gui-test-onhardware` (smoke) |
+|---|---|---|
+| Backend | Broadway + Playwright | dogtail/behave + AT-SPI |
+| Needs a GNOME session | no | **yes** |
+| Needs `gnome-ponytail-daemon` | no | **yes** |
+| Runs on a build host | yes | no |
+| Exercises real pkexec/polkit | no | **yes** |
+| Runs the real Flatpak | no | **yes** |
 
-Tests are located in `tests/smoke/features/finupdate.feature` and cover:
-- Application launch and window detection
-- Menu navigation and shortcuts
-- Developer mode simulation scenarios (Success, AlreadyUpToDate, Failure)
-- Clean shutdown
+Use the first for everyday work. Keep the second for verifying the things
+Broadway can never reach — a real elevation prompt, a real Flatpak sandbox.
 
-## Running Tests
+---
+
+## Primary suite: Broadway + screenshots + action journal
+
+### Why this shape
+
+The dogtail suite was effectively unrunnable: it needs a live GNOME session and
+`gnome-ponytail-daemon`, which isn't in the Dakota image. That blocker is why
+GUI coverage stalled.
+
+Broadway (`gtk4-broadwayd`) renders GTK4 into a browser over WebSockets, so the
+app runs headless with no compositor at all. Ported from
+`tuna-os/gtk-office-suite`'s `broadway-inspect` skill — with one important
+difference discovered here:
+
+> **GTK4 rasterises text into textures.** Broadway's DOM has real element nodes
+> but **zero text nodes** (measured on this app: 133 `<div>`, 19 `<img>`, 0
+> text). The office-suite approach of scraping text and clicking via
+> `get_by_text()` therefore cannot work.
+
+What does work, and what the suite is built on:
+
+* **Rendering** — pixel-accurate. Screenshots are excellent.
+* **Input** — Broadway forwards mouse and keyboard to GTK. `AdwDialog` and
+  popovers render and respond correctly.
+* **Backend intent** — the JSONL action journal (`src/action_journal.rs`).
+
+AT-SPI was investigated as the selector layer and **rejected**: GTK4 under the
+Broadway backend reports `Unrecognized accessibility backend "atspi"`. Targets
+are therefore coordinates in a fixed-size window (see `WIDGETS` in
+`tests/gui/harness.py`), or keyboard traversal via `activate_by_keyboard()`.
+
+### Each check is a triple
+
+```python
+with FinupdateApp() as app:                # 1. launch, dry-run, isolated config
+    app.click("automatic_updates_switch")  #    drive
+    app.screenshot("uupd-timer-toggled")   # 2. look
+    app.assert_action(                     # 3. assert the BACKEND intent
+        "set_uupd_timer",
+        would_run_contains=["pkexec", "systemctl", "--now", "uupd.timer"],
+        suppressed=True,
+    )
+```
+
+Step 3 is the one a screenshot can never make. It is the difference between
+"the rebase dialog looks right" and "clicking Switch would really have run
+`bootc switch ghcr.io/ublue-os/bluefin:stable` — and did not run it."
+
+### Running
 
 ```bash
-# Run all smoke tests
-cd tests/smoke
-behave features/finupdate.feature
-
-# Run specific test tag (e.g., @launch)
-behave features/finupdate.feature --tags=@launch
-
-# Run with verbose output
-behave features/finupdate.feature --no-capture
+just gui-test-setup           # once: playwright + chromium
+just gui-test                 # everything
+just gui-test "idle narrow"   # named checks
+just broadway 360x640         # launch and poke by hand at localhost:8085
 ```
 
-## Requirements
+Screenshots land in `tests/gui/screenshots/<theme>/`. They are artifacts for a
+human to review, **not** golden-image comparisons — pixel-diffing GTK across
+libadwaita releases is a maintenance sink, and the behavioural assertion lives
+in the journal instead.
 
-### System Dependencies
+### Safety and determinism
 
-The test framework requires:
-- `gnome-shell` with AT-SPI support
-- `at-spi2-core` (usually installed by default)
-- **Missing**: `gnome-ponytail-daemon` and `python3-gnome-ponytail-daemon`
+Nothing destructive runs. The app is launched `--dry-run --no-dev-mode`, so real
+code paths execute but `privileged()` withholds every privileged command and
+records it instead. In addition the launcher pins:
 
-The ponytail daemon is needed for robust window ID detection and is currently **not included** in the Dakota image.
+* an **isolated `XDG_CONFIG_HOME`** — the suite never reads or writes your real
+  `~/.config/finupdate/settings.json`;
+* `GTK_ENABLE_ANIMATIONS=0`, so no capture lands mid-transition;
+* a fixed window geometry via `FINUPDATE_WINDOW_SIZE`;
+* a fixed mock image via `FINUPDATE_IMAGE`.
 
-### Python Dependencies
+### Gotchas worth knowing
 
-- `behave` — BDD test runner
-- `dogtail` — GUI automation via AT-SPI
-- `qecore` — Project Blue Fin test harness
+* **A blank screenshot usually means a stale instance.** `pkill -x finupdate`
+  does not match processes started via `toolbox run`, so old instances
+  accumulate; a leftover one holds the D-Bus name and the Broadway surface and
+  you get a white PNG rather than an error. The launcher now matches on the full
+  command line and warns if anything survives.
+* **`$HOME` is shared with the toolbox; `/var/tmp` is not.** The journal lives
+  at `~/.finupdate-test-journal.jsonl` for exactly this reason — a `/var/tmp`
+  path is written inside the container and is invisible to the harness.
+* **`cargo test --lib` does not rebuild the binary.** Run `cargo build --bins`
+  before the GUI suite or you will test a stale app. (This produced a real
+  false failure during development.)
+* `/tmp` on the build host is a small tmpfs and is often full; Playwright's
+  chromium then fails with a confusing profile error. Hence
+  `TMPDIR=/var/tmp/pw-tmp`.
 
-Install with:
+---
+
+## On-hardware smoke suite
+
+`tests/smoke/features/` — dogtail + behave via qecore, unchanged. It is the only
+thing that exercises the real Flatpak in a real session including polkit, so it
+is kept, but demoted out of the normal loop.
+
+Requirements: an active GNOME session, `toolkit-accessibility` enabled, and
+`gnome-ponytail-daemon` (`just install-ponytail` builds it into `~/.local` if
+your image lacks it).
+
 ```bash
-pip install behave dogtail qecore
+just gui-test-onhardware              # all
+just gui-test-onhardware smoke @launch
 ```
 
-## Current Limitations
+qecore leaves GNOME Shell in `unsafe_mode`; the recipe resets it on exit via
+`just _reset-unsafe-mode`.
 
-### Ponytail Daemon Missing
+---
 
-Without `gnome-ponytail-daemon`, dogtail cannot reliably:
-- Detect window IDs
-- Verify window state
-- Handle keyring dialogs
+## Adding a check
 
-**Error message**:
-```
-Error in ponytail initiation might be cause by several reasons:
-  1) Packages '['gnome-ponytail-daemon', 'python3-gnome-ponytail-daemon']' are not installed.
-  2) If installed, the gnome-ponytail-daemon process might not be running.
-  3) You are on the system that does not have GNOME Shell Introspection.
-```
-
-### Workarounds
-
-1. **Manual Testing**: Run `flatpak run org.projectbluefin.Finupdate.Devel` and interact with the GUI directly
-2. **Log-based Verification**: Check application logs for structured output instead of GUI automation
-3. **Developer Mode**: Test update scenarios via dev mode without touching the real system:
-   ```bash
-   # Settings are in: ~/.var/app/org.projectbluefin.Finupdate.Devel/config/finupdate/settings.json
-   # Set: { "dev_mode": true, "sim_scenario": "Success" }
-   ```
-
-## Test Structure
-
-### Feature File: `finupdate.feature`
-
-Defines BDD scenarios with steps executed against the running application:
-
-```gherkin
-@launch
-Scenario: Application window appears with the main controls
-  * Application "finupdate" is running
-  * Item "Check for Updates" "push button" is "showing" in "finupdate"
-```
-
-### Step Definitions: `steps/steps.py`
-
-Custom steps implemented in Python:
-- `Wait until window "Finupdate" appears in "finupdate"` — Flexible window detection (handles GTK4 role variations)
-- `Application "finupdate" is in developer mode with scenario "Success"` — Pre-configure dev mode before launch
-- `Wait until "{text}" appears in "finupdate" within {seconds:d} seconds` — Bounded text search with timeout
-
-### Environment: `environment.py`
-
-Test harness setup using `qecore.TestSandbox`:
-- Configures Flatpak launching
-- Manages AT-SPI accessibility
-- Captures journal slices and artifacts on failure
-
-## Upstream Issue
-
-A request has been filed on projectbluefin/dakota to include `gnome-ponytail-daemon` and `python3-gnome-ponytail-daemon` in the base image. This will enable full GUI test automation without workarounds.
-
-## Future Improvements
-
-1. **Include ponytail daemon** in Dakota base image
-2. **Add integration tests** for actual update flows (with real bootc)
-3. **Snapshot AT-SPI tree** on test failure for debugging
-4. **CI/CD integration** using qecore's headless session support
-
-## References
-
-- [dogtail Documentation](https://en.wix.com/en/dogtail/)
-- [AT-SPI Overview](https://wiki.gnome.org/Accessibility/ATSPI2)
-- [GTK Accessibility](https://developer.gnome.org/gtk4/stable/gtk-running.html#running-and-debugging-GTK-Applications)
-- [qecore Testing Framework](https://github.com/projectbluefin/testing-lab)
+1. Add a `@check("name", "what it proves")` to `tests/gui/test_features.py`.
+2. If you need a new click target, capture a screenshot, read the coordinate off
+   it, and add it to `WIDGETS` in `harness.py` with a comment naming the capture
+   it came from. Prefer `activate_by_keyboard()` where the tab order is stable —
+   a moved pixel target fails as a confusing screenshot diff rather than an
+   error.
+3. If the feature touches the host, assert the journal entry too. A check that
+   only screenshots is half a check.
+4. Add the corresponding row to `docs/app-logic-map.md` §4 in the same change,
+   so the map stays load-bearing.

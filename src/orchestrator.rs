@@ -86,6 +86,20 @@ pub async fn run(
         // Updates group). When OFF, the runner script skips flatpak / brew /
         // distrobox and only refreshes the bootc system image.
         let include_app_updates = crate::settings::Settings::load().include_app_updates;
+
+        // Record the real update run. This path is only reached when neither
+        // dev_mode nor dry_run is set — both route to the simulator in
+        // `app.rs` before reaching here — so it is always an unsuppressed
+        // execution. Journalling it anyway means a journal captured against a
+        // live system shows the complete action sequence, not just the
+        // withheld ones.
+        crate::action_journal::record_str(
+            "run_update",
+            serde_json::json!({ "system_only": !include_app_updates }),
+            &["pkexec", "finupdate-runner"],
+            crate::action_journal::Suppressed::No,
+        );
+
         let mut cmd = build_runner_command(!include_app_updates);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -296,7 +310,11 @@ fn parse_line(line: &str) -> ParsedLine {
 mod tests {
     use super::*;
 
-    static TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    // Shared with uupd_compat's tests: both mutate the process-global PATH to
+    // install mock binaries, so a module-local mutex cannot serialise them
+    // against each other. Using two separate mutexes made
+    // `test_is_uupd_installed` flake about one run in three.
+    use crate::test_support::env_lock;
 
     fn expect_event(line: &str) -> UpdateEvent {
         match parse_line(line) {
@@ -424,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_with_mock_process() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -493,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_cancellation() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -542,7 +560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_exit_77_uptodate() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -582,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration_exit_error() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
         use std::io::Write;
         let mut mock_script = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -670,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_real_runner_full_success_with_mocks() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("bootc", 0);
@@ -774,7 +792,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires real bootc/rpm-ostree on PATH"]
     async fn test_real_runner_system_only_skips_others() {
-        let _lock = TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("bootc", 0);

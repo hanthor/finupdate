@@ -181,18 +181,27 @@ pub async fn write_config(config: &UupdConfig) -> anyhow::Result<()> {
         CONFIG_PATH,
     ];
 
-    let status = if is_flatpak() {
-        tokio::process::Command::new("flatpak-spawn")
-            .args(["--host", "pkexec"])
-            .args(args)
-            .status()
-            .await?
-    } else {
-        tokio::process::Command::new("pkexec")
-            .args(args)
-            .status()
-            .await?
+    let settings = crate::settings::Settings::load();
+    let suppressed = crate::action_journal::Suppressed::from_flags(
+        settings.dev_mode,
+        settings.dry_run,
+    );
+
+    let mut cmd = match crate::privileged::privileged_async(
+        "write_uupd_config",
+        serde_json::json!({ "path": CONFIG_PATH }),
+        &args,
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        crate::privileged::ExecAsync::Suppressed => {
+            let _ = std::fs::remove_file(&staging);
+            return Ok(());
+        }
+        crate::privileged::ExecAsync::Run(cmd) => cmd,
     };
+
+    let status = cmd.status().await?;
 
     // Best-effort cleanup of the staging file.
     let _ = std::fs::remove_file(&staging);
@@ -257,22 +266,46 @@ fn parse_timer_state(stdout: &str) -> Option<bool> {
 }
 
 /// Enable or disable `uupd.timer` via a single pkexec elevation.
+///
+/// Routed through the [`privileged`](crate::privileged) chokepoint, so in
+/// dry-run the intent is journalled and the timer is left alone.
 pub async fn set_uupd_timer(enable: bool) -> anyhow::Result<()> {
+    let settings = crate::settings::Settings::load();
+    let suppressed = crate::action_journal::Suppressed::from_flags(
+        settings.dev_mode,
+        settings.dry_run,
+    );
+    set_uupd_timer_with(enable, suppressed).await
+}
+
+/// [`set_uupd_timer`] with the suppression decision supplied explicitly.
+///
+/// Exists because `Settings::load()` resolves through `glib::user_config_dir()`,
+/// which GLib caches process-wide after the first call — so a test cannot
+/// reliably point it at a fixture by setting `XDG_CONFIG_HOME`. Taking the
+/// decision as a parameter makes the execution path deterministic to test, and
+/// is the better dependency shape regardless.
+pub async fn set_uupd_timer_with(
+    enable: bool,
+    suppressed: crate::action_journal::Suppressed,
+) -> anyhow::Result<()> {
     let action = if enable { "enable" } else { "disable" };
     let args = ["systemctl", action, "--now", "uupd.timer"];
 
-    let status = if is_flatpak() {
-        tokio::process::Command::new("flatpak-spawn")
-            .args(["--host", "pkexec"])
-            .args(args)
-            .status()
-            .await?
-    } else {
-        tokio::process::Command::new("pkexec")
-            .args(args)
-            .status()
-            .await?
+    let mut cmd = match crate::privileged::privileged_async(
+        "set_uupd_timer",
+        serde_json::json!({ "enable": enable }),
+        &args,
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        // Report synthetic success: the caller's UI should reflect the state
+        // the user asked for, exactly as Settings::dry_run promises.
+        crate::privileged::ExecAsync::Suppressed => return Ok(()),
+        crate::privileged::ExecAsync::Run(cmd) => cmd,
     };
+
+    let status = cmd.status().await?;
 
     if status.success() {
         Ok(())
@@ -414,7 +447,9 @@ mod tests {
         assert!(c.checks.hardware.enable);
     }
 
-    static UUPD_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    // Delegates to the process-wide lock: orchestrator's tests mutate PATH
+    // too, and a module-local mutex cannot serialise against them.
+    use crate::test_support::env_lock;
 
     struct MockEnv {
         _temp_dir: tempfile::TempDir,
@@ -452,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_uupd_installed() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("which", "/usr/bin/uupd\n", 0);
@@ -475,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_uupd_not_installed() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("which", "", 1);
@@ -498,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_uupd_timer_active_enabled() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("systemctl", "enabled\n", 0);
@@ -521,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_uupd_timer_active_disabled() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("systemctl", "disabled\n", 0);
@@ -544,7 +579,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_uupd_timer_success() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("pkexec", "", 0);
@@ -556,7 +591,9 @@ mod tests {
             std::env::set_var("PATH", &new_path);
         }
 
-        let result = set_uupd_timer(true).await;
+        // Suppressed::No so the mock pkexec on PATH is actually invoked.
+        let result =
+            set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
 
         unsafe {
             std::env::set_var("PATH", &original_path);
@@ -567,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_uupd_timer_failure() {
-        let _lock = UUPD_TEST_MUTEX.lock().await;
+        let _lock = env_lock().lock().await;
 
         let env = MockEnv::new();
         env.create_mock_bin("pkexec", "", 1);
@@ -579,7 +616,9 @@ mod tests {
             std::env::set_var("PATH", &new_path);
         }
 
-        let result = set_uupd_timer(true).await;
+        // Suppressed::No so the mock pkexec on PATH is actually invoked.
+        let result =
+            set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
 
         unsafe {
             std::env::set_var("PATH", &original_path);

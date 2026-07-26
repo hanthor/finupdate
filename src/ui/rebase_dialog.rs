@@ -456,12 +456,7 @@ fn spawn_fetch_thread(
 ) {
     let variant_str = variant.to_string();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-
-        rt.block_on(async move {
+        crate::runtime::block_on(async move {
             // `target_override` is set by the variant/stream switches in the
             // dialog: when the user flips DX/NVIDIA/stream, recompute resolves
             // the new target image and asks us to load THAT image's history
@@ -1361,12 +1356,7 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     let result_bg = result_slot.clone();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-
-        rt.block_on(async move {
+        crate::runtime::block_on(async move {
             // tokio mpsc bridges the async readers to a sync channel the GTK
             // thread can poll. Each parsed BootcProgress flows: stdout/stderr
             // reader → tokio channel → forwarder → std::sync::mpsc → GTK.
@@ -1537,20 +1527,40 @@ async fn run_bootc_switch(
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let mut child = if is_flatpak() {
-        tokio::process::Command::new("flatpak-spawn")
-            .args(["--host", "pkexec", "bootc", "switch", full_ref])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-    } else {
-        tokio::process::Command::new("pkexec")
-            .args(["bootc", "switch", full_ref])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-    }
-    .map_err(|e| format!("Failed to spawn bootc switch: {}", e))?;
+    // The single most consequential command finupdate can issue — it changes
+    // what the machine boots. Routed through the chokepoint so a dry run
+    // records the exact target ref without performing the switch, which is what
+    // makes "clicking Switch would run `bootc switch <the right ref>`"
+    // assertable in the GUI suite.
+    let settings = crate::settings::Settings::load();
+    let suppressed = crate::action_journal::Suppressed::from_flags(
+        settings.dev_mode,
+        settings.dry_run,
+    );
+
+    let mut cmd = match crate::privileged::privileged_async(
+        "switch_image",
+        serde_json::json!({ "target": full_ref }),
+        &["bootc", "switch", full_ref],
+        crate::privileged::Privilege::Pkexec,
+        suppressed,
+    ) {
+        crate::privileged::ExecAsync::Suppressed => {
+            // Report the same shape a real switch would: a completed staging
+            // with no progress events. The caller then shows its success page.
+            let _ = progress_tx.send(BootcProgress::Status(
+                "Dry run — image switch recorded, not performed".to_string(),
+            ));
+            return Ok(());
+        }
+        crate::privileged::ExecAsync::Run(cmd) => cmd,
+    };
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn bootc switch: {}", e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1627,11 +1637,7 @@ fn populate_family_switches(
     {
         let slot = slot.clone();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio runtime");
-            let detected = rt.block_on(async move {
+            let detected = crate::runtime::block_on(async move {
                 let svc = service::global();
                 let family = svc.current_family().await.ok().flatten();
                 let image = svc.current_image().await.ok();

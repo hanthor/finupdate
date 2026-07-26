@@ -118,9 +118,21 @@ fn default_true() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        // Development builds (meson -Dprofile=development or cargo build without meson)
-        // default to dev_mode=true so destructive actions like reboot are never triggered
-        // during testing.
+        // Development builds (meson -Dprofile=development, or a plain `cargo
+        // build` where PROFILE is empty) must never fire a reboot or a
+        // `bootc switch` at the host.
+        //
+        // This used to be spelled `dev_mode: is_dev_build`, which was too big a
+        // hammer: dev_mode *simulates the whole update*, so a cargo-built
+        // binary could never exercise the real orchestrator, registry, or
+        // rebase code at all — the paths most in need of testing were the only
+        // ones unreachable. It also silently contradicted the UI, which showed
+        // "Developer Mode — updates are simulated" to anyone who just built
+        // from source.
+        //
+        // `dry_run` is the right default instead: real code paths run, and the
+        // privileged() chokepoint blocks the destructive commands at the point
+        // of execution. Opt into simulation explicitly with --dev-mode.
         let is_dev_build = crate::config::PROFILE == "Devel" || crate::config::PROFILE.is_empty();
 
         Self {
@@ -128,13 +140,52 @@ impl Default for Settings {
             update_interval: UpdateInterval::Daily,
             pause_on_metered: true,
             custom_interval_hours: 6,
-            dev_mode: is_dev_build,
+            dev_mode: false,
             mock_identity: None,
-            dry_run: false,
+            dry_run: is_dev_build,
             include_app_updates: true,
             sim_scenario: None,
         }
     }
+}
+
+/// Per-run overrides that never touch `settings.json`.
+///
+/// # Why this exists
+///
+/// `--dev-mode` and `--sim=` used to be applied by mutating the on-disk
+/// settings and calling `save()`. That made a test run *sticky*: after
+/// `finupdate --dev-mode` exited, the user's real app stayed in developer mode
+/// until someone noticed and turned it off. Worse for the GUI suite — every
+/// scenario that set a simulator outcome permanently rewrote the developer's
+/// config, so runs were order-dependent and not reproducible.
+///
+/// Overrides now live in process memory only. `Settings::load()` reads the
+/// user's file exactly as written, then layers these on top, so the on-disk
+/// config is never a side effect of how the binary was invoked.
+///
+/// `None` means "defer to the file"; `Some(v)` forces `v`.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeOverrides {
+    pub dev_mode: Option<bool>,
+    pub dry_run: Option<bool>,
+    pub sim_scenario: Option<String>,
+    pub mock_identity: Option<MockBootcIdentity>,
+}
+
+static OVERRIDES: std::sync::OnceLock<RuntimeOverrides> = std::sync::OnceLock::new();
+
+/// Install the process-wide overrides. Call once from `main()` before any
+/// `Settings::load()`. Ignores a second call rather than panicking — a
+/// double-init here is harmless and shouldn't take the app down.
+pub fn set_runtime_overrides(o: RuntimeOverrides) {
+    if OVERRIDES.set(o).is_err() {
+        tracing::warn!("runtime overrides already set; ignoring second call");
+    }
+}
+
+fn overrides() -> Option<&'static RuntimeOverrides> {
+    OVERRIDES.get()
 }
 
 impl Settings {
@@ -144,11 +195,13 @@ impl Settings {
             .join("settings.json")
     }
 
-    /// Load settings from disk, falling back to defaults on any error.
+    /// Load settings from disk, falling back to defaults on any error, then
+    /// apply any [`RuntimeOverrides`] installed by `main()`.
+    ///
     /// In development builds, `dev_mode` defaults to true but can be toggled off.
     pub fn load() -> Self {
         let path = Self::config_path();
-        let settings = match std::fs::read_to_string(&path) {
+        let mut settings: Self = match std::fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_else(|e| {
                 tracing::warn!("Failed to parse settings (using defaults): {}", e);
                 Self::default()
@@ -156,7 +209,26 @@ impl Settings {
             Err(_) => Self::default(),
         };
 
+        settings.apply_overrides(overrides());
         settings
+    }
+
+    /// Layer per-run overrides over a loaded value. Split out from `load()` so
+    /// it can be tested without touching the real config path.
+    fn apply_overrides(&mut self, o: Option<&RuntimeOverrides>) {
+        let Some(o) = o else { return };
+        if let Some(v) = o.dev_mode {
+            self.dev_mode = v;
+        }
+        if let Some(v) = o.dry_run {
+            self.dry_run = v;
+        }
+        if let Some(v) = &o.sim_scenario {
+            self.sim_scenario = Some(v.clone());
+        }
+        if let Some(v) = &o.mock_identity {
+            self.mock_identity = Some(v.clone());
+        }
     }
 
     /// Save settings to disk, logging errors but never panicking.
@@ -184,6 +256,70 @@ mod tests {
     use super::*;
 
     // ── UpdateInterval ───────────────────────────────────────────────────
+
+    // ── RuntimeOverrides ─────────────────────────────────────────────────
+    //
+    // apply_overrides() is tested directly rather than through load(), so
+    // these don't depend on the process-wide OnceLock or the real config path.
+
+    #[test]
+    fn no_overrides_leaves_settings_untouched() {
+        let mut s = Settings::default();
+        s.dev_mode = false;
+        s.dry_run = false;
+        s.apply_overrides(None);
+        assert!(!s.dev_mode);
+        assert!(!s.dry_run);
+    }
+
+    #[test]
+    fn none_fields_defer_to_the_loaded_file() {
+        // An override struct that sets only dry_run must not clobber dev_mode.
+        let mut s = Settings::default();
+        s.dev_mode = true;
+        s.dry_run = false;
+        s.apply_overrides(Some(&RuntimeOverrides {
+            dry_run: Some(true),
+            ..Default::default()
+        }));
+        assert!(s.dev_mode, "dev_mode should be left as the file had it");
+        assert!(s.dry_run, "dry_run should be forced on");
+    }
+
+    #[test]
+    fn override_can_force_a_flag_off() {
+        // Some(false) must win over a file that says true — otherwise you
+        // could never use the CLI to escape a dev_mode=true config.
+        let mut s = Settings::default();
+        s.dev_mode = true;
+        s.apply_overrides(Some(&RuntimeOverrides {
+            dev_mode: Some(false),
+            ..Default::default()
+        }));
+        assert!(!s.dev_mode);
+    }
+
+    #[test]
+    fn sim_scenario_and_mock_identity_override() {
+        let mut s = Settings::default();
+        s.apply_overrides(Some(&RuntimeOverrides {
+            sim_scenario: Some("Failure".into()),
+            mock_identity: Some(MockBootcIdentity {
+                registry: "ghcr.io".into(),
+                org: "ublue-os".into(),
+                image: "bluefin".into(),
+                tag: "stable".into(),
+                digest: None,
+                booted_at: None,
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(s.sim_scenario.as_deref(), Some("Failure"));
+        assert_eq!(
+            s.mock_identity.map(|m| m.full_ref()),
+            Some("ghcr.io/ublue-os/bluefin:stable".to_string())
+        );
+    }
 
     #[test]
     fn update_interval_index_round_trip() {

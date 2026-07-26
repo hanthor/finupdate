@@ -15,12 +15,17 @@
 //! `/etc/os-release`. So `FINUPDATE_IMAGE=ghcr.io/ublue-os/aurora:stable
 //! finupdate-cli versions` works without touching the host's bootc state.
 
+mod action_journal;
 mod config;
 mod orchestrator;
+mod privileged;
 mod registry_client;
+mod runtime;
 mod sbom_diff;
 mod service;
 mod settings;
+#[cfg(test)]
+mod test_support;
 mod update_worker;
 mod uupd_compat;
 

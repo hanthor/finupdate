@@ -1,5 +1,23 @@
 # Finupdate logic map
 
+> **Status note (2026-07-26).** This document had drifted from the code. Known
+> corrections, now applied below:
+>
+> * §6.2 described Developer Mode and the three simulator scenarios as
+>   hamburger-menu items. They are **CLI-only** (`--dev-mode`, `--no-dev-mode`,
+>   `--sim=<scenario>`) — see `preferences.rs` and `main.rs`. The menu now holds
+>   only Keyboard Shortcuts / About / Quit.
+> * Whole features were missing: **Powerwash**, **Factory Reset**, **Restart
+>   Tonight**, **unpin-to-stream**, and **rollback**. All live in
+>   `src/ui/status_view.rs` and are listed in §4 below.
+> * The GUI test rows referenced `tests/smoke/` (dogtail/behave). That suite
+>   cannot run on a build host. The primary suite is now
+>   `tests/gui/test_features.py` (Broadway + screenshots + action journal);
+>   see `docs/GUI_TESTING.md`.
+> * Every privileged command now routes through `src/privileged.rs` and is
+>   recorded to a JSONL action journal (`src/action_journal.rs`), so the
+>   "Touches" column in §4 is machine-checkable rather than aspirational.
+
 A complete inventory of states, messages, user actions, backend touch-points,
 and side effects in finupdate. The purpose of this document is to drive test
 coverage — every row should be traceable to one or more tests (unit or
@@ -137,7 +155,12 @@ prompt OR a public-network round-trip.
 | `bootc upgrade --check`                            | on launch (preflight)           | `src/app.rs` preflight closure      | direct (no pkexec) | (would need fake binary on PATH) |
 | `bootc status --json`                              | rebase dialog open + registry detect | `src/registry_client.rs`        | **root**  | castrojo/finupdate#9 |
 | `flatpak-spawn --host pkexec /app/bin/finupdate-runner` | StartUpdate (non-dev)      | `src/orchestrator.rs::run`          | pkexec    | mock runner in tests (**add**) |
-| `pkexec systemctl reboot`                          | ConfirmReboot (non-dev)         | `src/app.rs` reboot handler         | pkexec    | dev-mode gates it; manual |
+| `pkexec systemctl reboot`                          | ConfirmReboot (non-dev)         | `src/app.rs` reboot handler         | pkexec    | journal action `reboot` |
+| `pkexec shutdown -r 02:00`                         | "Restart Tonight" on the hero row | `status_view.rs::schedule_reboot_tonight` | pkexec | journal action `schedule_reboot` |
+| `pkexec bootc switch <ref>`                        | Rebase dialog "Switch"/"Pin"    | `rebase_dialog.rs::run_bootc_switch` | pkexec   | journal action `switch_image`, args.target |
+| `pkexec bootc switch <stream-ref>`                 | "Unpin to :stream"              | `status_view.rs::run_unpin_to_stream` | pkexec  | journal action `unpin` |
+| `pkexec bootc install reset --experimental --apply`| Factory Reset (confirmed)       | `status_view.rs::run_bootc_install_reset` | pkexec | journal action `factory_reset` |
+| `flatpak uninstall --user --all -y` + `distrobox rm -f -a` | Powerwash (confirmed)   | `status_view.rs::run_powerwash`     | host (no root) | journal actions per step |
 | `pkexec systemctl enable --now uupd.timer`         | Preferences toggle (uupd present) | `src/uupd_compat.rs::set_uupd_timer` | pkexec | manual |
 | `pkexec install … /etc/uupd/config.json`           | uupd subpage "Apply"            | `src/uupd_compat.rs::write_config`  | pkexec    | manual |
 | `flatpak-spawn --host cat /etc/uupd/config.json`   | uupd subpage open               | `src/uupd_compat.rs::read_config`   | none      | unit (parser tests) |

@@ -52,7 +52,10 @@ pub fn show_preferences(
     // settings — "Preferences" undersold its role after the main page was
     // pared back to just Check + Automatic Updates.
     dialog.set_title("Advanced");
-    dialog.set_search_enabled(false);
+    // The dialog spans several groups plus a nested Automatic Updates subpage
+    // with eight-plus rows — well past the point where HIG expects search
+    // (spec §9.4). This was disabled when the dialog was much smaller.
+    dialog.set_search_enabled(true);
 
     // ── Page ─────────────────────────────────────────────────────────────
     let page = adw::PreferencesPage::builder()

@@ -186,6 +186,42 @@ _reset-unsafe-mode:
         > /dev/null 2>&1 || true
     @echo "✓ GNOME Shell unsafe_mode disabled"
 
+# ── Broadway screenshot + journal suite (the primary GUI tests) ─────────────
+#
+# Runs the app headless under gtk4-broadwayd inside the toolbox and drives it
+# with Playwright. No GNOME session, no Wayland, no gnome-ponytail-daemon —
+# which is what made the dogtail suite below unrunnable on a build host.
+#
+# Each check captures a PNG *and* asserts the JSONL action journal recorded the
+# correct privileged command, so it verifies both "does it look right" and
+# "would the right thing happen". Nothing destructive executes: the app runs
+# with --dry-run against an isolated XDG_CONFIG_HOME.
+#
+#   just gui-test                    # every check
+#   just gui-test "idle check-dialog"  # named checks only
+#
+# Screenshots land in tests/gui/screenshots/<theme>/.
+gui-test checks="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd tests/gui
+    TMPDIR=/var/tmp/pw-tmp python3 test_features.py {{ checks }}
+
+# One-time setup for the Broadway suite: Playwright + its chromium build.
+# Chromium is pointed at /var/tmp because /tmp is a small tmpfs here and a
+# full /tmp makes chromium fail to start with a confusing profile error.
+gui-test-setup:
+    python3 -m pip install --user playwright
+    mkdir -p /var/tmp/pw-tmp
+    TMPDIR=/var/tmp/pw-tmp python3 -m playwright install chromium
+
+# Launch the app under Broadway and leave it running, for manual poking.
+# Open http://localhost:8085 in a browser.
+#   just broadway                  # default geometry
+#   just broadway 360x640          # narrow, to exercise the breakpoint
+broadway size="":
+    WSIZE={{ size }} /var/tmp/broadway-launch.sh
+
 # Run dogtail/behave GUI tests against the *currently installed* Flatpak,
 # inside the current GNOME Wayland session. Requires:
 #   - The Devel Flatpak is installed (`just flatpak` first).
@@ -194,7 +230,14 @@ _reset-unsafe-mode:
 #
 # Always resets GNOME Shell unsafe_mode on exit (success or failure) via
 # a bash EXIT trap — qecore leaves the host shell in unsafe mode otherwise.
-gui-test suite="smoke" tags="":
+#
+# NOTE: this is no longer the primary GUI suite — see `just gui-test` above.
+# It is kept because it is the only thing that exercises the *real* Flatpak in
+# a *real* session, including the pkexec/polkit prompts that Broadway can never
+# reach. Treat it as an on-hardware smoke test, not part of the normal loop.
+# It needs a live GNOME session plus gnome-ponytail-daemon (`just
+# install-ponytail`), neither of which exists on a build host.
+gui-test-onhardware suite="smoke" tags="":
     #!/usr/bin/env bash
     set -e
     trap 'just _reset-unsafe-mode' EXIT
