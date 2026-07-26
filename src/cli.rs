@@ -15,19 +15,13 @@
 //! `/etc/os-release`. So `FINUPDATE_IMAGE=ghcr.io/ublue-os/aurora:stable
 //! finupdate-cli versions` works without touching the host's bootc state.
 
-mod action_journal;
-mod config;
-mod orchestrator;
-mod privileged;
-mod registry_client;
-mod runtime;
-mod sbom_diff;
-mod service;
-mod settings;
-#[cfg(test)]
-mod test_support;
-mod update_worker;
-mod uupd_compat;
+
+// Backend modules now live in the `finupdate-core` crate; aliased here so the
+// existing `crate::settings::…` paths keep resolving.
+use finupdate_core::{
+    action_journal, config, orchestrator, privileged, registry_client, runtime, sbom_diff,
+    service, settings, update_worker, uupd_compat,
+};
 
 use std::process::ExitCode;
 

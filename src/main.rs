@@ -10,23 +10,16 @@
 //! - Single-instance behavior is enforced by GApplication
 //! - libadwaita styles are loaded before any widgets are created
 
-mod action_journal;
+// Backend modules now live in the `finupdate-core` crate; aliased here so the
+// existing `crate::settings::…` paths keep resolving.
+use finupdate_core::{
+    action_journal, config, gpu, orchestrator, privileged, registry_client, runtime, sbom_diff,
+    service, settings, update_worker, uupd_compat,
+};
+
 mod app;
-mod config;
 pub mod dbus_progress;
-mod gpu;
-mod orchestrator;
-mod privileged;
-mod registry_client;
-mod runtime;
-mod sbom_diff;
-mod service;
-mod settings;
-#[cfg(test)]
-mod test_support;
 mod ui;
-mod update_worker;
-mod uupd_compat;
 
 use app::App;
 

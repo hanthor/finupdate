@@ -7,23 +7,18 @@
 //! Also exposed via cdylib: see [`ffi`] for the C ABI consumed by the
 //! gnome-control-center panel under `cc-panel/`.
 
-pub mod action_journal;
+// The backend now lives in the `finupdate-core` crate. Re-exported under their
+// original paths so the UI's `crate::settings::…` / `crate::service::…`
+// references keep resolving — the split is about enforcing the boundary, not
+// about churning every call site.
+pub use finupdate_core::{
+    action_journal, config, gpu, orchestrator, privileged, registry_client, runtime, sbom_diff,
+    service, settings, update_worker, uupd_compat,
+};
+
 pub mod app;
 pub mod changelog_widget;
-pub mod config;
 pub mod dbus_progress;
 pub mod ffi;
-pub mod gpu;
-pub mod orchestrator;
-pub mod privileged;
 pub mod rebase_widget;
-pub mod registry_client;
-pub mod runtime;
-pub mod sbom_diff;
-pub mod service;
-pub mod settings;
-#[cfg(test)]
-pub mod test_support;
 pub mod ui;
-pub mod update_worker;
-pub mod uupd_compat;

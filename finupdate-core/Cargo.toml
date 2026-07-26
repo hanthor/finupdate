@@ -1,0 +1,41 @@
+[package]
+name = "finupdate-core"
+version = "0.1.0"
+edition = "2024"
+description = "GTK-free backend for finupdate: bootc/registry/SBOM logic, settings, and the privileged-action chokepoint"
+license = "MIT"
+rust-version = "1.85"
+
+# Deliberately depends on glib/gio but NOT gtk4 or libadwaita.
+#
+# That is the point of the split: the whole backend — registry queries, SBOM
+# diffing, the update orchestrator, settings, and the privileged() chokepoint —
+# compiles and tests without a GTK toolchain. Practically, that means `cargo
+# test -p finupdate-core` runs on a machine too old or too small to build GTK4,
+# which is where a lot of this project's development actually happens.
+#
+# glib and gio are needed for XDG path resolution and GSettings. They are an
+# order of magnitude lighter than gtk4 + libadwaita and carry no display
+# dependency.
+[dependencies]
+glib = "0.22"
+gio = "0.22"
+
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+thiserror = "1"
+anyhow = "1"
+async-trait = "0.1"
+oci-client = { version = "0.15", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
+# `Builder::start_paused` (used by the orchestrator's timing tests) lives behind
+# test-util. The GUI crate used to supply it through Cargo's feature
+# unification; as its own crate, finupdate-core has to ask for it explicitly.
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }

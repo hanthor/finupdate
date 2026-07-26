@@ -1,3 +1,6 @@
+[workspace]
+members = ["finupdate-core"]
+
 [package]
 name = "finupdate"
 version = "0.1.0"
@@ -56,6 +59,10 @@ anyhow = "1"
 # gives us the same ergonomics with one boxed Future per call (negligible at
 # the interactive UI rates the GTK frontend operates at).
 async-trait = "0.1"
+
+# The GTK-free backend. Split out so it can be built and tested without a GTK
+# toolchain; see finupdate-core/src/lib.rs.
+finupdate-core = { path = "finupdate-core" }
 
 # OCI registry client — pure-Rust, used for SBOM referrer discovery and pull.
 # rustls-tls: no system OpenSSL needed inside the Flatpak sandbox.

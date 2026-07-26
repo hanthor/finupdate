@@ -95,11 +95,23 @@ installs via `install-libfinupdate.sh`, resolves through `pkg-config`, and
 harness (`build-aux/test-cc-panel-in-toolbox.sh` plus dakota PR #743 patches),
 committed but unmerged. Needs validating and merging.
 
-### 3. Crate split (deliberately deferred)
+### 3. Crate split — `finupdate-core` done, god objects remain
 
-Borrow gtk-office-suite's `-core`/UI split: extract `finupdate-core` from the
-already-GTK-free modules, then break up `src/ui/status_view.rs` (4894 lines) and
-`src/ui/rebase_dialog.rs` (2438). Mechanical and test-covered.
+`finupdate-core` is extracted, following gtk-office-suite's `-core`/UI shape.
+It holds the whole backend (service, registry, SBOM, orchestrator, update
+worker, uupd compat, settings, privileged, action journal, runtime, gpu,
+config) and depends on `glib`/`gio` but **not** `gtk4`, `libadwaita` or
+`relm4` — verified: 0 matches in `cargo tree -p finupdate-core`, 435 deps
+versus the GUI crate's 663.
+
+The abstraction already existed (`UpdaterService` + `FixtureRegistry` + the
+headless CLI); what was missing was *enforcement*. Now a stray `use gtk::…` in
+the backend is a compile error rather than a review comment. Tests split
+165 core / 126 GUI — the same 291 as before.
+
+Still to do: break up `src/ui/status_view.rs` (~4900 lines) and
+`src/ui/rebase_dialog.rs` (2438). Both are inside the GUI crate, so this is
+pure module extraction with no build-system involvement.
 
 **Greenfield was considered and rejected.** Only five dead-code warnings exist
 across ~21k lines, three of which are new helpers; 291 tests pass; the

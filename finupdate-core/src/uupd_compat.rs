@@ -367,7 +367,7 @@ mod tests {
     /// The exact JSON shipped by upstream as `/etc/uupd/config.json`,
     /// kept as a fixture in `docs/uupd-config.example.json` so it stays in
     /// lockstep with the upstream template.
-    const UPSTREAM_TEMPLATE: &str = include_str!("../docs/uupd-config.example.json");
+    const UPSTREAM_TEMPLATE: &str = include_str!("../../docs/uupd-config.example.json");
 
     #[test]
     fn parses_upstream_template() {

@@ -701,7 +701,10 @@ mod tests {
         let original_path = std::env::var("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
 
+        // CARGO_MANIFEST_DIR is this crate, but data/ lives at the workspace
+        // root — hence the `..`.
         let runner_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
             .join("data")
             .join("finupdate-runner");
         assert!(
@@ -800,7 +803,10 @@ mod tests {
         let original_path = std::env::var("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", env.bin_dir.display(), original_path);
 
+        // CARGO_MANIFEST_DIR is this crate, but data/ lives at the workspace
+        // root — hence the `..`.
         let runner_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
             .join("data")
             .join("finupdate-runner");
 

@@ -1,11 +1,11 @@
 //! Persistent application settings.
 //!
-//! Stored as JSON at `$XDG_CONFIG_HOME/finupdate/settings.json`.
-//! Uses `gtk::glib::user_config_dir()` for correct XDG path resolution.
+//! Backed by GSettings, with the legacy JSON file at
+//! `$XDG_CONFIG_HOME/finupdate/settings.json` as a fallback and migration source.
+//! Uses `glib::user_config_dir()` for correct XDG path resolution.
 
-use gtk::gio;
-use gtk::gio::prelude::SettingsExt;
-use gtk::glib;
+use gio::prelude::SettingsExt;
+use glib;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

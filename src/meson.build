@@ -4,7 +4,7 @@ global_conf.set_quoted('VERSION', version)
 global_conf.set_quoted('PROFILE', profile)
 
 configure_file(
-  input: 'config.rs.in',
+  input: '../finupdate-core/src/config.rs.in',
   output: 'config.rs',
   configuration: global_conf
 )
@@ -13,7 +13,7 @@ configure_file(
 run_command(
   'cp',
   meson.project_build_root() / 'src' / 'config.rs',
-  meson.project_source_root() / 'src' / 'config.rs',
+  meson.project_source_root() / 'finupdate-core' / 'src' / 'config.rs',
   check: true
 )
 
