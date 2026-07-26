@@ -52,28 +52,25 @@ Converted: `switch_image`, `unpin`, `factory_reset`, `powerwash` steps,
 GNOME session and no `gnome-ponytail-daemon`, which was the blocker that stalled
 GUI coverage. See `docs/GUI_TESTING.md`.
 
-### Packaging
+### Packaging — both deliverables build *and* launch
 
-`meson setup && ninja` builds the full packaging path. `libfinupdate.so` builds,
-exports all 10 FFI symbols, installs via `install-libfinupdate.sh`, resolves
-through `pkg-config`, and `examples/panel-demo` compiles and links against it.
+**Standalone Flatpak.** `just flatpak` builds, installs, launches, and renders
+(`tests/gui/screenshots/light/flatpak-devel-launch.png`). The build had been
+failing with `Failed to export bpf: System failure beyond the control of
+libseccomp`; the fix is `--disable-rofiles-fuse`, now in the recipe. Note the
+running app shows a real "Update available" preflight result — dry-run withholds
+only the destructive command, so production code paths genuinely execute.
+
+**Control-center panel.** `libfinupdate.so` builds, exports all 10 FFI symbols,
+installs via `install-libfinupdate.sh`, resolves through `pkg-config`, and
+`examples/panel-demo` compiles, links, and renders the embedded widgets
+(`tests/gui/screenshots/light/cc-panel-demo.png`) including the SBOM stack diff.
 
 ---
 
 ## Remaining
 
-### 1. Flatpak build blocked on the host — needs a decision
-
-```
-error: Failed to export bpf: System failure beyond the control of libseccomp
-```
-
-Identical with `flatpak run org.flatpak.Builder` and native `flatpak-builder`,
-so it is a host-level bubblewrap/seccomp problem on himachal, not a manifest or
-code issue. The meson path underneath it builds fine. Options: fix the host, try
-another machine (dilli lacks native `flatpak-builder`), or build in CI.
-
-### 2. HIG findings — see `docs/GNOME-HIG-AUDIT.md`
+### 1. HIG findings — see `docs/GNOME-HIG-AUDIT.md`
 
 Ordered by the sequencing that avoids wasted work: changes that move the widget
 tree must land before screenshot baselines are treated as stable.
@@ -87,20 +84,13 @@ tree must land before screenshot baselines are treated as stable.
 | 4 | Tooltips on remaining icon-only controls | partial |
 | 6 | Preferences search | **done** |
 
-### 3. Known open bug
-
-Late async results panic after component teardown (`AvailableTagsLoaded` on a
-dropped relm4 controller). Much rarer since the storm fix took in-flight fetches
-from ~1200 to 1, but the race remains. Use the fallible `sender.send`, or hold a
-cancellation token per component.
-
-### 4. cc-panel end-to-end
+### 2. cc-panel end-to-end
 
 `wip/cc-panel-toolbox` on himachal holds a full gnome-control-center build
 harness (`build-aux/test-cc-panel-in-toolbox.sh` plus dakota PR #743 patches),
 committed but unmerged. Needs validating and merging.
 
-### 5. Crate split (deliberately deferred)
+### 3. Crate split (deliberately deferred)
 
 Borrow gtk-office-suite's `-core`/UI split: extract `finupdate-core` from the
 already-GTK-free modules, then break up `src/ui/status_view.rs` (4894 lines) and
