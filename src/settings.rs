@@ -3,6 +3,8 @@
 //! Stored as JSON at `$XDG_CONFIG_HOME/finupdate/settings.json`.
 //! Uses `gtk::glib::user_config_dir()` for correct XDG path resolution.
 
+use gtk::gio;
+use gtk::gio::prelude::SettingsExt;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -188,6 +190,40 @@ fn overrides() -> Option<&'static RuntimeOverrides> {
     OVERRIDES.get()
 }
 
+/// Run `f` with the app's `gio::Settings`, or return `None` when the schema
+/// isn't installed.
+///
+/// **Deliberately fail-safe.** `gio::Settings::new()` *aborts the process* if
+/// the schema id is unknown, and the schema only exists once the app has been
+/// installed via meson/Flatpak. Unit tests, `cargo run`, and the Broadway
+/// harness all run from a build tree where it is absent. Since
+/// `Settings::load()` is what `privileged()` consults to decide whether to
+/// withhold a destructive command, a hard dependency here would turn "schema
+/// missing" into "dry-run silently stops working" — so the schema is looked up
+/// first and we fall back to the legacy JSON file when it isn't there.
+///
+/// **Thread-local, not `static`.** `gio::Settings` is a GObject and the Rust
+/// bindings mark it `!Send + !Sync`, so it cannot be shared through a `static`.
+/// `Settings::load()` is called from background threads (the uupd timer toggle
+/// and the powerwash steps both do), so each thread keeps its own handle.
+/// GSettings itself is thread-safe for reads and writes; it is only the shared
+/// *handle* that Rust forbids.
+fn with_gsettings<R>(f: impl FnOnce(&gio::Settings) -> R) -> Option<R> {
+    thread_local! {
+        static GS: Option<gio::Settings> = {
+            gio::SettingsSchemaSource::default()
+                .and_then(|src| src.lookup(crate::config::APP_ID, true))
+                .map(|_| gio::Settings::new(crate::config::APP_ID))
+        };
+    }
+    GS.with(|gs| gs.as_ref().map(f))
+}
+
+/// True when settings are backed by GSettings rather than the legacy JSON file.
+pub fn using_gsettings() -> bool {
+    with_gsettings(|_| ()).is_some()
+}
+
 impl Settings {
     fn config_path() -> PathBuf {
         glib::user_config_dir()
@@ -195,22 +231,100 @@ impl Settings {
             .join("settings.json")
     }
 
-    /// Load settings from disk, falling back to defaults on any error, then
-    /// apply any [`RuntimeOverrides`] installed by `main()`.
+    /// Load settings, then apply any [`RuntimeOverrides`] installed by `main()`.
     ///
-    /// In development builds, `dev_mode` defaults to true but can be toggled off.
+    /// Prefers GSettings; falls back to the legacy JSON file when the schema
+    /// isn't installed (see [`gsettings`]).
     pub fn load() -> Self {
-        let path = Self::config_path();
-        let mut settings: Self = match std::fs::read_to_string(&path) {
+        let mut settings = with_gsettings(|gs| {
+            Self::migrate_json_once(gs);
+            Self::from_gsettings(gs)
+        })
+        .unwrap_or_else(Self::load_json);
+
+        settings.apply_overrides(overrides());
+        settings
+    }
+
+    /// Read the legacy `settings.json`. Retained as the fallback for
+    /// uninstalled builds, and as the source for the one-shot migration.
+    fn load_json() -> Self {
+        match std::fs::read_to_string(Self::config_path()) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_else(|e| {
                 tracing::warn!("Failed to parse settings (using defaults): {}", e);
                 Self::default()
             }),
             Err(_) => Self::default(),
-        };
+        }
+    }
 
-        settings.apply_overrides(overrides());
-        settings
+    /// Import an existing `settings.json` into GSettings exactly once.
+    ///
+    /// Guarded by the `migrated-from-json` key rather than by deleting the file:
+    /// the file is left in place so a downgrade still works, and the guard stops
+    /// a stale file from overwriting changes the user later makes through
+    /// GSettings.
+    fn migrate_json_once(gs: &gio::Settings) {
+        if gs.boolean("migrated-from-json") {
+            return;
+        }
+        let path = Self::config_path();
+        if path.exists() {
+            tracing::info!("Importing {} into GSettings (one-shot)", path.display());
+            Self::load_json().write_gsettings(gs);
+        }
+        let _ = gs.set_boolean("migrated-from-json", true);
+    }
+
+    fn from_gsettings(gs: &gio::Settings) -> Self {
+        let sim = gs.string("sim-scenario").to_string();
+        let mock = gs.string("mock-identity").to_string();
+        Self {
+            auto_updates: gs.boolean("auto-updates"),
+            update_interval: match gs.string("update-interval").as_str() {
+                "hourly" => UpdateInterval::Hourly,
+                "weekly" => UpdateInterval::Weekly,
+                "custom" => UpdateInterval::Custom,
+                _ => UpdateInterval::Daily,
+            },
+            pause_on_metered: gs.boolean("pause-on-metered"),
+            custom_interval_hours: gs.uint("custom-interval-hours"),
+            dev_mode: gs.boolean("dev-mode"),
+            // Stored as JSON in a single key — a test affordance with no UI, so
+            // seven user-visible keys would be noise. A malformed value degrades
+            // to None rather than taking the app down.
+            mock_identity: (!mock.is_empty())
+                .then(|| serde_json::from_str(&mock).ok())
+                .flatten(),
+            dry_run: gs.boolean("dry-run"),
+            include_app_updates: gs.boolean("include-app-updates"),
+            sim_scenario: (!sim.is_empty()).then_some(sim),
+        }
+    }
+
+    fn write_gsettings(&self, gs: &gio::Settings) {
+        let _ = gs.set_boolean("auto-updates", self.auto_updates);
+        let _ = gs.set_string(
+            "update-interval",
+            match self.update_interval {
+                UpdateInterval::Hourly => "hourly",
+                UpdateInterval::Daily => "daily",
+                UpdateInterval::Weekly => "weekly",
+                UpdateInterval::Custom => "custom",
+            },
+        );
+        let _ = gs.set_boolean("pause-on-metered", self.pause_on_metered);
+        let _ = gs.set_uint("custom-interval-hours", self.custom_interval_hours);
+        let _ = gs.set_boolean("dev-mode", self.dev_mode);
+        let _ = gs.set_boolean("dry-run", self.dry_run);
+        let _ = gs.set_boolean("include-app-updates", self.include_app_updates);
+        let _ = gs.set_string("sim-scenario", self.sim_scenario.as_deref().unwrap_or(""));
+        let mock = self
+            .mock_identity
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok())
+            .unwrap_or_default();
+        let _ = gs.set_string("mock-identity", &mock);
     }
 
     /// Layer per-run overrides over a loaded value. Split out from `load()` so
@@ -233,6 +347,13 @@ impl Settings {
 
     /// Save settings to disk, logging errors but never panicking.
     pub fn save(&self) {
+        if with_gsettings(|gs| self.write_gsettings(gs)).is_some() {
+            return;
+        }
+        self.save_json();
+    }
+
+    fn save_json(&self) {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {

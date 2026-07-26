@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <!--
+    Settings were previously a hand-rolled JSON file at
+    $XDG_CONFIG_HOME/finupdate/settings.json. GNOME expects GSettings instead
+    (HIG spec §9.1, and "create custom settings storage" is an explicit
+    anti-pattern), for three concrete reasons beyond conformance:
+
+      * dconf visibility — settings can be inspected, reset, and managed by
+        policy like every other GNOME app's.
+      * change notification — GSettings emits `changed::` signals; a JSON file
+        does not, which is why the old code re-read Settings::load() at every
+        call site instead of binding once.
+      * the gnome-control-center panel — Settings indexes panel preferences
+        through GSettings, so a JSON blob is invisible to its search.
+
+    The path is @APP_ID@ so the Devel profile gets its own schema and the two
+    builds cannot fight over one another's configuration.
+  -->
+  <enum id="@APP_ID@.UpdateInterval">
+    <value nick="hourly" value="0"/>
+    <value nick="daily"  value="1"/>
+    <value nick="weekly" value="2"/>
+    <value nick="custom" value="3"/>
+  </enum>
+
+  <schema id="@APP_ID@" path="/org/projectbluefin/Finupdate/">
+    <key name="auto-updates" type="b">
+      <default>true</default>
+      <summary>Allow automatic background updates</summary>
+      <description>
+        Whether the uupd systemd timer is allowed to run on its own schedule.
+      </description>
+    </key>
+
+    <key name="update-interval" enum="@APP_ID@.UpdateInterval">
+      <default>'daily'</default>
+      <summary>How often the automatic update timer fires</summary>
+      <description>
+        Informational — the timer itself is managed by systemd.
+      </description>
+    </key>
+
+    <key name="pause-on-metered" type="b">
+      <default>true</default>
+      <summary>Pause automatic updates on metered connections</summary>
+      <description>
+        Suppress automatic updates while on a metered or limited connection.
+      </description>
+    </key>
+
+    <key name="custom-interval-hours" type="u">
+      <default>6</default>
+      <range min="1" max="168"/>
+      <summary>Custom update interval, in hours</summary>
+      <description>
+        Only consulted when update-interval is set to 'custom'.
+      </description>
+    </key>
+
+    <key name="include-app-updates" type="b">
+      <default>true</default>
+      <summary>Update apps alongside the system image</summary>
+      <description>
+        When true the updater also refreshes Flatpaks, Homebrew and Distrobox
+        containers. When false only the bootc system image is updated, which
+        suits users who manage app updates separately.
+      </description>
+    </key>
+
+    <key name="dev-mode" type="b">
+      <default>false</default>
+      <summary>Simulate updates instead of running them</summary>
+      <description>
+        Developer mode. Every update is simulated, so no real work happens.
+        Prefer dry-run for testing: it exercises the production code paths and
+        withholds only the privileged commands. Not exposed in the UI — set it
+        with the --dev-mode / --no-dev-mode flags, which apply for one run only.
+      </description>
+    </key>
+
+    <key name="dry-run" type="b">
+      <default>false</default>
+      <summary>Record privileged actions instead of performing them</summary>
+      <description>
+        When true every destructive host command (reboot, bootc switch, uupd
+        timer and config writes) is journalled and short-circuited to synthetic
+        success rather than executed. Independent of dev-mode, so the real
+        update worker still runs.
+      </description>
+    </key>
+
+    <key name="sim-scenario" type="s">
+      <default>''</default>
+      <summary>Developer-mode simulation outcome</summary>
+      <description>
+        One of 'Success', 'AlreadyUpToDate' or 'Failure'. Empty means Success.
+        Only consulted when dev-mode is true.
+      </description>
+    </key>
+
+    <key name="mock-identity" type="s">
+      <default>''</default>
+      <summary>Override the detected booted image (testing only)</summary>
+      <description>
+        A JSON object describing a MockBootcIdentity. When set, the app pretends
+        the system is booted on that image. Stored as JSON rather than as
+        separate keys because it is a test affordance with no UI, and keeping it
+        in one key avoids adding seven user-visible settings that mean nothing in
+        production. Empty means "use real detection".
+      </description>
+    </key>
+
+    <key name="migrated-from-json" type="b">
+      <default>false</default>
+      <summary>Whether the one-shot import from settings.json has run</summary>
+      <description>
+        Internal bookkeeping. Set once the legacy
+        $XDG_CONFIG_HOME/finupdate/settings.json has been imported, so a user's
+        existing configuration carries over exactly once and later changes made
+        through GSettings are not overwritten by the stale file.
+      </description>
+    </key>
+  </schema>
+</schemalist>

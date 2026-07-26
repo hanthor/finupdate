@@ -78,13 +78,12 @@ installs via `install-libfinupdate.sh`, resolves through `pkg-config`, and
 
 ### 1. HIG findings — see `docs/GNOME-HIG-AUDIT.md`
 
-Ordered by the sequencing that avoids wasted work: changes that move the widget
-tree must land before screenshot baselines are treated as stable.
+**All six are now closed.**
 
 | # | Finding | State |
 |---|---|---|
-| 3 | `AdwNavigationView` instead of hand-rolled `gtk::Stack` navigation | **open — do first**, it moves the widget tree, so it should land before screenshot baselines are treated as stable. Buys edge-swipe back, automatic back-button handling, per-page titles, and focus restoration. `ffi.rs` already assumes this shape for the panel. |
-| 2 | GSettings migration (currently hand-rolled JSON) | **open** — swaps a storage backend without moving pixels, so it is safer with the suite in place. Matters for the panel: gnome-control-center expects settings exposed through GSettings so Settings' search can index them. |
+| 3 | `AdwNavigationView` | ✅ fixed |
+| 2 | GSettings migration | ✅ fixed |
 | 1 | Adaptive width | ✅ fixed |
 | 4 | Tooltips | ✅ fixed |
 | 5 | Access keys | ✅ fixed |

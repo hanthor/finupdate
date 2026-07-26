@@ -65,3 +65,33 @@ install_data(
   install_dir: bindir,
   install_mode: 'rwxr-xr-x',
 )
+
+# GSettings schema — replaces the hand-rolled settings.json (HIG spec §9.1).
+# Templated on application_id so the Devel profile gets its own schema id and
+# path, and the two builds cannot clobber one another's configuration.
+gschema_conf = configuration_data()
+gschema_conf.set('APP_ID', application_id)
+
+gschema_file = configure_file(
+  input: 'org.projectbluefin.Finupdate.gschema.xml.in',
+  output: application_id + '.gschema.xml',
+  configuration: gschema_conf,
+)
+
+install_data(
+  gschema_file,
+  install_dir: datadir / 'glib-2.0' / 'schemas',
+)
+
+# Compile schemas at install time so the app can find them without a manual
+# glib-compile-schemas step.
+gnome.post_install(glib_compile_schemas: true)
+
+compile_schemas = find_program('glib-compile-schemas', required: false)
+if compile_schemas.found()
+  test(
+    'validate-gschema',
+    compile_schemas,
+    args: ['--strict', '--dry-run', meson.current_build_dir()],
+  )
+endif
