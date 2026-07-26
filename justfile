@@ -104,10 +104,19 @@ coverage:
 
 
 # Build and install the Flatpak (full integration build)
+#
+# --disable-rofiles-fuse is required, not optional: without it the build dies
+# with "Failed to export bpf: System failure beyond the control of libseccomp"
+# before compiling anything. That error points at the sandbox, but bubblewrap
+# and `flatpak build` both work fine on their own — it is specific to
+# flatpak-builder's module step. The same flag is used by gtk-office-suite.
+#
+# Paths are absolute because `flatpak run` does not inherit the caller's cwd,
+# and --filesystem=home lets the sandboxed builder reach the source tree.
 flatpak:
-    flatpak run org.flatpak.Builder \
-        --user --install --force-clean \
-        _flatpak {{ manifest }}
+    flatpak run --filesystem=home org.flatpak.Builder \
+        --user --install --force-clean --disable-rofiles-fuse \
+        "$PWD/_flatpak" "$PWD/{{ manifest }}"
 
 # Run the installed Flatpak
 run:

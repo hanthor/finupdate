@@ -142,22 +142,49 @@ correctly at 360×640, verified by the `narrow` screenshot check.
 
 ---
 
-## 7. Late async result panics after component teardown ⚠️ open
+## 7. Late async result panics after component teardown ✅ fixed
 
 ```
 The runtime of the component was shutdown. Maybe you accidentally dropped a
 controller?: AvailableTagsLoaded([...])
 ```
 
-A registry fetch that completes after its relm4 component is dropped sends into
-a closed channel and panics the worker thread. Much less frequent since #2
-reduced the number of in-flight fetches from ~1200 to 1, but the race is still
-there. Fix is to use `sender.send(...)` fallibly (ignoring the error) rather
-than the panicking variant, or to hold a cancellation token per component.
+A registry fetch completing after its relm4 component was dropped sent into a
+closed channel and panicked the worker thread.
+
+The trap is that `ComponentSender::input()` **unwraps internally**, so the
+`let _ =` some call sites already had was purely cosmetic — it discards a `()`,
+not an error.
+
+Fixed by delivering every background-thread result through
+`sender.input_sender().send(..)`, which returns a `Result` that can genuinely be
+ignored. Six sites in the changelog/registry/SBOM fetch paths. A late result for
+a page the user has already navigated away from is normal, not exceptional, so
+dropping it silently is the correct behaviour.
+
+Click handlers and `update()` arms still use `input()` deliberately — the
+component is alive by definition at those points.
 
 ---
 
-## 8. Harness hazard: stale instances accumulate (not an app bug)
+## 8. Flatpak build fails with a seccomp error ✅ fixed
+
+```
+error: Failed to export bpf: System failure beyond the control of libseccomp
+```
+
+Identical with `flatpak run org.flatpak.Builder` and native `flatpak-builder`,
+which pointed at the host rather than the manifest. But bubblewrap alone worked
+(`bwrap --ro-bind / / --unshare-all true`), and so did `flatpak build` against
+the SDK — so the sandbox itself was fine and only flatpak-builder's module step
+failed.
+
+The fix is `--disable-rofiles-fuse`, which the gtk-office-suite build already
+used. `just flatpak` now passes it.
+
+---
+
+## 9. Harness hazard: stale instances accumulate (not an app bug)
 
 `pkill -x finupdate` does not match instances launched via `toolbox run`, so
 repeated test launches left up to four processes alive. A leftover instance

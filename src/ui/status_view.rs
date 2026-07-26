@@ -4144,6 +4144,14 @@ fn parse_org_repo(uri: &str) -> Option<(String, String)> {
     }
 }
 
+/// Spawn the registry/changelog fetch on a background thread.
+///
+/// Every result is delivered with `input_sender().send(..)` rather than
+/// `sender.input(..)`. The latter unwraps internally, so a fetch that finishes
+/// after its component has been dropped panics the worker with "The runtime of
+/// the component was shutdown. Maybe you accidentally dropped a controller?".
+/// A late result arriving for a page the user has already navigated away from
+/// is normal, not exceptional — dropping it silently is the correct behaviour.
 fn spawn_changelog_fetch(
     registry_uri: String,
     selected_tag: String,
@@ -4187,7 +4195,7 @@ fn spawn_changelog_fetch(
                             t.elapsed().as_millis(),
                             available.len()
                         );
-                        let _ = sender.input(StatusViewInput::AvailableTagsLoaded(available));
+                        let _ = sender.input_sender().send(StatusViewInput::AvailableTagsLoaded(available));
                     }
                     Ok(_) => println!(
                         "[debug] changelog: phase=list_available_tags ms={} count=0",
@@ -4213,7 +4221,9 @@ fn spawn_changelog_fetch(
                         // ref (e.g. Feb date-stamped tags that don't publish
                         // SPDX SBOMs), breaking the diff every time.
                         newest_full_ref = versions.last().map(|v| v.full_ref.clone());
-                        sender.input(StatusViewInput::RegistryVersionsLoaded(versions));
+                        let _ = sender
+                            .input_sender()
+                            .send(StatusViewInput::RegistryVersionsLoaded(versions));
                     }
                     Err(e) => println!(
                         "[debug] changelog: phase=list_versions ms={} err={}",
@@ -4297,7 +4307,7 @@ fn spawn_changelog_fetch(
                     t_github.elapsed().as_millis(),
                     all_commits.len()
                 );
-                let _ = sender.input(StatusViewInput::GithubCommitsLoaded(all_commits));
+                let _ = sender.input_sender().send(StatusViewInput::GithubCommitsLoaded(all_commits));
             }
             println!(
                 "[debug] changelog: phase=total ms={}",
@@ -4354,7 +4364,7 @@ fn spawn_changelog_fetch(
                 // "Comparing packages…" placeholder. Without this the
                 // Stack section is silently blank for 30+ seconds on
                 // slow connections.
-                let _ = sender.input(StatusViewInput::SbomDiffStarted);
+                let _ = sender.input_sender().send(StatusViewInput::SbomDiffStarted);
                 let sbom_sender = sender.clone();
                 tokio::spawn(async move {
                     tracing::debug!(
@@ -4365,13 +4375,13 @@ fn spawn_changelog_fetch(
                     match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
                     {
                         Some(diff) => {
-                            sbom_sender.input(StatusViewInput::SbomDiffLoaded(diff));
+                            let _ = sbom_sender.input_sender().send(StatusViewInput::SbomDiffLoaded(diff));
                         }
                         None => {
                             tracing::info!(
                                 "sbom_diff: no diff available (registry didn't return SPDX referrers)"
                             );
-                            sbom_sender.input(StatusViewInput::SbomDiffUnavailable);
+                            let _ = sbom_sender.input_sender().send(StatusViewInput::SbomDiffUnavailable);
                         }
                     }
                 });
