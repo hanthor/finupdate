@@ -467,12 +467,7 @@ pub fn show_update_check_dialog(
 
     // Spawn the background check thread
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime");
-
-        rt.block_on(async move {
+        crate::runtime::block_on(async move {
             let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
             let mut rx = if dev_mode {

@@ -994,13 +994,47 @@ impl SimpleComponent for App {
         // demands more — this says which number we are actually up against,
         // instead of guessing at candidates. Bisect by hiding subtrees.
         if std::env::var_os("FINUPDATE_MEASURE").is_some() {
-            let content = root.content();
-            gtk::glib::idle_add_local_once(move || {
-                if let Some(child) = content {
-                    let (min_w, nat_w, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
-                    tracing::info!(
-                        "MEASURE content min_width={min_w} nat_width={nat_w}"
-                    );
+            let win = root.clone();
+            // Deferred: an idle callback fires before the tree is realised, and
+            // an unrealised widget measures as 0, which looks like success.
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(6), move || {
+                let (wmin, wnat, _, _) = win.measure(gtk::Orientation::Horizontal, -1);
+                println!("MEASURE window min_width={wmin} nat_width={wnat}");
+                match win.content() {
+                    Some(c) => {
+                        let (cmin, cnat, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
+                        println!("MEASURE content min_width={cmin} nat_width={cnat}");
+                        // Recurse, printing only widgets whose own minimum meets
+                        // the threshold. Anything below it cannot be what is
+                        // holding the window open, so this narrows straight to
+                        // the offender instead of dumping the whole tree.
+                        let threshold: i32 = std::env::var("FINUPDATE_MEASURE_MIN")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(400);
+                        fn walk(w: &gtk::Widget, depth: usize, threshold: i32) {
+                            let (m, n, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
+                            if m >= threshold {
+                                let label = w
+                                    .buildable_id()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_default();
+                                println!(
+                                    "MEASURE {:indent$}{} min={m} nat={n} {label}",
+                                    "",
+                                    w.type_().name(),
+                                    indent = depth * 2,
+                                );
+                            }
+                            let mut child = w.first_child();
+                            while let Some(c) = child {
+                                walk(&c, depth + 1, threshold);
+                                child = c.next_sibling();
+                            }
+                        }
+                        walk(&c, 1, threshold);
+                    }
+                    None => println!("MEASURE content=None"),
                 }
             });
         }

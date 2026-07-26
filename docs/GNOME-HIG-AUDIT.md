@@ -33,11 +33,11 @@ verification is tracked separately in `docs/GUI_TESTING.md`.
 
 | # | Finding | State |
 |---|---|---|
-| 1 | Adaptive breakpoints | ⚠️ partial — `AdwBreakpoint` added, `width-request` lowered 400→360, and a `narrow` screenshot check exists. But the window still will not render at 360px: a child's minimum width dominates. See BUGS-FOUND.md #6. |
+| 1 | Adaptive breakpoints | ✅ **fixed** — the real cause was `gtk::Stack` being homogeneous by default, so it requested the largest width of *every* page including hidden ones; the visible idle page inherited the ~555px minimum of the history/changelog rows. With `hhomogeneous`/`vhomogeneous` off, plus `AdwBreakpoint`, `width-request` 400→360, and wrapping row labels, the content minimum dropped **579px → 240px** and the window renders correctly at 360×640. Verified by the `narrow` screenshot check. |
 | 2 | GSettings migration | ❌ open — deliberately sequenced *after* the screenshot suite, since it swaps a storage backend without moving pixels and is safer with tests in place. |
 | 3 | `AdwNavigationView` | ❌ open — changes the widget tree, so it should land *before* screenshot baselines are treated as stable. |
-| 4 | Tooltips | ⚠️ partial — header-bar back button now has `tooltip-text` **and** an accessible label. Remaining icon-only controls still need auditing. |
-| 5 | Access keys | ❌ open — mechanical, independently landable. |
+| 4 | Tooltips | ✅ **fixed** — the header-bar back button and the history expander chevron now carry both `tooltip-text` and an accessible label. A full sweep of the remaining icon-only controls found the rest (pin, pull, roll back, calendar month nav, copy log, what's new, change image) already had tooltips; the original count of "4" came from a per-line grep that missed tooltips set on an adjacent builder line. |
+| 5 | Access keys | ✅ **fixed** — the preferences dialog had **zero** `use-underline` rows; access keys added to all nine focusable rows (Automatic Background Updates, Include App Updates, Configure Automatic Updates, Check Interval, Custom Interval, Pause on Metered Connections, Developer Mode, Enable Hardware Checks, Save to /etc/uupd/config.json). Group and page titles are headings, not focusable controls, so they are deliberately left alone. |
 | 6 | Preferences search | ✅ fixed — `set_search_enabled(true)`. |
 
 Also fixed while auditing, though not HIG findings as such: the dev-mode banner

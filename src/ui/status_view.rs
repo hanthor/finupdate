@@ -951,6 +951,17 @@ impl SimpleComponent for StatusView {
             set_transition_type: gtk::StackTransitionType::Crossfade,
             set_transition_duration: 200,
 
+            // GtkStack is homogeneous by default, so it requests the largest
+            // width and height of **every** page — including hidden ones. That
+            // made the whole window inherit the minimum width of the widest
+            // page it had ever been asked to hold (the history/changelog rows,
+            // ~555px), so the visible idle page could never shrink toward the
+            // 360px the HIG asks for, no matter what the idle page itself
+            // needed. Sizing to the visible child is what an adaptive layout
+            // wants; the crossfade transition doesn't depend on homogeneity.
+            set_hhomogeneous: false,
+            set_vhomogeneous: false,
+
             // ─── Idle page ──────────────────────────────────────────────
             add_child = &model.idle_page.clone() -> adw::PreferencesPage {} -> {
                 set_name: "idle",
@@ -1271,6 +1282,7 @@ impl SimpleComponent for StatusView {
             let _ = check_sender.send(StatusViewOutput::OpenCheckDialog);
         });
         check_row.add_suffix(&check_btn);
+        allow_narrow(&check_row);
 
         // adw::SwitchRow (rather than ActionRow + Switch suffix) so the
         // entire row is the click target — matches gnome-control-center's
@@ -1282,6 +1294,7 @@ impl SimpleComponent for StatusView {
             .use_underline(true)
             .active(auto_updates_enabled)
             .build();
+        allow_narrow(&auto_row);
         let auto_update_switch = auto_row.clone();
         auto_row.connect_active_notify(move |row| {
             apply_auto_updates_setting(row.is_active());
@@ -1325,6 +1338,7 @@ impl SimpleComponent for StatusView {
             .use_underline(true)
             .build();
         advanced_row.set_accessible_role(gtk::AccessibleRole::Button);
+        allow_narrow(&advanced_row);
         let adv_chev = gtk::Image::from_icon_name("go-next-symbolic");
         adv_chev.add_css_class("dim-label");
         advanced_row.add_suffix(&adv_chev);
@@ -3079,6 +3093,26 @@ fn read_bootc_image_info_config() -> Option<BootcImageInfoConfig> {
     serde_json::from_str(&content).ok()
 }
 
+/// Let a preferences row shrink below its full text width.
+///
+/// `AdwActionRow` defaults to `title-lines`/`subtitle-lines` of 0, which means
+/// "never ellipsize" — the label reports the width of its entire string as its
+/// minimum, and that propagates all the way up. Measured on the idle page, the
+/// rows demanded 543–549px each, which forced the whole window to a 579px
+/// minimum and made the HIG's 360px target unreachable no matter what
+/// `width-request` said.
+///
+/// Note the sense of these properties: `title-lines` is the number of lines
+/// *after which the label ellipsizes*, and **0 means unlimited** — i.e. the
+/// label is free to wrap. Setting it to 1 does the opposite of what is wanted
+/// here: it pins the label to a single line, whose minimum width is the whole
+/// string.
+fn allow_narrow(row: &impl IsA<adw::ActionRow>) {
+    let row = row.as_ref();
+    row.set_title_lines(0);
+    row.set_subtitle_lines(0);
+}
+
 fn strip_date_suffix(tag: &str) -> Option<String> {
     for sep in ['.', '-'] {
         if let Some(pos) = tag.rfind(sep) {
@@ -3923,7 +3957,17 @@ fn rebuild_history_list(
         } else {
             "go-down-symbolic"
         };
-        let chev_btn = gtk::Button::builder().icon_name(chevron_icon).build();
+        let chev_btn = gtk::Button::builder()
+            .icon_name(chevron_icon)
+            // Icon-only, so it needs both a tooltip and an accessible name —
+            // otherwise a screen reader announces an unlabelled button.
+            .tooltip_text(if is_expanded { "Hide details" } else { "Show details" })
+            .build();
+        chev_btn.update_property(&[gtk::accessible::Property::Label(if is_expanded {
+            "Hide details"
+        } else {
+            "Show details"
+        })]);
         chev_btn.add_css_class("flat");
 
         let toggle_sender = sender.input_sender().clone();

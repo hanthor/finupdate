@@ -98,7 +98,8 @@ fn build_updates_group(
     let auto_row = {
         let s = shared.borrow();
         adw::SwitchRow::builder()
-            .title("Automatic Background Updates")
+            .title("_Automatic Background Updates")
+            .use_underline(true)
             .subtitle("Allow uupd to run on its daily systemd timer")
             .active(s.auto_updates)
             .visible(uupd_compat::is_uupd_installed())
@@ -113,11 +114,7 @@ fn build_updates_group(
             shared.borrow().save();
 
             std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio runtime");
-                rt.block_on(async move {
+                crate::runtime::block_on(async move {
                     if let Err(e) = uupd_compat::set_uupd_timer(active).await {
                         tracing::warn!("Failed to toggle uupd.timer: {}", e);
                     }
@@ -134,7 +131,8 @@ fn build_updates_group(
     let apps_row = {
         let s = shared.borrow();
         adw::SwitchRow::builder()
-            .title("Include App Updates")
+            .title("_Include App Updates")
+            .use_underline(true)
             .subtitle(
                 "Refresh Flatpaks, Homebrew, and Distrobox containers alongside the bootc image",
             )
@@ -153,7 +151,8 @@ fn build_updates_group(
     // "Configure automatic updates" — pushes a subpage that edits /etc/uupd/config.json.
     // Only shown when uupd is installed (the config file only matters then).
     let configure_row = adw::ActionRow::builder()
-        .title("Configure Automatic Updates")
+        .title("_Configure Automatic Updates")
+            .use_underline(true)
         .subtitle("Hardware checks and per-module toggles in /etc/uupd/config.json")
         .activatable(true)
         .visible(uupd_compat::is_uupd_installed())
@@ -174,7 +173,8 @@ fn build_updates_group(
     let interval_row = {
         let s = shared.borrow();
         let row = adw::ComboRow::builder()
-            .title("Check Interval")
+            .title("Check _Interval")
+            .use_underline(true)
             .subtitle("How often automatic updates run")
             .build();
         let model = gtk::StringList::new(&["Hourly", "Daily", "Weekly", "Custom"]);
@@ -191,7 +191,8 @@ fn build_updates_group(
         .build();
 
     let custom_action_row = adw::ActionRow::builder()
-        .title("Custom Interval")
+        .title("Custom Inter_val")
+            .use_underline(true)
         .subtitle("Number of hours between update checks")
         .build();
 
@@ -249,7 +250,8 @@ fn build_network_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings
     let metered_row = {
         let s = shared.borrow();
         adw::SwitchRow::builder()
-            .title("Pause on Metered Connections")
+            .title("_Pause on Metered Connections")
+            .use_underline(true)
             .subtitle("Suspend automatic updates on limited or cellular connections")
             .active(s.pause_on_metered)
             .build()
@@ -394,7 +396,8 @@ fn build_developer_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settin
     let dev_row = {
         let s = shared.borrow();
         adw::SwitchRow::builder()
-            .title("Developer Mode")
+            .title("_Developer Mode")
+            .use_underline(true)
             .subtitle("Simulate updates without running uupd or touching the real system")
             .active(s.dev_mode)
             .build()
@@ -433,7 +436,8 @@ fn build_uupd_config_subpage() -> adw::NavigationPage {
         .build();
 
     let enable_hw_row = adw::SwitchRow::builder()
-        .title("Enable Hardware Checks")
+        .title("_Enable Hardware Checks")
+            .use_underline(true)
         .subtitle("Honor the thresholds below before running automatic updates")
         .active(config.borrow().checks.hardware.enable)
         .build();
@@ -579,7 +583,8 @@ fn build_uupd_config_subpage() -> adw::NavigationPage {
         .css_classes(["suggested-action", "pill"])
         .build();
     let save_row = adw::ActionRow::builder()
-        .title("Save to /etc/uupd/config.json")
+        .title("_Save to /etc/uupd/config.json")
+            .use_underline(true)
         .subtitle("Requires administrator authentication")
         .build();
     save_row.add_suffix(&save_button);

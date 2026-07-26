@@ -117,17 +117,28 @@ been consumed into `RuntimeOverrides` by that point.
 
 ---
 
-## 6. Window cannot reach the HIG minimum width ⚠️ open
+## 6. Window cannot reach the HIG minimum width ✅ fixed
 
-`AdwApplicationWindow`'s `width-request` is now 360 and a breakpoint is
-installed, but setting `FINUPDATE_WINDOW_SIZE=360x640` still yields a window
-noticeably wider than 360px: **some child's minimum width dominates**. Likely
-candidates are the non-wrapping action-row subtitles (e.g. "System image,
-Flatpak, Homebrew, and Distrobox").
+Lowering `width-request` to 360 and adding an `AdwBreakpoint` was not enough —
+the window still refused to narrow. Rather than guess, `FINUPDATE_MEASURE=1`
+was added to walk the widget tree at startup and print each widget's measured
+minimum width (`FINUPDATE_MEASURE_MIN` filters to the offenders).
 
-Needs per-row `set_title_lines` / `set_subtitle_lines` (or ellipsizing) plus an
-audit of fixed-width children before the app is honestly adaptive. Tracked as
-finding #1 in `GNOME-HIG-AUDIT.md`.
+That showed the window itself honouring 360 while its content demanded 579, and
+the chain bottoming out at preference *rows* of 543–549px. But the rows on the
+visible page were not that wide: **`gtk::Stack` is homogeneous by default**, so
+it requests the largest width of *every* page, including hidden ones. The idle
+page was inheriting the minimum width of the history/changelog rows it had never
+displayed.
+
+Fixed by turning off `hhomogeneous`/`vhomogeneous` on the status stack, so it
+sizes to the visible child — which is what an adaptive layout wants anyway — and
+letting the row labels wrap (`title-lines`/`subtitle-lines` of **0**, meaning
+*unlimited*; note that 1 does the opposite of what it looks like, pinning the
+label to a single line whose minimum is the entire string).
+
+Result: content minimum **579px → 240px**, natural 579 → 423. The window renders
+correctly at 360×640, verified by the `narrow` screenshot check.
 
 ---
 
