@@ -165,7 +165,12 @@ pub struct StatusView {
     log_view: Controller<LogView>,
     update_list: Controller<UpdateList>,
     /// Direct reference to the root stack for page switching in update().
+    /// The five mutually-exclusive *state* pages of the root screen.
     stack: gtk::Stack,
+    /// Real page navigation for the drill-down subpages. Owns back, swipe-back,
+    /// Escape/Alt+Left and focus restoration, none of which the previous
+    /// hand-rolled stack navigation provided.
+    nav: adw::NavigationView,
     /// When the current update started (for elapsed timer).
     update_start: Option<Instant>,
     /// Label showing elapsed time during updates.
@@ -947,7 +952,23 @@ impl SimpleComponent for StatusView {
 
     view! {
         #[root]
-        gtk::Stack {
+        adw::NavigationView {
+            // Real navigation, replacing a hand-rolled gtk::Stack plus a
+            // manually-toggled back button. AdwNavigationView supplies the
+            // page stack, edge-swipe back, Escape / Alt+Left, and focus
+            // restoration on pop — none of which the previous approach had.
+            //
+            // The five *state* pages (idle/updating/complete/up_to_date/error)
+            // stay in a gtk::Stack: those are mutually exclusive states of one
+            // screen, not places the user navigates between. Only the genuine
+            // drill-downs (image source, history, changelog) become
+            // AdwNavigationPages.
+            add = &adw::NavigationPage {
+                set_title: "Updates",
+                set_tag: Some("main"),
+
+                #[wrap(Some)]
+                set_child = &state_stack.clone() -> gtk::Stack {
             set_transition_type: gtk::StackTransitionType::Crossfade,
             set_transition_duration: 200,
 
@@ -1056,6 +1077,8 @@ impl SimpleComponent for StatusView {
             } -> {
                 set_name: "error",
             },
+                },
+            },
         }
     }
 
@@ -1064,6 +1087,10 @@ impl SimpleComponent for StatusView {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        // Pre-built so the model can hold a handle and the declarative page
+        // list in view! can attach to it via `&state_stack.clone() -> ...`.
+        let state_stack = gtk::Stack::new();
+
         let log_view = LogView::builder().launch(()).detach();
         let update_list = UpdateList::builder().launch(()).detach();
 
@@ -1576,7 +1603,14 @@ impl SimpleComponent for StatusView {
             gtk::glib::ControlFlow::Break
         });
 
-        root.add_named(&source_page, Some("source"));
+        // Added to the NavigationView *after* view_output!() below —
+        // AdwNavigationView treats the first page added as the root, and
+        // view_output!() is what builds the "main" page.
+        let source_nav_page = adw::NavigationPage::builder()
+            .title("Image Source")
+            .tag("source")
+            .child(&source_page)
+            .build();
 
         // ── Version History Subpage ──────────────────────────────────────
         // HIG-aligned: PreferencesPage + PreferencesGroup with the description
@@ -1598,7 +1632,14 @@ impl SimpleComponent for StatusView {
         history_list_box.add_css_class("boxed-list");
         history_group.add(&history_list_box);
         history_page.add(&history_group);
-        root.add_named(&history_page, Some("history"));
+        // Added to the NavigationView *after* view_output!() below —
+        // AdwNavigationView treats the first page added as the root, and
+        // view_output!() is what builds the "main" page.
+        let history_nav_page = adw::NavigationPage::builder()
+            .title("Image History")
+            .tag("history")
+            .child(&history_page)
+            .build();
 
         // ── Changelogs Subpage ───────────────────────────────────────────
         let changelog_page = gtk::ScrolledWindow::new();
@@ -1636,7 +1677,14 @@ impl SimpleComponent for StatusView {
         changelog_install_bar.set_visible(false);
         changelog_content.append(&changelog_install_bar);
 
-        root.add_named(&changelog_page, Some("changelog"));
+        // Added to the NavigationView *after* view_output!() below —
+        // AdwNavigationView treats the first page added as the root, and
+        // view_output!() is what builds the "main" page.
+        let changelog_nav_page = adw::NavigationPage::builder()
+            .title("What's New")
+            .tag("changelog")
+            .child(&changelog_page)
+            .build();
 
         // Build the "updating" page content imperatively.
         let seg_progress = SegmentedProgress::new();
@@ -1714,7 +1762,8 @@ impl SimpleComponent for StatusView {
             state: init,
             log_view,
             update_list,
-            stack: root.clone(),
+            stack: state_stack.clone(),
+            nav: root.clone(),
             update_start: None,
             elapsed_label: elapsed_label.clone(),
             log_text: String::new(),
@@ -1765,9 +1814,15 @@ impl SimpleComponent for StatusView {
 
         let widgets = view_output!();
 
+        // Order matters: the "main" page created by view_output!() must be the
+        // NavigationView's first page, or the app opens on a subpage.
+        root.add(&source_nav_page);
+        root.add(&history_nav_page);
+        root.add(&changelog_nav_page);
+
         // Set initial idle description and visible page.
         model.refresh_idle_description();
-        root.set_visible_child_name("idle");
+        model.stack.set_visible_child_name("idle");
 
         rebuild_history_list(
             &model.history_list_box,
@@ -1781,7 +1836,7 @@ impl SimpleComponent for StatusView {
         model.rebuild_changelog_page(&sender);
 
         // Update elapsed timer every 250ms while the "updating" page is visible.
-        let stack_ref = root.clone();
+        let stack_ref = model.stack.clone();
         let timer_sender = sender.input_sender().clone();
         gtk::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
             if stack_ref.visible_child_name().as_deref() == Some("updating") {
@@ -1948,12 +2003,16 @@ impl SimpleComponent for StatusView {
             }
 
             StatusViewInput::ShowPage(page) => {
-                let target = if page == "main" || page == "idle" {
-                    "idle"
+                // "main"/"idle" means *back to the root*, which is a pop rather
+                // than a push — otherwise the root would be pushed on top of
+                // itself and the stack would grow every time the user returned
+                // home.
+                if page == "main" || page == "idle" {
+                    self.nav.pop_to_tag("main");
+                    self.stack.set_visible_child_name("idle");
                 } else {
-                    &page
-                };
-                self.stack.set_visible_child_name(target);
+                    self.nav.push_by_tag(&page);
+                }
                 let _ = sender.output(StatusViewOutput::PageChanged(page));
             }
 
@@ -2232,7 +2291,7 @@ impl SimpleComponent for StatusView {
                     self.rebuild_changelog_page(&sender);
                     tracing::debug!("changelog: rebuild took {}ms", t0.elapsed().as_millis());
                 }
-                self.stack.set_visible_child_name("changelog");
+                self.nav.push_by_tag("changelog");
                 let _ = sender.output(StatusViewOutput::PageChanged("changelog".to_string()));
             }
 
