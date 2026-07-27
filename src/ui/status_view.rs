@@ -616,12 +616,20 @@ impl StatusView {
         }
 
         let mut upgrades_list: Vec<(String, String, String)> = Vec::new();
+        let mut downgrades_list: Vec<(String, String, String)> = Vec::new();
         let mut added_list: Vec<(String, String)> = Vec::new();
         let mut removals_list: Vec<String> = Vec::new();
 
         if let Some(ref diff) = self.sbom_diff {
             for pkg in &diff.upgraded {
                 upgrades_list.push((
+                    pkg.name.clone(),
+                    pkg.old_version.clone(),
+                    pkg.new_version.clone(),
+                ));
+            }
+            for pkg in &diff.downgraded {
+                downgrades_list.push((
                     pkg.name.clone(),
                     pkg.old_version.clone(),
                     pkg.new_version.clone(),
@@ -716,13 +724,40 @@ impl StatusView {
 
             for (pkg, from, to) in upgrades_list {
                 let row = adw::ActionRow::builder().title(&pkg).build();
-                // Always `bumped` — every row in this list is an upgrade, so
-                // the target renders success-green, mirroring the
-                // bluefin-changelog TUI's `changed` styling.
+                // version_diff_box re-derives the direction, so a package that
+                // landed here with unorderable versions still renders neutral
+                // rather than claiming an upgrade.
                 row.add_suffix(&version_diff_box(&from, &to, true));
                 list_upgrades.append(&row);
             }
             self.changelog_box.append(&list_upgrades);
+        }
+
+        // Downgrades get their own section rather than being folded into
+        // "Updated". Rolling back, or moving to an older stream, is a normal
+        // thing to do — but it needs saying out loud, not burying in a list
+        // whose heading claims everything moved forward.
+        if !downgrades_list.is_empty() {
+            let downgrades_title = gtk::Label::builder()
+                .label(&format!("Downgraded  ·  {}", downgrades_list.len()))
+                .halign(gtk::Align::Start)
+                .margin_top(12)
+                .build();
+            downgrades_title.add_css_class("caption");
+            downgrades_title.add_css_class("dim-label");
+            self.changelog_box.append(&downgrades_title);
+
+            let list_downgrades = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .build();
+            list_downgrades.add_css_class("card");
+
+            for (pkg, from, to) in downgrades_list {
+                let row = adw::ActionRow::builder().title(&pkg).build();
+                row.add_suffix(&version_diff_box(&from, &to, true));
+                list_downgrades.append(&row);
+            }
+            self.changelog_box.append(&list_downgrades);
         }
 
         if !added_list.is_empty() {
