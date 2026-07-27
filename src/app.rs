@@ -659,12 +659,17 @@ impl SimpleComponent for UpdatesPanel {
 
             UpdatesPanelMsg::ShowRebaseDialog => {
                 let parent_widget = self.status_view.widget().clone().upcast::<gtk::Widget>();
-                let suppress_real = self.settings.dev_mode || self.settings.dry_run;
+                // No suppression flag is passed in. The dialog used to receive
+                // `dev_mode || dry_run` under the parameter name `dev_mode`
+                // and branch to a simulated path that never reached the
+                // privileged chokepoint — so a dry run performed no switch
+                // *and* recorded no intent. Suppression is decided at the
+                // chokepoint now; see run_rebase in rebase_dialog.rs.
                 let s = sender.input_sender().clone();
                 let on_show_changelog: std::rc::Rc<dyn Fn(String)> = std::rc::Rc::new(move |tag| {
                     s.emit(UpdatesPanelMsg::ShowChangelogForTag(tag));
                 });
-                show_rebase_dialog(&parent_widget, suppress_real, on_show_changelog);
+                show_rebase_dialog(&parent_widget, on_show_changelog);
             }
 
             UpdatesPanelMsg::ShowAbout => {

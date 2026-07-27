@@ -130,6 +130,14 @@ MNEMONICS: dict[str, str] = {
     "image_source_row": "Alt+s",
     "image_history_row": "Alt+h",
     "whats_new_row": "Alt+n",
+    # Rebase dialog. The primary button's label is dynamic ("Switch to
+    # :latest" / "Pin to 20260506"), so its access key moves with the label —
+    # with_access_key() in rebase_dialog.rs marks the first character.
+    "rebase_primary_switch": "Alt+s",
+    "rebase_primary_pin": "Alt+p",
+    # The AlertDialog that confirms a switch: responses "_Cancel"/"_Switch".
+    "confirm_switch": "Alt+s",
+    "confirm_cancel": "Alt+c",
 }
 
 

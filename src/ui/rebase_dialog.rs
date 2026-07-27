@@ -38,7 +38,6 @@ pub type OnShowChangelog = Rc<dyn Fn(String)>;
 /// Open the rebase history dialog as a child of `parent`.
 pub fn show_rebase_dialog(
     parent: &gtk::Widget,
-    dev_mode: bool,
     on_show_changelog: OnShowChangelog,
 ) {
     let dialog = adw::Dialog::builder()
@@ -160,7 +159,6 @@ pub fn show_rebase_dialog(
         &dialog,
         parent,
         Vec::new(),
-        dev_mode,
         current_family.clone(),
         selected_features.clone(),
         selected_stream.clone(),
@@ -190,7 +188,6 @@ pub fn show_rebase_dialog(
             dialog_for_retry.clone(),
             parent_for_retry.clone(),
             error_page_for_retry.clone(),
-            dev_mode,
             &variant,
             current_family_for_retry.clone(),
             selected_features_for_retry.clone(),
@@ -247,7 +244,6 @@ pub fn show_rebase_dialog(
                     dialog.clone(),
                     parent.clone(),
                     error_page.clone(),
-                    dev_mode,
                     "", // variant filter empty; target_override carries the image identity
                     current_family.clone(),
                     selected_features.clone(),
@@ -282,7 +278,6 @@ pub fn show_rebase_dialog(
         dialog.clone(),
         parent.clone(),
         error_page.clone(),
-        dev_mode,
         &initial_variant,
         current_family.clone(),
         selected_features.clone(),
@@ -309,7 +304,6 @@ fn start_version_fetch(
     dialog: adw::Dialog,
     parent: gtk::Widget,
     error_page: adw::StatusPage,
-    dev_mode: bool,
     variant: &str,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
@@ -330,7 +324,6 @@ fn start_version_fetch(
         &dialog,
         &parent,
         Vec::new(),
-        dev_mode,
         current_family.clone(),
         selected_features.clone(),
         selected_stream.clone(),
@@ -375,7 +368,6 @@ fn start_version_fetch(
                 dialog.clone(),
                 parent.clone(),
                 error_page.clone(),
-                dev_mode,
                 &variant_owned,
                 current_family.clone(),
                 selected_features.clone(),
@@ -404,7 +396,6 @@ fn start_version_fetch(
                         &dialog,
                         &parent,
                         versions,
-                        dev_mode,
                         current_family.clone(),
                         selected_features.clone(),
                         selected_stream.clone(),
@@ -497,7 +488,6 @@ fn build_loaded_page(
     dialog: &adw::Dialog,
     parent: &gtk::Widget,
     versions: Vec<ImageVersion>,
-    dev_mode: bool,
     current_family: Rc<RefCell<Option<FamilyInfo>>>,
     selected_features: Rc<RefCell<Vec<String>>>,
     selected_stream: Rc<RefCell<String>>,
@@ -573,7 +563,8 @@ fn build_loaded_page(
     );
     *pending_stream_ref.borrow_mut() = initial_ref;
     let rebase_btn = gtk::Button::builder()
-        .label(&initial_label)
+        .label(&with_access_key(&initial_label))
+        .use_underline(true)
         .sensitive(initial_sensitive)
         .margin_start(16)
         .margin_end(16)
@@ -804,7 +795,7 @@ fn build_loaded_page(
                 booted_image.borrow().as_ref(),
             );
             *pending_stream_ref.borrow_mut() = full_ref;
-            rebase_btn.set_label(&label);
+            rebase_btn.set_label(&with_access_key(&label));
             rebase_btn.set_sensitive(sensitive);
         })
     };
@@ -907,19 +898,14 @@ fn build_loaded_page(
                 let full_ref_for_run = full_ref.clone();
                 confirm.connect_response(None, move |_, response| {
                     if response == "switch" {
-                        if dev_mode {
-                            run_rebase_simulated(
-                                full_ref_for_run.clone(),
-                                stack.clone(),
-                                dialog_close.clone(),
-                            );
-                        } else {
-                            run_rebase(
-                                full_ref_for_run.clone(),
-                                stack.clone(),
-                                dialog_close.clone(),
-                            );
-                        }
+                        // Unconditionally. Suppression is decided at the
+                        // chokepoint inside run_bootc_switch, not here — see
+                        // the note above run_rebase.
+                        run_rebase(
+                            full_ref_for_run.clone(),
+                            stack.clone(),
+                            dialog_close.clone(),
+                        );
                     }
                 });
                 confirm.present(Some(&parent_rc));
@@ -976,11 +962,7 @@ fn build_loaded_page(
 
             confirm.connect_response(None, move |_, response| {
                 if response == "rebase" {
-                    if dev_mode {
-                        run_rebase_simulated(full_ref.clone(), stack.clone(), dialog_close.clone());
-                    } else {
-                        run_rebase(full_ref.clone(), stack.clone(), dialog_close.clone());
-                    }
+                    run_rebase(full_ref.clone(), stack.clone(), dialog_close.clone());
                 }
             });
 
@@ -1230,17 +1212,40 @@ fn update_details(
 
     let is_current = current_date == Some(*date);
     if is_current {
-        rebase_btn.set_label("Currently Installed");
+        rebase_btn.set_label(&with_access_key("Currently Installed"));
         rebase_btn.set_sensitive(false);
     } else {
         // YYYYMMDD format — matches the registry's actual tag scheme and
         // is what the user types when they reference a build.
-        rebase_btn.set_label(&format!("Pin to {}", date.format("%Y%m%d")));
+        rebase_btn.set_label(&with_access_key(&format!(
+            "Pin to {}",
+            date.format("%Y%m%d")
+        )));
         rebase_btn.set_sensitive(true);
     }
 }
 
 /// Compute what the rebase button should say + do when NO calendar day is
+/// Mark the first character of a button label as its access key.
+///
+/// Applied at the widget layer rather than baked into the label strings so
+/// [`compute_stream_switch_action`] keeps returning plain text its unit tests
+/// can assert on, and so the underscore convention lives in exactly one place.
+///
+/// This is a HIG item — the dialog's primary action had no access key — but it
+/// is also what makes the action reachable from the GUI suite at all: pointer
+/// events do not reach dialog content under Broadway, so a mnemonic is the
+/// only way to press this button in a test. The most consequential command the
+/// app can issue was previously undrivable, and the check that claimed to
+/// cover it merely opened the dialog and stopped.
+///
+/// Any literal underscore in `label` is escaped, otherwise it would silently
+/// become a second, wrong access key.
+fn with_access_key(label: &str) -> String {
+    let escaped = label.replace('_', "__");
+    format!("_{escaped}")
+}
+
 /// selected. Returns `(label, sensitive, target_full_ref)`.
 ///
 /// Three cases:
@@ -1294,6 +1299,25 @@ fn compute_stream_switch_action(
 
 // ── Rebase worker ────────────────────────────────────────────────────────────
 
+/// Run a switch. Call this for every confirmed switch, in every mode.
+///
+/// There used to be a `run_rebase_simulated` sibling, selected by an `if
+/// dev_mode` at each call site — where `dev_mode` was actually
+/// `dev_mode || dry_run` (app.rs computed `suppress_real` and passed it to a
+/// parameter of the wrong name). It rendered its own "(simulated)" pages and
+/// returned without ever reaching the privileged chokepoint.
+///
+/// That is precisely the bypass the chokepoint exists to prevent. Dry run is
+/// supposed to *record* the intent it suppresses; this path suppressed the
+/// command and the record together, so the most consequential action in the
+/// app produced no journal entry and nothing could assert what it would have
+/// done. A safety check that diverts around the audit point is not a safety
+/// check.
+///
+/// Suppression belongs to `privileged_async` in run_bootc_switch, which
+/// decides from `Suppressed::from_flags(dev_mode, dry_run)`, writes the
+/// journal entry, and reports "Dry run — image switch recorded, not
+/// performed". Keep the decision there and there only.
 fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
     // Build a progress page with a pulsing ProgressBar + elapsed-time label.
     // A live `bootc switch` measured against ghcr.io took 2m28s for a full
@@ -1409,10 +1433,33 @@ fn run_rebase(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
         }
         match result {
             Ok(()) => {
-                // Show success page — user needs to reboot.
+                // Success means "the chokepoint returned Ok", which in a dry
+                // run means the switch was recorded and deliberately not
+                // performed. Saying "Restart your system to boot into the
+                // selected version" there would be a lie the user has no way
+                // to catch — nothing changed and rebooting proves nothing.
+                let settings = crate::settings::Settings::load();
+                let suppressed = crate::action_journal::Suppressed::from_flags(
+                    settings.dev_mode,
+                    settings.dry_run,
+                )
+                .blocks_execution();
+
+                let (title, description) = if suppressed {
+                    (
+                        "Switch Recorded",
+                        "Dry run — the image switch was recorded but not \
+                         performed. Nothing on this system has changed.",
+                    )
+                } else {
+                    (
+                        "Switch Complete",
+                        "Restart your system to boot into the selected version.",
+                    )
+                };
                 let done_page = adw::StatusPage::builder()
-                    .title("Switch Complete")
-                    .description("Restart your system to boot into the selected version.")
+                    .title(title)
+                    .description(description)
                     .icon_name("object-select-symbolic")
                     .build();
                 let close_btn = gtk::Button::builder()
@@ -1963,49 +2010,6 @@ fn derive_initial_toggle_state(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Simulated rebase for dev mode — shows the progress UI then succeeds after a delay.
-fn run_rebase_simulated(full_ref: String, stack: gtk::Stack, dialog: adw::Dialog) {
-    tracing::warn!(
-        "Switching suppressed — developer mode is active. \
-         Would have called `bootc switch {}`.",
-        full_ref
-    );
-
-    let progress_page = adw::StatusPage::builder()
-        .title("Switching... (simulated)")
-        .description("Developer mode — no actual changes are being made.")
-        .build();
-    let spinner = gtk::Spinner::new();
-    spinner.set_spinning(true);
-    progress_page.set_child(Some(&spinner));
-    stack.add_named(&progress_page, Some("switching"));
-    stack.set_visible_child_name("switchin");
-
-    // Simulate a short delay then show success.
-    glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
-        let done_page = adw::StatusPage::builder()
-            .title("Switch Complete (simulated)")
-            .description(
-                "Developer mode — no changes were made.\nIn production, a restart would be needed.",
-            )
-            .icon_name("object-select-symbolic")
-            .build();
-        let close_btn = gtk::Button::builder()
-            .label("Close")
-            .halign(gtk::Align::Center)
-            .build();
-        close_btn.add_css_class("suggested-action");
-        close_btn.add_css_class("pill");
-        let dialog_close = dialog.clone();
-        close_btn.connect_clicked(move |_| {
-            dialog_close.close();
-        });
-        done_page.set_child(Some(&close_btn));
-        stack.add_named(&done_page, Some("done"));
-        stack.set_visible_child_name("done");
-    });
-}
 
 fn days_in_month(date: NaiveDate) -> u32 {
     let next = if date.month() == 12 {

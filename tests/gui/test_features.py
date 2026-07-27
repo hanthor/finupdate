@@ -214,12 +214,65 @@ def _narrow():
 
 @check("switch-journal", "Rebase dialog Switch records `bootc switch <target>`")
 def _switch_journal():
-    # The single most consequential action in the app. This is the check that
-    # answers "would the correct backend action be taken", which no screenshot
-    # can. Opens the rebase dialog from the hero row's Change button.
+    # The single most consequential action in the app, and the check that
+    # answers "would the correct backend action be taken" — which no
+    # screenshot can.
+    #
+    # This check used to open the dialog, capture it, and stop. It asserted
+    # nothing about switching, despite its name, its docstring, and a comment
+    # claiming it was the one that covered the backend intent. It could not
+    # have done more: the button is inside a dialog, and the pointer does not
+    # reach dialog content under Broadway. It is drivable now because the
+    # primary action carries an access key.
     with FinupdateApp() as app:
         app.click("hero_change", settle_ms=8000)
         app.screenshot("rebase-dialog")
+
+        # Primary action → confirmation alert.
+        app.interact(
+            lambda: app.activate("rebase_primary_switch", settle_ms=0),
+            settle_ms=3000,
+            what="pressing the primary switch action",
+        )
+        app.screenshot("rebase-confirm")
+
+        # Confirm. This is the point of no return in real use.
+        app.interact(
+            lambda: app.activate("confirm_switch", settle_ms=0),
+            settle_ms=8000,
+            what="confirming the switch",
+        )
+        app.screenshot("rebase-switched")
+
+        # The assertion the check was named for: the right command, against the
+        # right target, and blocked from actually running.
+        entry = app.assert_action(
+            "switch_image",
+            would_run_contains=["pkexec", "bootc", "switch"],
+            suppressed=True,
+        )
+        target = entry.args.get("target", "")
+        if "ghcr.io/" not in target or ":" not in target:
+            raise CheckFailed(
+                f"switch target is not a fully-qualified image ref: {target!r}"
+            )
+        app.assert_no_panics()
+
+
+@check("switch-cancel", "Cancelling the confirmation records no switch at all")
+def _switch_cancel():
+    # The other half of the safety property: declining must leave no intent
+    # behind, not merely leave it suppressed.
+    with FinupdateApp() as app:
+        app.click("hero_change", settle_ms=8000)
+        app.activate("rebase_primary_switch", settle_ms=3000)
+        app.interact(
+            lambda: app.activate("confirm_cancel", settle_ms=0),
+            settle_ms=3000,
+            what="cancelling the switch",
+        )
+        app.screenshot("rebase-cancelled")
+        app.assert_no_action("switch_image")
         app.assert_no_panics()
 
 
