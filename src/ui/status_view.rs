@@ -3141,6 +3141,34 @@ fn spawn_changelog_fetch(
 /// setting the mode alone would have changed nothing.
 const VERSION_MAX_CHARS: i32 = 18;
 
+/// CSS class for the target version, from how it actually compares.
+///
+/// Green is a claim that the user is moving forward, so it is only made when
+/// that is established. `bumped` alone means "differs", which painted an
+/// entire rollback success-green: switching from Dakota's F44 to Bluefin's
+/// F43 showed GNOME 50.3 → 49.7, bootc 1.16.3 → 1.15.1 and every other row in
+/// upgrade colours while every package went backwards. A downgrade is not an
+/// error, so it reads as `warning` rather than `error` — it is a thing the
+/// user may well have chosen, they just need to see it for what it is.
+fn version_change_class(current: &str, target: &str, bumped: bool) -> &'static str {
+    use finupdate_core::version_compare::{VersionChange, classify};
+    match classify(current, target) {
+        VersionChange::Upgrade => "success",
+        VersionChange::Downgrade => "warning",
+        VersionChange::Same => "dim-label",
+        // Unparseable or one-sided — e.g. the Image/Revision/Built rows, whose
+        // values are digests and dates rather than versions. Fall back to the
+        // caller's differs/doesn't signal rather than inventing a direction.
+        VersionChange::Unknown => {
+            if bumped {
+                "accent"
+            } else {
+                "dim-label"
+            }
+        }
+    }
+}
+
 fn version_diff_box(current: &str, target: &str, bumped: bool) -> gtk::Box {
     const MAX_CHARS: i32 = VERSION_MAX_CHARS;
 
@@ -3168,11 +3196,7 @@ fn version_diff_box(current: &str, target: &str, bumped: bool) -> gtk::Box {
     to_lbl.add_css_class("monospace");
     to_lbl.add_css_class("caption");
     to_lbl.set_tooltip_text(Some(target));
-    if bumped {
-        to_lbl.add_css_class("success");
-    } else {
-        to_lbl.add_css_class("dim-label");
-    }
+    to_lbl.add_css_class(version_change_class(current, target, bumped));
     diff_box.append(&to_lbl);
 
     diff_box
