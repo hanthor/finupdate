@@ -9,7 +9,7 @@ project(
 i18n = import('i18n')
 gnome = import('gnome')
 
-base_id = 'org.projectbluefin.Finupdate'
+base_id = 'org.tunaos.finupdate'
 
 dependency('glib-2.0', version: '>= 2.80')
 dependency('gio-2.0', version: '>= 2.80')

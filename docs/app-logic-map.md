@@ -179,7 +179,7 @@ prompt OR a public-network round-trip.
 | `$XDG_CACHE_HOME/finupdate/sbom-cache/<digest>`                        | `sbom_diff`          | `pull_sbom` after successful fetch      | `load_cache` on next call                | unit (cache_path) |
 | `/etc/uupd/config.json` (read+write via pkexec)                        | host                 | `uupd_compat::write_config`             | `uupd_compat::read_config` + uupd itself | unit (schema) |
 | `/etc/systemd/system/uupd.timer` enabled state                         | host (systemctl)     | `uupd_compat::set_uupd_timer`           | `uupd_compat::is_uupd_timer_active`      | unit (parser) |
-| D-Bus name `org.projectbluefin.Finupdate` (session bus)                | `ProgressDBus`       | every state transition                  | GNOME Shell extension                    | **gap** |
+| D-Bus name `org.tunaos.finupdate` (session bus)                | `ProgressDBus`       | every state transition                  | GNOME Shell extension                    | **gap** |
 
 ---
 

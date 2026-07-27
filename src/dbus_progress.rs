@@ -1,6 +1,6 @@
 //! D-Bus progress interface for the GNOME Shell panel extension.
 //!
-//! Exports `org.projectbluefin.Finupdate.Progress` on the session bus
+//! Exports `org.tunaos.finupdate.Progress` on the session bus
 //! with three properties:
 //!   - State (s): "idle" | "checking" | "updating" | "complete" | "error"
 //!   - Progress (d): 0.0 to 1.0
@@ -15,13 +15,13 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-const BUS_NAME: &str = "org.projectbluefin.Finupdate";
-const OBJECT_PATH: &str = "/org/projectbluefin/Finupdate";
-const INTERFACE_NAME: &str = "org.projectbluefin.Finupdate.Progress";
+const BUS_NAME: &str = "org.tunaos.finupdate";
+const OBJECT_PATH: &str = "/org/tunaos/finupdate";
+const INTERFACE_NAME: &str = "org.tunaos.finupdate.Progress";
 
 const INTERFACE_XML: &str = r#"
 <node>
-  <interface name="org.projectbluefin.Finupdate.Progress">
+  <interface name="org.tunaos.finupdate.Progress">
     <property name="State" type="s" access="read"/>
     <property name="Progress" type="d" access="read"/>
     <property name="Message" type="s" access="read"/>

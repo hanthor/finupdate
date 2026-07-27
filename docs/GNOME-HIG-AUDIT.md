@@ -102,7 +102,7 @@ There is no `*.gschema.xml` anywhere in the tree. `src/settings.rs` writes
   panels are expected to expose their settings through GSettings so the
   Settings search index can find them. A JSON blob is invisible to it.
 
-**Fix.** Define `org.projectbluefin.Finupdate.gschema.xml`, migrate the
+**Fix.** Define `org.tunaos.finupdate.gschema.xml`, migrate the
 `Settings` fields, and use `gio::Settings::bind()` for the switch/combo/spin
 rows — which also removes the manual `Rc<RefCell<Settings>>` plumbing in
 `preferences.rs`. Keep a one-shot importer for existing `settings.json` files.

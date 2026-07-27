@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-MANIFEST="build-aux/org.projectbluefin.Finupdate.Devel.json"
-APP_ID="org.projectbluefin.Finupdate.Devel"
+MANIFEST="build-aux/org.tunaos.finupdate.Devel.json"
+APP_ID="org.tunaos.finupdate.Devel"
 
 cd "$(dirname "$0")"
 
@@ -25,11 +25,16 @@ fi
 update-desktop-database "$HOME/.local/share/flatpak/exports/share/applications" 2>/dev/null || true
 
 echo "==> Pinning to dock…"
-# Ensure the new APP_ID is in the dock and remove any legacy Finpilot entry.
+# Ensure the new APP_ID is in the dock and rewrite entries left by the two
+# previous names — Finpilot, and org.projectbluefin.Finupdate before the move
+# to the TunaOS remote. Without this a rename leaves a dead launcher pinned.
 CURRENT=$(gsettings get org.gnome.shell favorite-apps 2>/dev/null || echo "[]")
 UPDATED=$(echo "$CURRENT" \
     | sed "s|'org.projectbluefin.Finpilot.Devel.desktop'|'$APP_ID'|g" \
-    | sed "s|'org.projectbluefin.Finpilot.Devel'|'$APP_ID'|g")
+    | sed "s|'org.projectbluefin.Finpilot.Devel'|'$APP_ID'|g" \
+    | sed "s|'org.projectbluefin.Finupdate.Devel.desktop'|'$APP_ID'|g" \
+    | sed "s|'org.projectbluefin.Finupdate.Devel'|'$APP_ID'|g" \
+    | sed "s|'org.projectbluefin.Finupdate.desktop'|'$APP_ID'|g")
 # Add APP_ID if not already present
 if ! echo "$UPDATED" | grep -q "$APP_ID"; then
     UPDATED=$(echo "$UPDATED" | sed "s|]|, '$APP_ID']|")

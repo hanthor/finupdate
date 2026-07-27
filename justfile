@@ -1,7 +1,7 @@
 toolbox := "finupdate"
 toolbox_image := "registry.fedoraproject.org/fedora-toolbox:43"
-manifest := "build-aux/org.projectbluefin.Finupdate.Devel.json"
-app_id := "org.projectbluefin.Finupdate.Devel"
+manifest := "build-aux/org.tunaos.finupdate.Devel.json"
+app_id := "org.tunaos.finupdate.Devel"
 
 # Show available recipes
 default:

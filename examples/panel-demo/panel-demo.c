@@ -113,7 +113,7 @@ main (int argc, char *argv[])
   AdwApplication *app;
   int ret;
 
-  app = adw_application_new ("org.projectbluefin.Finupdate.PanelDemo",
+  app = adw_application_new ("org.tunaos.finupdate.PanelDemo",
                              G_APPLICATION_NON_UNIQUE);
   g_signal_connect (app, "activate",   G_CALLBACK (on_app_activate),  &demo);
   g_signal_connect (app, "shutdown",   G_CALLBACK (on_app_shutdown),  &demo);

@@ -4,7 +4,7 @@ desktop_conf.set('APP_ID', application_id)
 desktop_conf.set('ICON', application_id)
 
 desktop_file = configure_file(
-  input: 'org.projectbluefin.Finupdate.desktop.in',
+  input: 'org.tunaos.finupdate.desktop.in',
   output: application_id + '.desktop',
   configuration: desktop_conf,
 )
@@ -27,7 +27,7 @@ metainfo_conf = configuration_data()
 metainfo_conf.set('APP_ID', application_id)
 
 metainfo_file = configure_file(
-  input: 'org.projectbluefin.Finupdate.metainfo.xml.in',
+  input: 'org.tunaos.finupdate.metainfo.xml.in',
   output: application_id + '.metainfo.xml',
   configuration: metainfo_conf,
 )
@@ -47,13 +47,13 @@ endif
 
 # Icons — install with application_id name so Flatpak export picks them up.
 install_data(
-  'icons' / 'org.projectbluefin.Finupdate.svg',
+  'icons' / 'org.tunaos.finupdate.svg',
   install_dir: iconsdir / 'hicolor' / 'scalable' / 'apps',
   rename: application_id + '.svg',
 )
 
 install_data(
-  'icons' / 'org.projectbluefin.Finupdate-symbolic.svg',
+  'icons' / 'org.tunaos.finupdate-symbolic.svg',
   install_dir: iconsdir / 'hicolor' / 'symbolic' / 'apps',
   rename: application_id + '-symbolic.svg',
 )
@@ -71,9 +71,14 @@ install_data(
 # path, and the two builds cannot clobber one another's configuration.
 gschema_conf = configuration_data()
 gschema_conf.set('APP_ID', application_id)
+# The path has to be derived too, not just the id. It was hardcoded while the
+# id was templated, so the Devel and release schemas shared one dconf path and
+# each build read the other's configuration — the exact clobbering the comment
+# above says this templating prevents.
+gschema_conf.set('APP_PATH', '/' + application_id.replace('.', '/') + '/')
 
 gschema_file = configure_file(
-  input: 'org.projectbluefin.Finupdate.gschema.xml.in',
+  input: 'org.tunaos.finupdate.gschema.xml.in',
   output: application_id + '.gschema.xml',
   configuration: gschema_conf,
 )

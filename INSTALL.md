@@ -20,8 +20,8 @@ The flatpak is the canonical "I want to try the app" path. It works on any GNOME
 > Once finupdate ships to Flathub or a Bluefin Flatpak remote, this becomes a one-liner. Until then, see "Build from source" below.
 
 ```sh
-flatpak install <remote> org.projectbluefin.Finupdate
-flatpak run org.projectbluefin.Finupdate
+flatpak install <remote> org.tunaos.finupdate
+flatpak run org.tunaos.finupdate
 ```
 
 ### As a developer — build from source
@@ -32,11 +32,11 @@ The repo's `justfile` wraps the toolchain so the host doesn't need GTK / libadwa
 # One-time toolbox setup
 just setup
 
-# Build + install the dev Flatpak (id: org.projectbluefin.Finupdate.Devel)
+# Build + install the dev Flatpak (id: org.tunaos.finupdate.Devel)
 just flatpak
 
 # Run it
-just run                # or: flatpak run org.projectbluefin.Finupdate.Devel
+just run                # or: flatpak run org.tunaos.finupdate.Devel
 
 # After install, refresh the GNOME dock so the launcher appears
 just dock
@@ -48,7 +48,7 @@ The dev flatpak uses a different application ID (`…Finupdate.Devel`) so it can
 
 ```sh
 flatpak list --user | grep -i finupdate
-# org.projectbluefin.Finupdate.Devel    0.1.0    master
+# org.tunaos.finupdate.Devel    0.1.0    master
 ```
 
 Logs go to the journal — `journalctl --user -f` while the app runs surfaces backend traces.
@@ -116,7 +116,7 @@ Or just open Settings → there's a new **Updates** entry in the sidebar.
 
 Both surfaces use the same Rust backend, so behaviour is consistent. A handful of things to know:
 
-- **Two settings files.** Flatpak writes to `~/.var/app/org.projectbluefin.Finupdate.Devel/config/finupdate/settings.json`; the panel writes to `~/.config/finupdate/settings.json`. Preferences don't sync between them.
+- **Two settings files.** Flatpak writes to `~/.var/app/org.tunaos.finupdate.Devel/config/finupdate/settings.json`; the panel writes to `~/.config/finupdate/settings.json`. Preferences don't sync between them.
 - **Polkit is shared.** Both paths invoke the same `pkexec finupdate-runner` for privileged actions; the polkit rule in `build-aux/49-finupdate.polkit.rules` covers both.
 - **`bootc` detection is path-aware.** Inside the flatpak we use `flatpak-spawn --host bootc status --json`. The panel calls `bootc` directly. Same backend code, single `update_worker::is_flatpak()` switch picks the right transport.
 - **Don't run an Install in both at the same time.** Nothing prevents it today; symptoms would be two `pkexec` prompts and a bootc-lock collision. A file lock is on the [carry-forward list](https://github.com/hanthor/finupdate/pull/1) — file an issue if you hit it.

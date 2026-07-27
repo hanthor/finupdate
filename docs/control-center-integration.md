@@ -74,7 +74,7 @@ acceptable.
 
 ### Path 3 — `.desktop`-file launcher tile in Settings
 
-Ship `org.projectbluefin.Finupdate.desktop` with
+Ship `org.tunaos.finupdate.desktop` with
 `Categories=GNOME;GTK;Settings;X-GNOME-Settings-Panel;` and a
 `Keywords=update;upgrade;bootc;rebase;...` line so it surfaces in the
 "All Settings" sidebar and the Settings search bar. Clicking it launches

@@ -1,5 +1,5 @@
 {
-    "id": "org.projectbluefin.Finupdate",
+    "id": "org.tunaos.finupdate",
     "runtime": "org.gnome.Platform",
     "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
@@ -10,10 +10,11 @@
     "finish-args": [
         "--device=dri",
         "--share=ipc",
+        "--share=network",
         "--socket=fallback-x11",
         "--socket=wayland",
         "--talk-name=org.freedesktop.Flatpak",
-        "--own-name=org.projectbluefin.Finupdate",
+        "--own-name=org.tunaos.finupdate",
         "--filesystem=xdg-cache/finupdate:create",
         "--filesystem=host-os:ro"
     ],
@@ -24,7 +25,8 @@
         ],
         "env": {
             "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
-            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "cc"
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "cc",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER": "cc"
         }
     },
     "modules": [

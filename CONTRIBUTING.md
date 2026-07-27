@@ -39,10 +39,10 @@ toolbox run --container finupdate cargo check
 
 # Full Flatpak build + install — run on host:
 flatpak run org.flatpak.Builder --user --install --force-clean _flatpak \
-  build-aux/org.projectbluefin.Finupdate.Devel.json
+  build-aux/org.tunaos.finupdate.Devel.json
 
 # Run the Flatpak:
-flatpak run org.projectbluefin.Finupdate.Devel
+flatpak run org.tunaos.finupdate.Devel
 ```
 
 Or use the `just` recipes (see [justfile](justfile)):
@@ -113,7 +113,7 @@ Then implement using the `#[relm4::component(pub)]` macro. See `log_view.rs` for
 
 ### Modifying the Flatpak Manifest
 
-The manifest is at `build-aux/org.projectbluefin.Finupdate.Devel.json`. Key things:
+The manifest is at `build-aux/org.tunaos.finupdate.Devel.json`. Key things:
 
 - **New D-Bus permissions**: add to `finish-args` → `--talk-name=...`
 - **New system access**: add to `finish-args` → `--filesystem=...`

@@ -86,8 +86,8 @@ flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable//25.08
 
 # Build and run
 flatpak run org.flatpak.Builder --user --install --force-clean _flatpak \
-  build-aux/org.projectbluefin.Finupdate.Devel.json
-flatpak run org.projectbluefin.Finupdate.Devel
+  build-aux/org.tunaos.finupdate.Devel.json
+flatpak run org.tunaos.finupdate.Devel
 ```
 
 **Data file templates**: Desktop and metainfo files use `.in` suffix and `@APP_ID@` / `@ICON@` placeholders. Meson's `configure_file()` substitutes these and renames the output to include the profile suffix (`.Devel`) so Flatpak export correctly associates files with the app ID.
@@ -474,7 +474,11 @@ Run through this before shipping any Bluefin utility app:
 ### Metadata
 - [ ] `.desktop` file uses `@APP_ID@` template for icon and launcher
 - [ ] AppStream metainfo passes `appstreamcli validate`
-- [ ] App ID follows `org.projectbluefin.<AppName>` convention
+- [ ] App ID follows `org.projectbluefin.<AppName>` convention — except where
+      an app publishes to the TunaOS Flatpak remote, which uses
+      `org.tunaos.<app>`. finupdate itself moved to `org.tunaos.finupdate`
+      when it started publishing there; the examples below still show the
+      projectbluefin form because that is the convention for apps that don't.
 - [ ] Content rating (`oars-1.1`) is present even if empty
 - [ ] If `DBusActivatable=true`, a matching `.service` file is installed
 

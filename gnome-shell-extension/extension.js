@@ -7,9 +7,9 @@
  * pattern that Caffeine uses.
  *
  * Communicates with finupdate over D-Bus:
- *   Bus name: org.projectbluefin.Finupdate
- *   Path:     /org/projectbluefin/Finupdate
- *   Interface: org.projectbluefin.Finupdate.Progress
+ *   Bus name: org.tunaos.finupdate
+ *   Path:     /org/tunaos/finupdate
+ *   Interface: org.tunaos.finupdate.Progress
  *   Properties:
  *     State    (s) — "idle" | "checking" | "updating" | "complete" | "error"
  *     Progress (d) — 0.0 to 1.0
@@ -30,9 +30,9 @@ import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js'
 
 const QuickSettingsMenu = Main.panel.statusArea.quickSettings;
 
-const DBUS_NAME = 'org.projectbluefin.Finupdate';
-const DBUS_PATH = '/org/projectbluefin/Finupdate';
-const DBUS_IFACE = 'org.projectbluefin.Finupdate.Progress';
+const DBUS_NAME = 'org.tunaos.finupdate';
+const DBUS_PATH = '/org/tunaos/finupdate';
+const DBUS_IFACE = 'org.tunaos.finupdate.Progress';
 
 // ─── Progress Circle Widget ──────────────────────────────────────────────────
 // Custom St.DrawingArea that renders a circular progress indicator via Cairo.

@@ -24,7 +24,7 @@
     <value nick="custom" value="3"/>
   </enum>
 
-  <schema id="@APP_ID@" path="/org/projectbluefin/Finupdate/">
+  <schema id="@APP_ID@" path="@APP_PATH@">
     <key name="auto-updates" type="b">
       <default>true</default>
       <summary>Allow automatic background updates</summary>

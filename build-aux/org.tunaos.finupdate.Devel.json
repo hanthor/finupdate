@@ -1,5 +1,5 @@
 {
-    "id": "org.projectbluefin.Finupdate.Devel",
+    "id": "org.tunaos.finupdate.Devel",
     "runtime": "org.gnome.Platform",
     "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
@@ -14,7 +14,7 @@
         "--socket=fallback-x11",
         "--socket=wayland",
         "--talk-name=org.freedesktop.Flatpak",
-        "--own-name=org.projectbluefin.Finupdate",
+        "--own-name=org.tunaos.finupdate",
         "--filesystem=xdg-cache/finupdate:create",
         "--filesystem=host-os:ro",
         "--env=RUST_LOG=finupdate=debug",

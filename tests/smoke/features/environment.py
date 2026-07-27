@@ -16,7 +16,7 @@ from qecore.sandbox import TestSandbox
 from qecore.common_steps import *  # noqa: F401,F403
 
 
-APP_ID = "org.projectbluefin.Finupdate.Devel"
+APP_ID = "org.tunaos.finupdate.Devel"
 # AT-SPI exposes the app under its binary name, not the Flatpak app-id.
 A11Y_APP_NAME = "finupdate"
 

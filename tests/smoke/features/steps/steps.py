@@ -26,7 +26,7 @@ def _settings_path() -> Path:
     """Settings live inside the Flatpak sandbox's per-app config dir."""
     # gtk::glib::user_config_dir() inside the sandbox resolves to
     # ~/.var/app/<app-id>/config — at least on Linux/Flatpak.
-    base = Path.home() / ".var/app/org.projectbluefin.Finupdate.Devel/config"
+    base = Path.home() / ".var/app/org.tunaos.finupdate.Devel/config"
     return base / "finupdate/settings.json"
 
 

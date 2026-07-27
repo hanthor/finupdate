@@ -47,6 +47,20 @@ The app has four states:
 - Meson 0.59+
 - GTK4 and libadwaita development headers
 
+## Installing
+
+Released builds are published to the TunaOS Flatpak remote for x86_64 and
+aarch64:
+
+```bash
+flatpak remote-add --if-not-exists tuna-os https://tunaos.org/flatpak/tuna-os.flatpakrepo
+flatpak install tuna-os org.tunaos.finupdate
+```
+
+The remote is an OCI index backed by `ghcr.io/tuna-os/finupdate`; see
+[tuna-os/flatpak-index](https://github.com/tuna-os/flatpak-index). Builds are
+pushed by `.github/workflows/publish-flatpak.yml` on every push to `main`.
+
 ## Building
 
 ### Option A: Flatpak (recommended for testing)
@@ -59,10 +73,10 @@ flatpak install flathub org.flatpak.Builder
 
 # Build and install locally
 flatpak run org.flatpak.Builder --user --install --force-clean _flatpak \
-  build-aux/org.projectbluefin.Finupdate.Devel.json
+  build-aux/org.tunaos.finupdate.Devel.json
 
 # Run
-flatpak run org.projectbluefin.Finupdate.Devel
+flatpak run org.tunaos.finupdate.Devel
 ```
 
 ### Option B: Native Meson build
