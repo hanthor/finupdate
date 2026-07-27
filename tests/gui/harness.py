@@ -436,6 +436,25 @@ class FinupdateApp:
                 )[:1500]
             )
 
+    def wait_for_log(self, needle: str, timeout_s: int = 60) -> str:
+        """Block until `needle` appears in the app log, or fail.
+
+        Needed for anything that races a network fetch. Asserting the *absence*
+        of a failure marker is worthless if the work simply hasn't finished:
+        the package-diff check asserted "not zero packages" and passed while
+        the SBOM was still downloading, so it proved nothing and the screenshot
+        caught the page mid-spinner.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if needle in self.app_log():
+                return self.app_log()
+            self.page.wait_for_timeout(1000)
+        raise CheckFailed(
+            f"{needle!r} did not appear within {timeout_s}s\n"
+            f"log tail:\n{self.app_log()[-2000:]}"
+        )
+
     def assert_log(self, needle: str, *, absent: bool = False):
         """Assert a line is (or isn't) in the app log.
 

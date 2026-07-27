@@ -567,31 +567,11 @@ impl StatusView {
 
             for item in &stack_items {
                 let row = adw::ActionRow::builder().title(item.label).build();
-
-                let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                diff_box.set_valign(gtk::Align::Center);
-
-                let from_lbl = gtk::Label::new(Some(item.current.as_deref().unwrap_or("—")));
-                from_lbl.add_css_class("monospace");
-                from_lbl.add_css_class("caption");
-                from_lbl.add_css_class("dim-label");
-                diff_box.append(&from_lbl);
-
-                let arrow_lbl = gtk::Label::new(Some("→"));
-                arrow_lbl.add_css_class("dim-label");
-                diff_box.append(&arrow_lbl);
-
-                let to_lbl = gtk::Label::new(Some(&item.target));
-                to_lbl.add_css_class("monospace");
-                to_lbl.add_css_class("caption");
-                if item.bumped {
-                    to_lbl.add_css_class("success");
-                } else {
-                    to_lbl.add_css_class("dim-label");
-                }
-                diff_box.append(&to_lbl);
-
-                row.add_suffix(&diff_box);
+                row.add_suffix(&version_diff_box(
+                    item.current.as_deref().unwrap_or("—"),
+                    &item.target,
+                    item.bumped,
+                ));
                 stack_list.append(&row);
             }
 
@@ -617,37 +597,16 @@ impl StatusView {
                     }
                     if let Some((booted_ver, target_ver)) = found {
                         let row = adw::ActionRow::builder().title(label).build();
-
-                        let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                        diff_box.set_valign(gtk::Align::Center);
-
                         let current = if booted_ver.is_empty() {
                             "—"
                         } else {
                             booted_ver.as_str()
                         };
-                        let from_lbl = gtk::Label::new(Some(current));
-                        from_lbl.add_css_class("monospace");
-                        from_lbl.add_css_class("caption");
-                        from_lbl.add_css_class("dim-label");
-                        diff_box.append(&from_lbl);
-
-                        let arrow_lbl = gtk::Label::new(Some("→"));
-                        arrow_lbl.add_css_class("dim-label");
-                        diff_box.append(&arrow_lbl);
-
-                        let to_lbl = gtk::Label::new(Some(target_ver.as_str()));
-                        to_lbl.add_css_class("monospace");
-                        to_lbl.add_css_class("caption");
-                        let bumped = booted_ver != target_ver;
-                        if bumped {
-                            to_lbl.add_css_class("success");
-                        } else {
-                            to_lbl.add_css_class("dim-label");
-                        }
-                        diff_box.append(&to_lbl);
-
-                        row.add_suffix(&diff_box);
+                        row.add_suffix(&version_diff_box(
+                            current,
+                            target_ver.as_str(),
+                            booted_ver != target_ver,
+                        ));
                         stack_list.append(&row);
                     }
                 }
@@ -757,30 +716,10 @@ impl StatusView {
 
             for (pkg, from, to) in upgrades_list {
                 let row = adw::ActionRow::builder().title(&pkg).build();
-
-                let val_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-
-                let from_lbl = gtk::Label::new(Some(&from));
-                from_lbl.add_css_class("dim-label");
-                from_lbl.add_css_class("monospace");
-                from_lbl.add_css_class("caption");
-
-                let arr_lbl = gtk::Label::new(Some("→"));
-                arr_lbl.add_css_class("dim-label");
-
-                // Highlight the target (new) version in success-green so the
-                // upgrade is visually obvious — mirrors the bluefin-changelog
-                // TUI's `changed` styling. The `from` side stays dim.
-                let to_lbl = gtk::Label::new(Some(&to));
-                to_lbl.add_css_class("monospace");
-                to_lbl.add_css_class("caption");
-                to_lbl.add_css_class("success");
-
-                val_box.append(&from_lbl);
-                val_box.append(&arr_lbl);
-                val_box.append(&to_lbl);
-
-                row.add_suffix(&val_box);
+                // Always `bumped` — every row in this list is an upgrade, so
+                // the target renders success-green, mirroring the
+                // bluefin-changelog TUI's `changed` styling.
+                row.add_suffix(&version_diff_box(&from, &to, true));
                 list_upgrades.append(&row);
             }
             self.changelog_box.append(&list_upgrades);
@@ -813,6 +752,9 @@ impl StatusView {
                 row.add_prefix(&plus_lbl);
 
                 let ver_lbl = gtk::Label::new(Some(&ver));
+                ver_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                ver_lbl.set_max_width_chars(VERSION_MAX_CHARS);
+                ver_lbl.set_tooltip_text(Some(&ver));
                 ver_lbl.add_css_class("monospace");
                 ver_lbl.add_css_class("caption");
                 ver_lbl.add_css_class("success");
@@ -3179,6 +3121,61 @@ fn spawn_changelog_fetch(
             }
         });
     });
+}
+
+/// A `current → target` version pair for the What's New Stack list.
+///
+/// Both call sites built this inline and identically; the duplication is why
+/// the width fix below needed applying twice to be correct, so they share one
+/// constructor now.
+///
+/// The ellipsizing is the point. These labels carry raw RPM versions like
+/// `5:5.8.4-1.fc44`, and without a width cap they set the row's natural width,
+/// which propagates up and forces the whole window wider than its 750px
+/// request — values ended up clipped off-screen entirely. It only became
+/// visible once the SBOM parser was fixed and the group had real content in
+/// it; before that the Stack list held three short rows and nothing pushed.
+///
+/// `max_width_chars` is what makes ellipsizing actually bite: an ellipsized
+/// label still *requests* its full natural width unless a cap is set, so
+/// setting the mode alone would have changed nothing.
+const VERSION_MAX_CHARS: i32 = 18;
+
+fn version_diff_box(current: &str, target: &str, bumped: bool) -> gtk::Box {
+    const MAX_CHARS: i32 = VERSION_MAX_CHARS;
+
+    let diff_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    diff_box.set_valign(gtk::Align::Center);
+
+    let from_lbl = gtk::Label::new(Some(current));
+    from_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    from_lbl.set_max_width_chars(MAX_CHARS);
+    from_lbl.add_css_class("monospace");
+    from_lbl.add_css_class("caption");
+    from_lbl.add_css_class("dim-label");
+    // The full string stays reachable on hover, since ellipsizing hides the
+    // release suffix that is often the only part that changed.
+    from_lbl.set_tooltip_text(Some(current));
+    diff_box.append(&from_lbl);
+
+    let arrow_lbl = gtk::Label::new(Some("→"));
+    arrow_lbl.add_css_class("dim-label");
+    diff_box.append(&arrow_lbl);
+
+    let to_lbl = gtk::Label::new(Some(target));
+    to_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    to_lbl.set_max_width_chars(MAX_CHARS);
+    to_lbl.add_css_class("monospace");
+    to_lbl.add_css_class("caption");
+    to_lbl.set_tooltip_text(Some(target));
+    if bumped {
+        to_lbl.add_css_class("success");
+    } else {
+        to_lbl.add_css_class("dim-label");
+    }
+    diff_box.append(&to_lbl);
+
+    diff_box
 }
 
 #[cfg(test)]

@@ -197,15 +197,28 @@ def _whats_new():
         # every machine until recently: the referrer is advertised as SPDX but
         # Universal Blue attaches Syft JSON, and the SPDX parser turned that
         # into zero packages without erroring.
+        #
+        # Wait for the fetch before asserting anything about it. Checking only
+        # that the all-zero line is absent passes trivially while the SBOM is
+        # still downloading, which is exactly what happened — green check,
+        # screenshot of a spinner.
+        app.wait_for_log("booted packages", timeout_s=120)
+        app.assert_log("SBOM diff: 0 booted packages, 0 target packages", absent=True)
+
         # PageDown, not mouse.wheel — scroll events go the same way pointer
         # events do under Broadway, i.e. nowhere. interact() caught that.
+        app.screenshot("whats-new-stack")
+
+        # PageDown, not mouse.wheel — scroll events go the same way pointer
+        # events do under Broadway, i.e. nowhere. interact() caught that.
+        # Focus starts inside the Stack list, so the first few presses walk
+        # rows rather than pages; 20 clears the list and the commit log.
         app.interact(
-            lambda: [app.key("PageDown", settle_ms=400) for _ in range(6)],
+            lambda: [app.key("PageDown", settle_ms=150) for _ in range(20)],
             settle_ms=2500,
             what="scrolling to the package diff",
         )
         app.screenshot("whats-new-packages")
-        app.assert_log("SBOM diff: 0 booted packages, 0 target packages", absent=True)
 
 
 @check("image-history", "Image History reaches the deployment list")

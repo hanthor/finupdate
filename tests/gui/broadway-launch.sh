@@ -68,10 +68,20 @@ setsid toolbox run --container finupdate \
 # started against a socket that wasn't there yet — surfacing much later as
 # Playwright's ERR_CONNECTION_REFUSED, which reads like a harness bug rather
 # than a race.
-for _ in $(seq 1 40); do
-    ss -ltn | grep -q ":$PORT" && break
+# 30s, not the old 10s: after a dozen checks the host is busy enough that
+# broadwayd occasionally missed the shorter window, and the run then failed on
+# a later check with ERR_CONNECTION_REFUSED — a flake that reads like a bug in
+# whichever check happened to draw the short straw.
+BWD_UP=0
+for _ in $(seq 1 120); do
+    if ss -ltn | grep -q ":$PORT"; then BWD_UP=1; break; fi
     sleep 0.25
 done
+if [ "$BWD_UP" != "1" ]; then
+    echo "gtk4-broadwayd never listened on $PORT after 30s" >&2
+    tail -20 /var/tmp/broadwayd.log >&2
+    exit 1
+fi
 
 WSIZE_LINE=""
 if [ -n "$WSIZE" ]; then
@@ -92,10 +102,28 @@ setsid toolbox run --container finupdate bash -lc "
   exec ./target/debug/finupdate $ARGS
 " </dev/null >/var/tmp/finupdate-broadway.log 2>&1 &
 
-sleep 8
-if ss -ltn | grep -q ":$PORT"; then
-    echo "broadway up on $PORT"
-else
-    echo "NO LISTENER on $PORT"
+# Wait for the app to actually announce itself rather than sleeping a fixed
+# 8s and hoping. Under load it sometimes needed longer, and the harness then
+# navigated to a Broadway display with no client attached.
+APP_UP=0
+for _ in $(seq 1 60); do
+    if grep -q "Starting Finupdate" /var/tmp/finupdate-broadway.log 2>/dev/null; then
+        APP_UP=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$APP_UP" != "1" ]; then
+    echo "finupdate never started — last 20 lines:" >&2
+    tail -20 /var/tmp/finupdate-broadway.log >&2
+    exit 1
 fi
+if ! ss -ltn | grep -q ":$PORT"; then
+    echo "broadwayd stopped listening on $PORT after the app started" >&2
+    exit 1
+fi
+echo "broadway up on $PORT"
+# Give the first frame time to paint now that the process is confirmed up.
+sleep 3
 grep -E "CLI override|Starting Finupdate|panicked" /var/tmp/finupdate-broadway.log | head -6
