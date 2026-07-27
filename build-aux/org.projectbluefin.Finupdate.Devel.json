@@ -16,6 +16,7 @@
         "--talk-name=org.freedesktop.Flatpak",
         "--own-name=org.projectbluefin.Finupdate",
         "--filesystem=xdg-cache/finupdate:create",
+        "--filesystem=host-os:ro",
         "--env=RUST_LOG=finupdate=debug",
         "--env=G_MESSAGES_DEBUG=none",
         "--env=RUST_BACKTRACE=1"

@@ -22,7 +22,12 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! `ignore`, not a runnable example: `container` is whatever box the caller
+//! is filling, and constructing the widget at all needs an initialised GTK.
+//! It was previously fenced as `rust`, so `cargo test --workspace` failed on
+//! it with "cannot find value `container`".
+//!
+//! ```ignore
 //! let bar = SegmentedProgress::new();
 //! container.append(&bar.widget());
 //! bar.set_module_active("system");   // start shimmer
