@@ -153,11 +153,24 @@ It also inherits the adaptive layout work, so it shrinks with
 gnome-control-center's own breakpoints rather than forcing the Settings window
 wider.
 
-**Not yet verified:** `finupdate_panel_widget_new` itself has never been
-exercised end-to-end. `examples/panel-demo/` calls
-`finupdate_changelog_widget_new` and `finupdate_rebase_widget_new` — the
-individual widgets — so the entry point the shipped panel actually uses is
-still untested inside a real patched gnome-control-center.
+**Verified.** `examples/panel-entry-demo/` calls
+`finupdate_panel_widget_new` — the exact entry point `cc-updates-panel.c` uses
+— and hosts it in a bare `AdwApplicationWindow`, the closest stand-in for
+gnome-control-center's content area. Captured at
+`tests/gui/screenshots/light/cc-panel-entry-point.png`.
+
+Two things that screenshot confirms:
+
+* The panel renders **without the app's own header bar**, deferring to the host
+  container — which is what a cc panel must do.
+* Run with `dry_run: false` and no `--dry-run` flag, it shows **no dry-run
+  banner**, i.e. a release build comes up able to act. That is the check from
+  step 6 above, and the reason it exists: an earlier `Settings::default()`
+  would have left every shipped panel silently inert.
+
+(`examples/panel-demo/` remains the widget-level harness — it composes
+`finupdate_changelog_widget_new` and `finupdate_rebase_widget_new` for
+iterating on those individually.)
 
 ## Older notes on remaining work
 
