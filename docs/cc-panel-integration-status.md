@@ -125,7 +125,48 @@ changelog: phase=github_commits count=30
 
 That is `finupdate_panel_widget_new` being called from `cc-updates-panel.c`.
 
-## Remaining: the widget never gets parented
+## Fixed: the template resource was never registered
+
+```
+Gtk CRITICAL: Unable to load resource for composite template for type
+  'CcUpdatesPanel': The resource at
+  "/org/gnome/control-center/updates/cc-updates-panel.ui" does not exist
+Gtk CRITICAL: gtk_widget_class_bind_template_child_full: assertion
+  'widget_class->priv->template != NULL' failed
+Adwaita CRITICAL: adw_bin_set_child: assertion 'ADW_IS_BIN (self)' failed
+```
+
+Those three are one bug, not three. `panels/updates/meson.build` compiles the
+gresource into this panel's **static_library**, and the generated
+auto-registration constructor sits in an object file nothing else references —
+so the linker discards it. The template resource is then absent at runtime,
+`bind_template_child` has no template to bind against, `content_bin` stays
+NULL, and every `adw_bin_set_child()` asserts.
+
+Fixed by registering explicitly in `class_init`, before
+`set_template_from_resource`:
+
+```c
+g_resources_register (cc_updates_get_resource ());
+```
+
+(Note the generated API is `cc_updates_get_resource`, not
+`cc_updates_register_resource` — meson's `export: true` exposes the getter.)
+
+After this, both CRITICALs are gone: `grep -c "does not exist"` and
+`grep -c ADW_IS_BIN` on the cc log are both 0.
+
+## Not yet confirmed: visual render
+
+The panel loads without error, but a Broadway screenshot of the running
+control-center still came back blank, and that has **not** been explained. It
+may be the harness rather than the panel — blank captures in this project have
+repeatedly turned out to be stale broadwayd instances rather than app faults
+(see docs/GUI_TESTING.md) — but that is a hypothesis, not a finding. The next
+step is to confirm rendering on a real display, or to establish the Broadway
+capture path is sound for the F44 toolbox specifically.
+
+## Previously: the widget never gets parented
 
 ```
 Adwaita CRITICAL: adw_bin_set_child: assertion 'ADW_IS_BIN (self)' failed

@@ -11,6 +11,7 @@
 #include <glib/gi18n.h>
 
 #include "cc-updates-panel.h"
+#include "cc-updates-resources.h"
 #include "shell/cc-panel.h"
 
 #include "finupdate.h"
@@ -50,6 +51,14 @@ cc_updates_panel_class_init (CcUpdatesPanelClass *klass)
   GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
 
   object_class->dispose = cc_updates_panel_dispose;
+
+  /* The generated gresource lives in this panel's static_library. Its
+   * auto-registration constructor is in an object file nothing else
+   * references, so the linker discards it and the template resource is never
+   * registered — GTK then fails with "The resource at ... does not exist",
+   * content_bin stays NULL, and every adw_bin_set_child() below asserts.
+   * Registering explicitly is the standard fix for gresources in a static lib. */
+  g_resources_register (cc_updates_get_resource ());
 
   gtk_widget_class_set_template_from_resource (
       widget_class,
