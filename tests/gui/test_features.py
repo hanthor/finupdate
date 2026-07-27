@@ -71,6 +71,8 @@ def _dry_run_banner():
 def _dev_mode_banner():
     with FinupdateApp(dev_mode=True, sim="success") as app:
         app.screenshot("dev-mode-banner")
+        app.assert_log("dev_mode = true")
+        app.assert_no_panics()
 
 
 # ── Update check dialog ──────────────────────────────────────────────────────
@@ -110,24 +112,42 @@ def _check_dialog_cancel():
 @check("update-success", "Simulated success run reaches the complete state")
 def _update_success():
     with FinupdateApp(dev_mode=True, sim="success") as app:
-        app.click("check_button", settle_ms=16000)
+        app.interact(
+            lambda: app.click("check_button", settle_ms=0),
+            settle_ms=16000,
+            what="starting the update run",
+        )
         app.screenshot("update-success")
+        # Which terminal state the run reached — not merely that it survived.
+        app.assert_log('outcome="complete"')
         app.assert_no_panics()
 
 
 @check("update-failure", "Simulated failure run surfaces the error state")
 def _update_failure():
     with FinupdateApp(dev_mode=True, sim="failure") as app:
-        app.click("check_button", settle_ms=16000)
+        app.interact(
+            lambda: app.click("check_button", settle_ms=0),
+            settle_ms=16000,
+            what="starting the update run",
+        )
         app.screenshot("update-failure")
+        # Which terminal state the run reached — not merely that it survived.
+        app.assert_log('outcome="error"')
         app.assert_no_panics()
 
 
 @check("update-uptodate", "Simulated up-to-date run short-circuits")
 def _update_uptodate():
     with FinupdateApp(dev_mode=True, sim="up-to-date") as app:
-        app.click("check_button", settle_ms=16000)
+        app.interact(
+            lambda: app.click("check_button", settle_ms=0),
+            settle_ms=16000,
+            what="starting the update run",
+        )
         app.screenshot("update-uptodate")
+        # Which terminal state the run reached — not merely that it survived.
+        app.assert_log('outcome="up-to-date"')
         app.assert_no_panics()
 
 
@@ -172,6 +192,20 @@ def _whats_new():
     # then passed because it only asserted the absence of a panic.
     with FinupdateApp() as app:
         _open_image_page(app, "whats_new_row", "changelog", "whats-new")
+
+        # The package diff lives below the commit list. It rendered empty on
+        # every machine until recently: the referrer is advertised as SPDX but
+        # Universal Blue attaches Syft JSON, and the SPDX parser turned that
+        # into zero packages without erroring.
+        # PageDown, not mouse.wheel — scroll events go the same way pointer
+        # events do under Broadway, i.e. nowhere. interact() caught that.
+        app.interact(
+            lambda: [app.key("PageDown", settle_ms=400) for _ in range(6)],
+            settle_ms=2500,
+            what="scrolling to the package diff",
+        )
+        app.screenshot("whats-new-packages")
+        app.assert_log("SBOM diff: 0 booted packages, 0 target packages", absent=True)
 
 
 @check("image-history", "Image History reaches the deployment list")

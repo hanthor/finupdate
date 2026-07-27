@@ -513,6 +513,12 @@ pub fn show_update_check_dialog(
                         }
                     }
                     UpdateEvent::Complete => {
+                        // The terminal states are logged so the GUI suite can
+                        // assert *which* one a run reached. The three
+                        // simulated-scenario checks previously asserted only
+                        // that nothing panicked, so a run ending in the wrong
+                        // state passed exactly like a correct one.
+                        tracing::info!(outcome = "complete", "Update run finished");
                         // Mark final module as complete
                         if let Some(ref last) = current_module {
                             let _ = line_tx.send(CheckEvent::ModuleComplete(last.clone()));
@@ -537,6 +543,7 @@ pub fn show_update_check_dialog(
                         break;
                     }
                     UpdateEvent::UpToDate => {
+                        tracing::info!(outcome = "up-to-date", "Update run finished");
                         if let Some(ref last) = current_module {
                             let _ = line_tx.send(CheckEvent::ModuleComplete(last.clone()));
                         }
@@ -544,6 +551,7 @@ pub fn show_update_check_dialog(
                         break;
                     }
                     UpdateEvent::Error(err) => {
+                        tracing::info!(outcome = "error", "Update run finished");
                         let _ = line_tx.send(CheckEvent::Error(err));
                         break;
                     }

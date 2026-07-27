@@ -3,7 +3,7 @@
 // warnings list manageable.
 #![allow(dead_code)]
 
-//! SBOM diff — pure-Rust OCI referrer discovery and SPDX parsing.
+//! SBOM diff — pure-Rust OCI referrer discovery and SBOM parsing.
 //!
 //! Replaces the previous `oras` subprocess approach with `oci-client`.
 //!
@@ -12,7 +12,9 @@
 //! 1. For each image ref (booted + target), call the OCI Distribution v1.1
 //!    referrers API to find a manifest with `artifactType: application/vnd.spdx+json`.
 //! 2. Pull the SBOM blob from that referrer manifest.
-//! 3. Parse the SPDX 2.3 JSON into a `name → version` map.
+//! 3. Parse it into a `name → version` map. The referrer is *advertised* as
+//!    SPDX, but Universal Blue attaches **Syft JSON** under that artifact
+//!    type, so both shapes are accepted — see the note above `SyftDocument`.
 //! 4. Cache the map by referrer digest under `$XDG_CACHE_HOME/finupdate/sbom-cache/`.
 //! 5. Diff the two maps and return `SbomDiffResult`.
 //!
@@ -48,7 +50,29 @@ pub struct SbomDiffResult {
     pub stack_info: HashMap<String, (String, String)>,
 }
 
-// ── Internal SPDX types ───────────────────────────────────────────────────────
+// ── Internal SBOM types ───────────────────────────────────────────────────────
+//
+// Two formats, because the referrer is discovered by artifact type and what
+// comes back is whatever the image publisher chose to attach.
+//
+// Universal Blue publishes **Syft JSON** — top-level `artifacts`, each with
+// `name`/`version`/`type`. This code originally understood only SPDX
+// (`packages[]` with `versionInfo`), and because every SPDX field is optional,
+// serde parsed a Syft document into a document with no packages rather than
+// failing. The result was a successful fetch, a successful parse, an empty
+// map, and a package diff that silently rendered nothing on every machine —
+// no error anywhere in the chain to notice.
+
+#[derive(Deserialize)]
+struct SyftDocument {
+    artifacts: Option<Vec<SyftArtifact>>,
+}
+
+#[derive(Deserialize)]
+struct SyftArtifact {
+    name: String,
+    version: Option<String>,
+}
 
 #[derive(Deserialize)]
 struct SpdxDocument {
@@ -180,6 +204,29 @@ fn is_newer_version(
     false
 }
 
+/// Parse an SBOM blob into `name -> version`, accepting Syft or SPDX.
+///
+/// Returns `None` when neither shape yields any packages. That distinction
+/// matters: an empty map used to be indistinguishable from a successful parse
+/// of a package-less document, and it was cached as if it were real.
+fn parse_sbom(bytes: &[u8]) -> Option<HashMap<String, String>> {
+    if let Some(map) = parse_syft(bytes) {
+        return Some(map);
+    }
+    parse_spdx(bytes)
+}
+
+/// Syft JSON — what Universal Blue actually attaches to its images.
+fn parse_syft(bytes: &[u8]) -> Option<HashMap<String, String>> {
+    let doc: SyftDocument = serde_json::from_slice(bytes).ok()?;
+    let artifacts = doc.artifacts?;
+    let map: HashMap<String, String> = artifacts
+        .into_iter()
+        .map(|a| (a.name, a.version.unwrap_or_else(|| "unknown".to_string())))
+        .collect();
+    (!map.is_empty()).then_some(map)
+}
+
 fn parse_spdx(bytes: &[u8]) -> Option<HashMap<String, String>> {
     let doc: SpdxDocument = serde_json::from_slice(bytes).ok()?;
     let mut map: HashMap<String, (String, String)> = HashMap::new();
@@ -194,7 +241,8 @@ fn parse_spdx(bytes: &[u8]) -> Option<HashMap<String, String>> {
             map.insert(pkg.name, (ver, spdx_id));
         }
     }
-    Some(map.into_iter().map(|(k, (v, _))| (k, v)).collect())
+    let map: HashMap<String, String> = map.into_iter().map(|(k, (v, _))| (k, v)).collect();
+    (!map.is_empty()).then_some(map)
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -213,9 +261,17 @@ fn cache_path(digest: &str) -> PathBuf {
     cache_dir().join(digest.replace(':', "_"))
 }
 
+/// Read a cached package map, treating an empty one as a miss.
+///
+/// Not just belt-and-braces for the write-side guard: builds before that guard
+/// existed cached empty maps on every parse miss, and those entries are still
+/// on real machines. Without this, fixing the parser would have left anyone
+/// who ran an older build with a permanently blank package diff and no way to
+/// discover why. An empty SBOM is never a legitimate answer anyway.
 fn load_cache(digest: &str) -> Option<HashMap<String, String>> {
     let data = std::fs::read(cache_path(digest)).ok()?;
-    serde_json::from_slice(&data).ok()
+    let map: HashMap<String, String> = serde_json::from_slice(&data).ok()?;
+    (!map.is_empty()).then_some(map)
 }
 
 fn save_cache(digest: &str, map: &HashMap<String, String>) {
@@ -403,13 +459,28 @@ async fn pull_sbom(
         .await
         .ok()?;
 
-    let map = parse_spdx(&blob_bytes)?;
+    let Some(map) = parse_sbom(&blob_bytes) else {
+        // Worth a warning, not a debug line: it means we fetched a real blob
+        // and understood none of it, which is a format change we need to know
+        // about rather than an empty diff the user quietly sees.
+        tracing::warn!(
+            bytes = blob_bytes.len(),
+            "SBOM blob parsed to zero packages — unrecognised format?"
+        );
+        return None;
+    };
     tracing::debug!(
         "parsed {} packages from SBOM {}",
         map.len(),
         referrer_digest
     );
-    save_cache(referrer_digest, &map);
+    // Only cache a real result. An empty map used to be written here on any
+    // parse miss, and load_cache() would then serve it forever — so a single
+    // bad fetch made the package diff permanently empty on that machine, and
+    // fixing the parser would not have fixed the symptom.
+    if !map.is_empty() {
+        save_cache(referrer_digest, &map);
+    }
     Some(map)
 }
 
@@ -655,9 +726,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_spdx_handles_empty_or_missing_packages() {
-        assert_eq!(parse_spdx(br#"{"packages": []}"#).unwrap().len(), 0);
-        assert_eq!(parse_spdx(br#"{}"#).unwrap().len(), 0);
+    /// A package-less document is a parse *failure*, not an empty result.
+    ///
+    /// This test previously asserted the opposite — that `{"packages": []}`
+    /// and `{}` both yield `Some(empty)`. That contract is what let a Syft
+    /// document (which has no `packages` key at all) parse "successfully" as
+    /// an SPDX document with nothing in it, so the package diff came back
+    /// empty with no error and the empty map was then cached as real. Every
+    /// caller here treats "no packages" as a failure, so say so in the type.
+    fn parse_spdx_rejects_package_less_documents() {
+        assert!(parse_spdx(br#"{"packages": []}"#).is_none());
+        assert!(parse_spdx(br#"{}"#).is_none());
     }
 
     #[test]
@@ -669,5 +748,139 @@ mod tests {
     fn cache_path_replaces_colons() {
         let p = cache_path("sha256:abc123");
         assert!(p.to_string_lossy().ends_with("sha256_abc123"));
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    /// The shape Universal Blue actually publishes. Before this was supported,
+    /// serde parsed it as an SPDX document with no packages — a successful
+    /// parse producing an empty diff, with no error anywhere to notice.
+    #[test]
+    fn parses_syft_artifacts() {
+        let blob = br#"{
+            "artifacts": [
+                {"name": "7zip", "version": "26.02-1.fc44", "type": "rpm"},
+                {"name": "bash", "version": "5.3.0-1.fc44", "type": "rpm"}
+            ],
+            "schema": {"version": "16.0.0"}
+        }"#;
+        let map = parse_sbom(blob).expect("syft document should parse");
+        assert_eq!(map.get("7zip").map(String::as_str), Some("26.02-1.fc44"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn still_parses_spdx_packages() {
+        let blob = br#"{
+            "packages": [
+                {"name": "bash", "versionInfo": "5.3.0-1.fc44", "SPDXID": "SPDXRef-1"}
+            ]
+        }"#;
+        let map = parse_sbom(blob).expect("spdx document should parse");
+        assert_eq!(map.get("bash").map(String::as_str), Some("5.3.0-1.fc44"));
+    }
+
+    /// A document in neither format must be None, not an empty map. The
+    /// difference is what stops a parse miss being cached as a real answer.
+    #[test]
+    fn unknown_format_is_none_not_empty() {
+        assert!(parse_sbom(br#"{"componenets": []}"#).is_none());
+        assert!(parse_sbom(br#"{"artifacts": []}"#).is_none());
+        assert!(parse_sbom(b"not json at all").is_none());
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    /// Hits ghcr.io. `--ignored` because the rest of the suite must stay
+    /// offline and zero-privilege, but the SBOM path cannot be validated any
+    /// other way: every failure mode below is in the fetch/parse chain, not in
+    /// `diff_packages`, which the offline tests already cover thoroughly.
+    ///
+    ///     cargo test -p finupdate-core --lib -- --ignored --nocapture sbom_live
+    /// Diagnostic: dump what the registry actually hands back, so a zero
+    /// package count can be attributed to the fetch or to the parse.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn sbom_live_blob_shape() {
+        let client = make_client();
+        let r = Reference::from_str("ghcr.io/ublue-os/bluefin:stable").unwrap();
+        let referrer = find_spdx_referrer(&client, &r).await;
+        println!("referrer: {referrer:?}");
+        let Some(digest) = referrer else { return };
+
+        let referrer_ref = Reference::with_digest(
+            r.registry().to_string(),
+            r.repository().to_string(),
+            digest.clone(),
+        );
+        let (manifest, _) = client
+            .pull_manifest(&referrer_ref, &RegistryAuth::Anonymous)
+            .await
+            .unwrap();
+        let blob_digest = match &manifest {
+            OciManifest::Image(img) => {
+                for l in &img.layers {
+                    println!("layer mediaType={} size={}", l.media_type, l.size);
+                }
+                img.layers.first().unwrap().digest.clone()
+            }
+            OciManifest::ImageIndex(_) => {
+                println!("referrer is an index, not an image");
+                return;
+            }
+        };
+        let mut blob: Vec<u8> = Vec::new();
+        client
+            .pull_blob(&referrer_ref, blob_digest.as_str(), &mut blob)
+            .await
+            .unwrap();
+        println!("blob bytes: {}", blob.len());
+        println!("first 300: {}", String::from_utf8_lossy(&blob[..blob.len().min(300)]));
+        let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&blob);
+        match parsed {
+            Ok(v) => {
+                println!("top-level keys: {:?}",
+                    v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()));
+                println!("packages len: {:?}",
+                    v.get("packages").and_then(|p| p.as_array()).map(|a| a.len()));
+            }
+            Err(e) => println!("not JSON: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn sbom_live_fetch_returns_packages() {
+        // Point the cache somewhere disposable: save_cache() stores empty maps
+        // too, so one bad fetch otherwise sticks around and every later run
+        // reports zero packages from a cache hit.
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CACHE_HOME", tmp.path()) };
+
+        let result = fetch_and_diff_sboms(
+            "ghcr.io/ublue-os/bluefin:stable".to_string(),
+            "ghcr.io/ublue-os/bluefin:latest".to_string(),
+        )
+        .await;
+
+        let diff = result.expect("SBOM fetch returned None — referrer or blob pull failed");
+        let total = diff.added.len() + diff.removed.len() + diff.upgraded.len();
+        println!(
+            "added={} removed={} upgraded={}",
+            diff.added.len(),
+            diff.removed.len(),
+            diff.upgraded.len()
+        );
+        assert!(
+            total > 0,
+            "both SBOMs parsed to zero packages — What's New would render an \
+             empty package diff on every machine"
+        );
     }
 }
