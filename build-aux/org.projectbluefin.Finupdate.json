@@ -14,7 +14,8 @@
         "--socket=wayland",
         "--talk-name=org.freedesktop.Flatpak",
         "--own-name=org.projectbluefin.Finupdate",
-        "--filesystem=xdg-cache/finupdate:create"
+        "--filesystem=xdg-cache/finupdate:create",
+        "--filesystem=host-os:ro"
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin",

@@ -16,6 +16,7 @@ use adw::prelude::*;
 use gtk::prelude::*;
 use relm4::gtk;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -89,9 +90,10 @@ pub(super) fn read_os_release_field(key: &str) -> Option<String> {
 
     // Fall back to direct file reading
     for path in &[
+        "/run/host/os-release",
         "/run/host/etc/os-release",
+        "/run/host/usr/lib/os-release",
         "/etc/os-release",
-        "/usr/lib/os-release",
         "/usr/lib/os-release",
     ] {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -407,42 +409,122 @@ pub(super) fn short_sha(s: &str) -> String {
     }
 }
 
-pub(super) fn read_logo_icon_name() -> String {
-    // Read LOGO= from os-release first — gets us the distro's branded icon
-    // (e.g. "bluefin", "dakota", "fedora-logo") when the icon theme actually
-    // ships it. Fall through to a safe fallback chain if not.
-    let mut candidates: Vec<String> = Vec::new();
-    for path in &["/run/host/etc/os-release", "/etc/os-release"] {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Some(v) = line.strip_prefix("LOGO=") {
-                    let logo = v.trim_matches('"').to_string();
-                    if !logo.is_empty() {
-                        candidates.push(logo);
-                    }
+/// How the hero row should render the distro logo.
+///
+/// Two arms because the branded asset is usually *not* reachable through the
+/// icon theme. Bluefin Dakota is the motivating case: os-release says
+/// `LOGO=img-logo-icon` and the file really is installed, but as
+/// `/usr/share/pixmaps/img-logo-icon.png`. GTK3 searched `/usr/share/pixmaps`
+/// as a legacy icon-theme fallback; GTK4 dropped that. So `has_icon()` says
+/// no, the chain falls all the way through to `computer-symbolic`, and the
+/// most prominent row in the app renders a generic monitor glyph on a machine
+/// that ships its own logo. A themed name alone cannot express "this file".
+pub(super) enum HeroLogo {
+    /// Resolvable through `gtk::IconTheme` — symbolic, recolourable.
+    Themed(String),
+    /// A full-colour bitmap/SVG on disk that the theme cannot see.
+    File(PathBuf),
+}
+
+/// Directories to search for a `LOGO=` asset, host view first.
+///
+/// The `/run/host` prefixes are the Flatpak view of the host filesystem,
+/// granted by `--filesystem=host-os:ro` in the manifest. Inside a Flatpak the
+/// unprefixed paths belong to the *runtime*, which has no distro branding, so
+/// order matters: host first, sandbox second.
+const LOGO_SEARCH_ROOTS: &[&str] = &[
+    "/run/host/usr/share/pixmaps",
+    "/run/host/usr/share/icons/hicolor/scalable/apps",
+    "/usr/share/pixmaps",
+    "/usr/share/icons/hicolor/scalable/apps",
+];
+
+/// Look for `<logo>.svg` / `<logo>.png` under each root, in order.
+///
+/// Pure over its inputs so it can be tested without a display — which is the
+/// half that was broken. The `IconTheme` half needs a GDK display and stays
+/// untested; it was never the part that failed.
+///
+/// SVG is tried before PNG at each root because the hero icon renders at 32px
+/// and the pixmaps PNGs are frequently 48px or smaller.
+///
+/// The `-dark` variants some distros ship alongside (Dakota has
+/// `img-logo-icon-dark.png`) are deliberately ignored: honouring them means
+/// tracking `AdwStyleManager::is-dark` and swapping at runtime, and a logo
+/// that is right at launch but wrong after a theme toggle is worse than one
+/// that is merely plain. Deferred, not overlooked.
+pub(super) fn resolve_logo_file<P: AsRef<Path>>(roots: &[P], logo: &str) -> Option<PathBuf> {
+    if logo.is_empty() {
+        return None;
+    }
+    for root in roots {
+        for ext in ["svg", "png"] {
+            let candidate = root.as_ref().join(format!("{logo}.{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Parse every `LOGO=` value visible to us, most-authoritative first.
+fn read_logo_names() -> Vec<String> {
+    let mut names = Vec::new();
+    // `/run/host/os-release` is mounted into *every* Flatpak with no
+    // permission needed; the `/run/host/etc` path additionally requires
+    // host-os. Try both so the logo still resolves if the manifest is
+    // tightened later.
+    for path in &[
+        "/run/host/os-release",
+        "/run/host/etc/os-release",
+        "/etc/os-release",
+    ] {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for line in content.lines() {
+            if let Some(v) = line.strip_prefix("LOGO=") {
+                let logo = v.trim_matches('"').to_string();
+                if !logo.is_empty() && !names.contains(&logo) {
+                    names.push(logo);
                 }
             }
         }
     }
-    // Always-available GNOME fallbacks. `distributor-logo-symbolic` is the
-    // freedesktop spec name; `computer-symbolic` is guaranteed by Adwaita.
-    candidates.push("distributor-logo-symbolic".to_string());
-    candidates.push("computer-symbolic".to_string());
+    names
+}
 
-    // Pick the first candidate the icon theme actually has, so we never
-    // render a blank prefix on the hero row. Falls back to the literal
-    // "computer-symbolic" string if no display is available (shouldn't
-    // happen at runtime — GTK requires a display — but keeps the function
-    // total for tests).
+pub(super) fn read_logo_icon_name() -> HeroLogo {
+    let branded = read_logo_names();
+
+    // Tier 1: the icon theme, for distros that install their logo properly.
     if let Some(display) = gtk::gdk::Display::default() {
         let theme = gtk::IconTheme::for_display(&display);
-        for c in &candidates {
-            if theme.has_icon(c) {
-                return c.clone();
+        for name in &branded {
+            if theme.has_icon(name) {
+                return HeroLogo::Themed(name.clone());
             }
         }
     }
-    "computer-symbolic".to_string()
+
+    // Tier 2: the file the theme can't see. This is the arm that fires on
+    // Bluefin/Dakota.
+    for name in &branded {
+        if let Some(path) = resolve_logo_file(LOGO_SEARCH_ROOTS, name) {
+            return HeroLogo::File(path);
+        }
+    }
+
+    // Fallbacks. `distributor-logo-symbolic` is the freedesktop spec name;
+    // `computer-symbolic` is guaranteed by Adwaita, so the row is never blank.
+    if let Some(display) = gtk::gdk::Display::default() {
+        let theme = gtk::IconTheme::for_display(&display);
+        if theme.has_icon("distributor-logo-symbolic") {
+            return HeroLogo::Themed("distributor-logo-symbolic".to_string());
+        }
+    }
+    HeroLogo::Themed("computer-symbolic".to_string())
 }
 
 pub(super) static BOOTC_STATUS_CACHE: Mutex<Option<Value>> = Mutex::new(None);
@@ -903,3 +985,69 @@ pub(super) fn get_host_kernel() -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard for the hero row rendering a generic monitor glyph on
+    /// a machine that ships its own logo.
+    ///
+    /// Bluefin Dakota sets `LOGO=img-logo-icon` and installs
+    /// `/usr/share/pixmaps/img-logo-icon.png`. GTK4 removed GTK3's legacy
+    /// `/usr/share/pixmaps` icon-theme fallback, so the themed lookup misses
+    /// and the branded asset has to be found on disk instead.
+    #[test]
+    fn resolves_a_pixmaps_logo_the_icon_theme_cannot_see() {
+        let dir = tempfile::tempdir().unwrap();
+        let pixmaps = dir.path().join("pixmaps");
+        std::fs::create_dir_all(&pixmaps).unwrap();
+        std::fs::write(pixmaps.join("img-logo-icon.png"), b"\x89PNG").unwrap();
+
+        let found = resolve_logo_file(&[&pixmaps], "img-logo-icon");
+        assert_eq!(found, Some(pixmaps.join("img-logo-icon.png")));
+    }
+
+    /// SVG wins over PNG at the same root: the hero icon renders at 32px and
+    /// the pixmaps PNGs are routinely smaller than that.
+    #[test]
+    fn prefers_svg_over_png() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("logo.png"), b"png").unwrap();
+        std::fs::write(dir.path().join("logo.svg"), b"<svg/>").unwrap();
+
+        assert_eq!(
+            resolve_logo_file(&[dir.path()], "logo"),
+            Some(dir.path().join("logo.svg"))
+        );
+    }
+
+    /// Roots are searched in order, so the host view (`/run/host/...`) beats
+    /// the Flatpak runtime's own unbranded copy.
+    #[test]
+    fn earlier_roots_win() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host");
+        let sandbox = dir.path().join("sandbox");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::create_dir_all(&sandbox).unwrap();
+        std::fs::write(host.join("logo.png"), b"host").unwrap();
+        std::fs::write(sandbox.join("logo.png"), b"sandbox").unwrap();
+
+        assert_eq!(
+            resolve_logo_file(&[&host, &sandbox], "logo"),
+            Some(host.join("logo.png"))
+        );
+    }
+
+    /// An empty or absent `LOGO=` must not turn into a bare-extension probe
+    /// for `".svg"`, and a directory named like the logo is not an icon.
+    #[test]
+    fn rejects_empty_logo_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_logo_file(&[dir.path()], ""), None);
+
+        std::fs::create_dir(dir.path().join("logo.svg")).unwrap();
+        assert_eq!(resolve_logo_file(&[dir.path()], "logo"), None);
+    }
+}

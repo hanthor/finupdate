@@ -1142,12 +1142,20 @@ impl SimpleComponent for StatusView {
             .build();
         hero_row.set_activatable(false);
 
-        // Plain symbolic icon in the accent color — same pattern as
-        // gnome-control-center's PreferencesRow prefixes. No gradient box.
-        let logo_name = read_logo_icon_name();
-        let hero_icon = gtk::Image::from_icon_name(&logo_name);
+        // The distro's own logo where the machine ships one, falling back to a
+        // symbolic glyph. Same prefix pattern as gnome-control-center's
+        // PreferencesRow — no gradient box.
+        let hero_icon = match read_logo_icon_name() {
+            HeroLogo::Themed(name) => {
+                let img = gtk::Image::from_icon_name(&name);
+                // `accent` recolours a symbolic icon. Only meaningful on this
+                // arm — applied to a full-colour logo it does nothing useful.
+                img.add_css_class("accent");
+                img
+            }
+            HeroLogo::File(path) => gtk::Image::from_file(&path),
+        };
         hero_icon.set_pixel_size(32);
-        hero_icon.add_css_class("accent");
         hero_row.add_prefix(&hero_icon);
 
         // "Change" button — opens the rebase dialog to switch to a different image.
