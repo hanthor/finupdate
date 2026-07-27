@@ -752,6 +752,13 @@ impl SimpleComponent for UpdatesPanel {
             }
 
             UpdatesPanelMsg::ShowStatusPage(page) => {
+                // Logged because navigation is otherwise unobservable to the
+                // GUI suite: GTK4 rasterises text into textures, so under
+                // Broadway the DOM has no text nodes to assert against and a
+                // screenshot is the only other evidence. This line lets a
+                // check say "we landed on the changelog page" rather than
+                // "nothing crashed".
+                tracing::info!(page = %page, "Navigating to status page");
                 self.status_view.emit(StatusViewInput::ShowPage(page));
             }
 

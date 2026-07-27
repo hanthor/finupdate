@@ -55,6 +55,7 @@ executed there and drives `broadway-launch.sh`, its sibling in this directory.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -74,6 +75,8 @@ REMOTE_SHOTS = "/var/tmp/gui-shots"
 
 SCREENSHOT_DIR = Path(__file__).resolve().parent / "screenshots"
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 # Default capture geometry. The window is 750x700 by default; the viewport is
 # larger so the whole window including its CSD shadow is in frame.
 VIEWPORT = (1000, 800)
@@ -86,6 +89,22 @@ _BROWSER = None
 #
 # (x, y) in viewport pixels at VIEWPORT size with the default window geometry.
 # `source` names the capture each was read from so they can be re-derived.
+#
+# MOUSE CLICKS ONLY WORK ON THE MAIN WINDOW. Pointer events do not reach
+# AdwDialog content under Broadway — the click lands on nothing and the app
+# carries on as if it never happened. Verified by clicking the "Include App
+# Updates" switch inside the Advanced dialog (it does not toggle) and the
+# Cancel button in the update-check dialog (the run continues); both are
+# ordinary widgets, so this is Broadway pointer routing, not an app bug.
+# Assumed not to affect a real Wayland session, which this suite cannot check.
+#
+# Drive dialogs with the keyboard instead — see MNEMONICS below. Keyboard
+# events reach dialog content fine.
+#
+# This mattered because it was invisible: a click that misses raises nothing,
+# so any check asserting only `assert_no_panics()` passed identically whether
+# it drove the UI or not. Use `interact()` for anything that should change the
+# screen.
 WIDGETS: dict[str, tuple[int, int]] = {
     # from screenshots/light/idle.png
     "check_button": (628, 242),
@@ -96,6 +115,21 @@ WIDGETS: dict[str, tuple[int, int]] = {
     # from screenshots/light/check-dialog.png
     "check_dialog_cancel": (546, 563),
     "check_dialog_close": (587, 172),
+}
+
+# Mnemonics for widgets inside dialogs, where the mouse cannot reach.
+#
+# More robust than the tab counts the coordinate map's siblings rely on: a
+# mnemonic is bound to the widget's own label, so it survives rows being
+# reordered or inserted. These come from the access keys in preferences.rs
+# ("Image _Source", "What's _New", ...), which exist for HIG conformance
+# anyway — the suite just gets to reuse them.
+MNEMONICS: dict[str, str] = {
+    # Advanced dialog → Image group. Each closes the dialog and navigates the
+    # main window's AdwNavigationView to the named page.
+    "image_source_row": "Alt+s",
+    "image_history_row": "Alt+h",
+    "whats_new_row": "Alt+n",
 }
 
 
@@ -268,6 +302,13 @@ class FinupdateApp:
         self.page.mouse.click(x, y)
         self.page.wait_for_timeout(settle_ms)
 
+    def activate(self, widget: str, settle_ms: int = 3000):
+        """Activate a dialog widget by its mnemonic. See MNEMONICS."""
+        if widget not in MNEMONICS:
+            raise KeyError(f"no mnemonic for {widget!r}; known: {sorted(MNEMONICS)}")
+        self.page.keyboard.press(MNEMONICS[widget])
+        self.page.wait_for_timeout(settle_ms)
+
     def click_xy(self, x: int, y: int, settle_ms: int = 2500):
         self.page.mouse.click(x, y)
         self.page.wait_for_timeout(settle_ms)
@@ -299,8 +340,18 @@ class FinupdateApp:
         self.page.screenshot(path=str(path))
         return path
 
+    def pixels(self) -> bytes:
+        """Raw bytes of the current frame, for change detection."""
+        return self.page.screenshot()
+
     def app_log(self) -> str:
-        return sh(f"cat {APP_LOG} 2>/dev/null", check=False).stdout
+        raw = sh(f"cat {APP_LOG} 2>/dev/null", check=False).stdout
+        # tracing's ANSI colouring interleaves escape sequences *inside* field
+        # renderings — `page=changelog` is emitted as
+        # `\x1b[3mpage\x1b[0m\x1b[2m=\x1b[0mchangelog`. A plain substring
+        # search for "page=changelog" therefore never matches, which would
+        # make every assert_log on a structured field a silent false negative.
+        return ANSI_RE.sub("", raw)
 
     def journal(self) -> list[JournalEntry]:
         out = sh(f"cat {JOURNAL_PATH} 2>/dev/null", check=False).stdout
@@ -375,4 +426,44 @@ class FinupdateApp:
                 + "\n".join(
                     l for l in self.app_log().splitlines() if "panicked" in l
                 )[:1500]
+            )
+
+    def assert_log(self, needle: str, *, absent: bool = False):
+        """Assert a line is (or isn't) in the app log.
+
+        GTK4 rasterises text into GPU textures, so under Broadway the DOM
+        carries no text nodes and Playwright's text selectors are useless. A
+        log line is the cheapest observable the app can offer the harness about
+        its own internal state.
+        """
+        log = self.app_log()
+        if absent and needle in log:
+            raise CheckFailed(f"did not expect {needle!r} in the app log")
+        if not absent and needle not in log:
+            raise CheckFailed(
+                f"expected {needle!r} in the app log\nlog tail:\n{log[-2000:]}"
+            )
+
+    def interact(self, fn, *, settle_ms: int = 3000, what: str = "interaction"):
+        """Run `fn`, then fail if the frame is byte-identical to before it.
+
+        The reason this exists. Every dialog-driven check in this suite once
+        asserted nothing but `assert_no_panics()`, so a click that landed on
+        nothing passed exactly like a click that worked — and several did land
+        on nothing. `check-dialog-cancel` reported "Cancel closes the dialog"
+        while the captured screenshot showed the dialog still open, mid-run.
+        A no-op cannot be distinguished from success by a green exit code, only
+        by a human looking at the PNG, which is not a test.
+
+        This does not prove the *right* thing happened — pair it with
+        `assert_log` or `assert_action` for that. It proves something did.
+        """
+        before = self.pixels()
+        fn()
+        self.page.wait_for_timeout(settle_ms)
+        if self.pixels() == before:
+            raise CheckFailed(
+                f"{what} changed nothing on screen — the interaction was a "
+                "no-op. A pixel-identical frame after a click means the click "
+                "missed, not that the app agreed with you."
             )

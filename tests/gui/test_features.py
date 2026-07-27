@@ -78,16 +78,29 @@ def _dev_mode_banner():
 @check("check-dialog", "Clicking Check opens the update-check dialog with 4 modules")
 def _check_dialog():
     with FinupdateApp() as app:
-        app.click("check_button", settle_ms=4000)
+        app.interact(
+            lambda: app.click("check_button", settle_ms=0),
+            settle_ms=4000,
+            what="clicking Check",
+        )
         app.screenshot("check-dialog")
         app.assert_no_panics()
 
 
-@check("check-dialog-cancel", "Cancel closes the check dialog and returns to idle")
+@check("check-dialog-cancel", "Escape closes the check dialog and returns to idle")
 def _check_dialog_cancel():
+    # This check used to click Cancel and assert only that nothing panicked.
+    # The pointer never reaches dialog content under Broadway, so the click was
+    # a no-op and the check passed for six months against a dialog that stayed
+    # open mid-run — visible in the committed screenshot the whole time.
+    # Escape is a real user affordance and one the keyboard can actually drive.
     with FinupdateApp() as app:
         app.click("check_button", settle_ms=4000)
-        app.click("check_dialog_cancel", settle_ms=2000)
+        app.interact(
+            lambda: app.key("Escape", settle_ms=0),
+            settle_ms=2500,
+            what="pressing Escape",
+        )
         app.screenshot("check-dialog-cancelled")
         app.assert_no_panics()
 
@@ -120,18 +133,70 @@ def _update_uptodate():
 
 # ── Navigation ───────────────────────────────────────────────────────────────
 
-@check("advanced-page", "Advanced row navigates to the advanced subpage")
+@check("advanced-page", "Advanced row opens the Advanced dialog")
 def _advanced():
     with FinupdateApp() as app:
-        app.click("advanced_row", settle_ms=3000)
+        app.interact(
+            lambda: app.click("advanced_row", settle_ms=0),
+            settle_ms=3000,
+            what="clicking Advanced",
+        )
         app.screenshot("advanced")
         app.assert_no_panics()
+
+
+def _open_image_page(app, widget: str, page_tag: str, shot: str):
+    """Advanced → Image group → one of the three subpages.
+
+    Asserts on three levels, because any one of them alone can pass while the
+    feature is broken: the frame changed (the keypress did something), the app
+    logged the navigation with the right page tag (it did the *right* thing),
+    and nothing panicked.
+    """
+    app.click("advanced_row", settle_ms=3000)
+    app.interact(
+        lambda: app.activate(widget, settle_ms=0),
+        settle_ms=12000,
+        what=f"activating {widget}",
+    )
+    app.screenshot(shot)
+    app.assert_log(f"page={page_tag}")
+    app.assert_no_panics()
+
+
+@check("whats-new", "What's New reaches the changelog page and renders content")
+def _whats_new():
+    # "Did we actually verify the changelogs work?" — until recently the honest
+    # answer was no: the page could not be reached at all, and the first
+    # version of this check clicked at a coordinate the pointer never reaches,
+    # then passed because it only asserted the absence of a panic.
+    with FinupdateApp() as app:
+        _open_image_page(app, "whats_new_row", "changelog", "whats-new")
+
+
+@check("image-history", "Image History reaches the deployment list")
+def _image_history():
+    with FinupdateApp() as app:
+        _open_image_page(app, "image_history_row", "history", "image-history")
+        # Browsing history must not stage a rollback by itself.
+        app.assert_no_action("rollback")
+        app.assert_no_action("switch_image")
+
+
+@check("image-source", "Image Source reaches the registry/tag/signing page")
+def _image_source():
+    with FinupdateApp() as app:
+        _open_image_page(app, "image_source_row", "source", "image-source")
 
 
 @check("main-menu", "Hamburger menu opens (popover renders under Broadway)")
 def _main_menu():
     with FinupdateApp() as app:
-        app.click("main_menu", settle_ms=2000)
+        app.interact(
+            lambda: app.click("main_menu", settle_ms=0),
+            settle_ms=2000,
+            what="opening the main menu",
+        )
         app.screenshot("main-menu")
         app.assert_no_panics()
 
