@@ -19,11 +19,19 @@ set -euo pipefail
 
 REPO="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
 WORKDIR="${WORKDIR:-$REPO/target/cc-panel-toolbox}"
-GBM_BRANCH="${GBM_BRANCH:-gnome-49}"  # matches Fedora 43 toolbox GNOME stack; bump to gnome-50 on rawhide
+# Must match the GNOME platform of $TOOLBOX_IMAGE, not just its GTK version:
+#   Fedora 43 -> GNOME 49  (GTK 4.20, libadwaita 1.8, gsettings-desktop-schemas 49)
+#   Fedora 44 -> GNOME 50
+# GTK 4.20 / libadwaita 1.8 are GNOME *49*, which is easy to misread as 50.
+# gnome-control-center's gnome-50 branch requires gsettings-desktop-schemas
+# >= 50.alpha and fails at meson configure on Fedora 43.
+GBM_BRANCH="${GBM_BRANCH:-gnome-49}"
 PATCH_OUT="$REPO/build-aux/cc-panel-patches"
 
 mkdir -p "$WORKDIR" "$PATCH_OUT"
 
+# Override both together for a GNOME 50 build:
+#   TOOLBOX=finupdate-f44 GBM_BRANCH=gnome-50 build-aux/test-cc-panel-in-toolbox.sh
 TOOLBOX="${TOOLBOX:-finupdate}"
 
 echo "==> Building & installing libfinupdate into toolbox /usr/local"
@@ -39,8 +47,24 @@ toolbox run --container "$TOOLBOX" bash -c "
 CC_DIR="$WORKDIR/gnome-control-center"
 if [[ ! -d "$CC_DIR/.git" ]]; then
   echo "==> Cloning gnome-control-center ($GBM_BRANCH)"
-  git clone --depth=1 --branch "$GBM_BRANCH" \
-    https://gitlab.gnome.org/GNOME/gnome-control-center.git "$CC_DIR"
+  # gitlab.gnome.org resets connections intermittently — a single failed clone
+  # would otherwise abort the whole build after libfinupdate had already been
+  # installed. Retry a few times, and clean up a partial checkout between
+  # attempts so the retry isn't refused for a non-empty target.
+  cloned=0
+  for attempt in 1 2 3 4 5; do
+    if git clone --depth=1 --branch "$GBM_BRANCH" \
+         https://gitlab.gnome.org/GNOME/gnome-control-center.git "$CC_DIR"; then
+      cloned=1; break
+    fi
+    echo "    clone attempt $attempt failed; retrying in $((attempt * 5))s"
+    rm -rf "$CC_DIR"
+    sleep $((attempt * 5))
+  done
+  if [[ $cloned -ne 1 ]]; then
+    echo "!! could not clone gnome-control-center after 5 attempts" >&2
+    exit 1
+  fi
 fi
 
 echo "==> Syncing vendored panel sources into panels/updates/"
@@ -106,6 +130,8 @@ echo "==> Saving patch artifacts to $PATCH_OUT"
 (cd "$CC_DIR" && git diff -- panels/meson.build      > "$PATCH_OUT/panels-meson.patch")
 
 # --- build inside toolbox --------------------------------------------
+# Override both together for a GNOME 50 build:
+#   TOOLBOX=finupdate-f44 GBM_BRANCH=gnome-50 build-aux/test-cc-panel-in-toolbox.sh
 TOOLBOX="${TOOLBOX:-finupdate}"
 echo "==> Building gnome-control-center inside toolbox '$TOOLBOX'"
 BLUEPRINT_DIR="$WORKDIR/blueprint-compiler"
@@ -113,7 +139,12 @@ toolbox run --container "$TOOLBOX" bash -c "
   set -euo pipefail
   # Install cc build deps once. dnf is fast when there's nothing to do.
   sudo dnf install -y 'dnf-command(builddep)' >/dev/null
-  sudo dnf builddep -y gnome-control-center >/dev/null
+  # --allowerasing: toolbox images ship systemd-standalone-tmpfiles instead of
+  # full systemd, and gnome-control-center's build deps pull colord-devel ->
+  # colord -> systemd, which conflicts with the stub. Letting dnf swap them is
+  # harmless in a disposable toolbox, and without it builddep aborts on
+  # Fedora 44 with a wall of "conflicting requests".
+  sudo dnf builddep -y --allowerasing gnome-control-center >/dev/null
 
   # Fedora 43 ships blueprint-compiler 0.18 but cc wants >=0.19, and
   # cc's subproject fallback for blueprint-compiler is broken on this

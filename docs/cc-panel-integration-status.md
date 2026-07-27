@@ -1,4 +1,4 @@
-# The Updates panel on GNOME 49: builds, appears, doesn't load
+# Updates panel integration status (GNOME 49 and 50)
 
 Status of `build-aux/test-cc-panel-in-toolbox.sh` as of 2026-07-27, run in the
 Fedora 43 `finupdate` toolbox against gnome-control-center `gnome-49`.
@@ -81,3 +81,73 @@ is consistent with wanting a top-level panel.
 This was not a problem when the panel was first written — GNOME 49 reorganised
 the shell. It is a one-line change, but it needs a rebuild to confirm, so it is
 recorded here rather than guessed at.
+
+
+---
+
+# GNOME 50 / Fedora 44 — current state
+
+## Platform
+
+`gnome-control-center`'s `gnome-50` branch requires
+`gsettings-desktop-schemas >= 50.alpha`. **Fedora 43 cannot build it** — it has
+49.1 and meson fails at configure. Fedora 44 has 50.1 and configures cleanly.
+
+Note that GTK and libadwaita versions are *not* a usable signal here: F43 and
+F44 both report GTK 4.22.4 / libadwaita 1.9.2. Only the schemas package
+distinguishes the platform. Build both with:
+
+```sh
+# GNOME 49 (Fedora 43)
+build-aux/test-cc-panel-in-toolbox.sh
+
+# GNOME 50 (Fedora 44) — the Dakota target
+TOOLBOX=finupdate-f44 GBM_BRANCH=gnome-50 \
+  WORKDIR=$PWD/target/cc-panel-f44 build-aux/test-cc-panel-in-toolbox.sh
+```
+
+Fedora 44 additionally needs `dnf builddep --allowerasing`: toolbox images ship
+`systemd-standalone-tmpfiles`, which conflicts with the full `systemd` that
+`colord-devel` pulls in. Now handled by the script.
+
+## Fixed: the panel now loads
+
+The `.desktop` category was changed from `X-GNOME-SystemSettings` to
+`X-GNOME-DevicesSettings`. With that, the `Invalid subpage: 'updates'` error is
+gone on GNOME 50 and the panel's backend genuinely runs inside
+gnome-control-center — the log shows finupdate's own work happening:
+
+```
+changelog: phase=list_available_tags count=642
+changelog: phase=list_versions count=8
+changelog: phase=github_commits count=30
+```
+
+That is `finupdate_panel_widget_new` being called from `cc-updates-panel.c`.
+
+## Remaining: the widget never gets parented
+
+```
+Adwaita CRITICAL: adw_bin_set_child: assertion 'ADW_IS_BIN (self)' failed
+```
+
+`self->content_bin` is NULL, so the template child binding is not taking
+effect. `cc-updates-panel.ui` declares:
+
+```xml
+<template class="CcUpdatesPanel" parent="CcPanel">
+  <child>
+    <object class="AdwBin" id="content_bin"/>
+  </child>
+</template>
+```
+
+`CcPanel`'s child handling changed in GNOME 49/50 — a plain `<child>` no longer
+lands where this code expects. Compare against a current in-tree panel's
+`.ui` (e.g. `panels/display/`) to see the shape GNOME 50 expects, and check
+whether `CcPanel` now wants the content set through a property rather than as a
+template child.
+
+Everything else is in place: the panel compiles into the binary, appears in the
+sidebar, is selected without error, and its backend runs. This is the last
+thing between that and a usable shipped panel.

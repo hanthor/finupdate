@@ -6,7 +6,13 @@ Icon=org.gnome.Settings-system-symbolic
 Terminal=false
 Type=Application
 StartupNotify=true
-Categories=GNOME;GTK;Settings;X-GNOME-Settings-Panel;X-GNOME-SystemSettings;
+# X-GNOME-SystemSettings makes cc treat this as a *subpage of System*:
+# cc-window.c rewrites the panel id to "system" and passes the original as a
+# subpage parameter, which cc-panel.c then rejects with "Invalid subpage:
+# 'updates'" because System has no such subpage. That is how GNOME 49/50
+# consolidated About/Date & Time/Region/Users. A genuine top-level panel such
+# as panels/display uses X-GNOME-DevicesSettings instead.
+Categories=GNOME;GTK;Settings;X-GNOME-Settings-Panel;X-GNOME-DevicesSettings;
 OnlyShowIn=GNOME;Unity;
 NoDisplay=true
 X-GNOME-Bugzilla-Bugzilla=GNOME
