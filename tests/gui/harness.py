@@ -150,8 +150,15 @@ def sh(cmd: str, check: bool = True, timeout: int = 120) -> subprocess.Completed
     single wedged command into a suite that hung indefinitely with no output.
     """
     try:
+        # `bash -c`, not `-lc`. A login shell sources /etc/profile.d/* and
+        # ~/.profile, and on a host where those emit errors (a missing
+        # ~/.cargo/env, a broken motd hook) podman stops detecting rootless mode
+        # and fails with "creating runtime static files directory
+        # /var/lib/containers/storage/libpod: permission denied". The suite then
+        # reports ERR_CONNECTION_REFUSED, which points at Broadway rather than
+        # at the shell. Nothing here needs a login environment.
         return subprocess.run(
-            ["bash", "-lc", cmd], check=check,
+            ["bash", "-c", cmd], check=check,
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
