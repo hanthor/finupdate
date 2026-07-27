@@ -374,7 +374,11 @@ fn build_system_group(
         // up moves the view behind it and the user sees nothing happen.
         let dlg = dialog.clone();
         row.connect_activated(move |_| {
-            dlg.close();
+            // force_close(), not close(): AdwDialog::close() is a *request* that
+            // emits ::close-attempt and can be refused, and it was being ignored
+            // here — the row navigated the main window while the modal stayed up,
+            // so nothing appeared to happen.
+            dlg.force_close();
             let _ = s.send(UpdatesPanelMsg::ShowStatusPage(tag.clone()));
         });
         image_group.add(&row);
