@@ -151,9 +151,20 @@ toolbox run --container "$TOOLBOX" bash -c "
   # meson combo. Install 0.20.x into /usr/local so cc finds it via PATH.
   if ! command -v /usr/local/bin/blueprint-compiler >/dev/null; then
     if [[ ! -d '$BLUEPRINT_DIR/.git' ]]; then
-      git clone --depth=1 \
-        https://gitlab.gnome.org/jwestman/blueprint-compiler.git \
-        '$BLUEPRINT_DIR'
+      # Same flaky remote as the cc clone above; retry rather than abort the
+      # whole build after libfinupdate has already been installed.
+      bp_cloned=0
+      for bp_try in 1 2 3 4 5; do
+        if git clone --depth=1 \
+             https://gitlab.gnome.org/jwestman/blueprint-compiler.git \
+             '$BLUEPRINT_DIR'; then
+          bp_cloned=1; break
+        fi
+        echo \"    blueprint clone attempt \$bp_try failed; retrying\"
+        rm -rf '$BLUEPRINT_DIR'
+        sleep \$((bp_try * 5))
+      done
+      [[ \$bp_cloned -eq 1 ]] || { echo '!! blueprint-compiler clone failed' >&2; exit 1; }
     fi
     cd '$BLUEPRINT_DIR'
     meson setup _build --prefix=/usr/local --wipe
@@ -197,6 +208,17 @@ exec toolbox run --container "${TOOLBOX}" env \\
   "$CC_DIR/builddir/shell/gnome-control-center" "\${@:-updates}"
 EOF
 chmod +x "$LAUNCHER"
+
+# toolbox run does not reliably propagate the inner command's exit code, so a
+# failed build inside the container can still return 0 here — and the banner
+# below would then print a path to a binary that does not exist. Assert the
+# artifact instead of trusting the exit status.
+CC_BIN="$CC_DIR/builddir/shell/gnome-control-center"
+if [[ ! -x "$CC_BIN" ]]; then
+  echo "!! build did not produce $CC_BIN" >&2
+  echo "!! (toolbox run can mask inner failures — check the output above)" >&2
+  exit 1
+fi
 
 cat <<EOF
 
