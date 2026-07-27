@@ -178,12 +178,34 @@ Gdk: Cannot get portal org.freedesktop.host.portal.Registry version: Timeout was
 — and cc 50 may harden its reliance on a session/compositor surface that the
 Broadway backend does not provide.
 
-**Consequence for validating this panel:** Broadway is not a usable harness for
-gnome-control-center 50. Verifying the panel renders needs a real display —
-a Fedora 44 VM with a GNOME session, where the patched binary can be run
-directly (or the system Settings hot-patched). That is the remaining step; the
-two fixes above are confirmed only by the disappearance of their CRITICALs from
-the log, which is necessary but not sufficient.
+### It is the portal, not the display backend
+
+Xvfb (GTK's X11 backend) was tried as an alternative. Same result: cc 50 runs
+but maps **zero windows** (`xwininfo -root -children` reports none), with the
+same warning on both backends:
+
+```
+Gdk: Cannot get portal org.freedesktop.host.portal.Registry version: Timeout was reached
+```
+
+So this is not Broadway-specific and not a display-server problem.
+**gnome-control-center 50 requires a working xdg-desktop-portal** and blocks
+before presenting a window when it cannot reach one. No headless harness —
+Broadway, Xvfb, or otherwise — will satisfy that, because the portal needs a
+real session bus and a desktop environment behind it.
+
+**Consequence for validating this panel:** it must be done in a full GNOME
+session. A Fedora 44 VM running Workstation, with the patched binary copied in
+(`run-cc.sh` already sets the staging XDG_DATA_DIRS and schema paths it needs),
+or the system Settings hot-patched in place.
+
+Neither build host has VM tooling: both are Bluefin (immutable), `libvirtd` is
+inactive and qemu/virt-install are absent, though `/dev/kvm` exists on
+himachal. So this needs either layering virt tooling onto a host, a toolbox
+with qemu, or simply running the binary on a desktop machine.
+
+The two fixes above remain confirmed only by the disappearance of their
+CRITICALs from the log — necessary, not sufficient.
 
 ## Previously: the widget never gets parented
 
