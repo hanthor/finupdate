@@ -156,15 +156,34 @@ g_resources_register (cc_updates_get_resource ());
 After this, both CRITICALs are gone: `grep -c "does not exist"` and
 `grep -c ADW_IS_BIN` on the cc log are both 0.
 
-## Not yet confirmed: visual render
+## Broadway cannot render gnome-control-center 50 at all
 
-The panel loads without error, but a Broadway screenshot of the running
-control-center still came back blank, and that has **not** been explained. It
-may be the harness rather than the panel — blank captures in this project have
-repeatedly turned out to be stale broadwayd instances rather than app faults
-(see docs/GUI_TESTING.md) — but that is a hypothesis, not a finding. The next
-step is to confirm rendering on a real display, or to establish the Broadway
-capture path is sound for the F44 toolbox specifically.
+The panel loads without error, but Broadway screenshots of the running
+control-center come back blank. **This is the harness, not the panel.**
+
+Discriminator: launch the patched gnome-50 control-center and capture it
+*without touching the Updates panel*. The result is still completely blank —
+no sidebar, no System page, nothing. That is all upstream code; our panel plays
+no part in rendering it. The same harness renders gnome-control-center **49**
+correctly (see `cc-settings-sidebar.png`), and renders finupdate itself and the
+FFI panel widget correctly on both.
+
+So Broadway + gnome-control-center 50 is the broken combination. A plausible
+cause is the portal dependency — the log shows
+
+```
+Gdk: Cannot get portal org.freedesktop.host.portal.Registry version: Timeout was reached
+```
+
+— and cc 50 may harden its reliance on a session/compositor surface that the
+Broadway backend does not provide.
+
+**Consequence for validating this panel:** Broadway is not a usable harness for
+gnome-control-center 50. Verifying the panel renders needs a real display —
+a Fedora 44 VM with a GNOME session, where the patched binary can be run
+directly (or the system Settings hot-patched). That is the remaining step; the
+two fixes above are confirmed only by the disappearance of their CRITICALs from
+the log, which is necessary but not sufficient.
 
 ## Previously: the widget never gets parented
 
