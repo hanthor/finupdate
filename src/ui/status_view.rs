@@ -2329,8 +2329,13 @@ impl SimpleComponent for StatusView {
                 // upstream registry accumulates daily tags.
                 const HISTORY_MAX: usize = 8;
 
-                let local_tags: std::collections::HashSet<&str> =
-                    self.deployments.iter().map(|d| d.tag.as_str()).collect();
+                // Owned + mutable, and updated as we push. It used to be
+                // computed once from self.deployments and never touched again,
+                // so two registry versions resolving to the same version string
+                // — the sha-tagged and dated-tagged forms of one build — both
+                // passed the check and the history list showed each image twice.
+                let mut seen_tags: std::collections::HashSet<String> =
+                    self.deployments.iter().map(|d| d.tag.clone()).collect();
                 let mut merged = self.deployments.clone();
                 // Walk versions newest-first (they're sorted ascending by date)
                 // so the cap drops oldest, not newest.
@@ -2338,7 +2343,7 @@ impl SimpleComponent for StatusView {
                     if merged.len() >= HISTORY_MAX {
                         break;
                     }
-                    if !local_tags.contains(v.version.as_str()) {
+                    if seen_tags.insert(v.version.clone()) {
                         let date_str = v.date.format("%b %-d, %Y").to_string();
                         merged.push(MockDeployment {
                             id: format!("remote-{}", v.version),
