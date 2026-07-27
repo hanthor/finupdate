@@ -274,7 +274,7 @@ class FinupdateApp:
         for _ in range(tabs):
             self.page.keyboard.press("Tab")
             self.page.wait_for_timeout(200)
-        self.page.keyboard.press("Return")
+        self.page.keyboard.press("Enter")
         self.page.wait_for_timeout(settle_ms)
 
     # ── observing ────────────────────────────────────────────────────────
