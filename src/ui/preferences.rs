@@ -317,7 +317,7 @@ fn build_network_group(page: &adw::PreferencesPage, shared: &Rc<RefCell<Settings
 
 fn build_system_group(
     page: &adw::PreferencesPage,
-    _dialog: &adw::PreferencesDialog,
+    dialog: &adw::PreferencesDialog,
     sender: relm4::Sender<UpdatesPanelMsg>,
 ) {
     // Helper: build a chevron-suffixed activatable ActionRow with the given
@@ -335,6 +335,51 @@ fn build_system_group(
         row.add_suffix(&chev);
         row
     };
+
+    // ── Image group ──────────────────────────────────────────────────────
+    // These three pages exist as AdwNavigationPages in status_view but had no
+    // entry point: ShowStatusPage was only ever emitted with "main", and the
+    // changelog was reachable solely through the update banner's "What's New"
+    // button — which only appears when an update is available. On an
+    // up-to-date system the image history and changelog were therefore
+    // unreachable, even though the Advanced row advertised them.
+    let image_group = adw::PreferencesGroup::builder()
+        .title("Image")
+        .description("Where this system's OS image comes from, and what has changed")
+        .build();
+
+    for (title, subtitle, tag) in [
+        (
+            "Image _Source",
+            "Registry, tag, and signing policy",
+            "source",
+        ),
+        (
+            "Image _History",
+            "Previous deployments, rollback, and pinning",
+            "history",
+        ),
+        (
+            "What's _New",
+            "Changelog and package differences for this image",
+            "changelog",
+        ),
+    ] {
+        let row = make_row(title, subtitle);
+        row.set_use_underline(true);
+        let s = sender.clone();
+        let tag = tag.to_string();
+        // Close the dialog first. These pages are pushed onto the *main
+        // window's* AdwNavigationView, so navigating while this modal is still
+        // up moves the view behind it and the user sees nothing happen.
+        let dlg = dialog.clone();
+        row.connect_activated(move |_| {
+            dlg.close();
+            let _ = s.send(UpdatesPanelMsg::ShowStatusPage(tag.clone()));
+        });
+        image_group.add(&row);
+    }
+    page.add(&image_group);
 
     // ── Reset group (destructive) ────────────────────────────────────────
     // Separate group so the destructive actions are visually segregated from

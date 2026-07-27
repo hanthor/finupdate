@@ -1365,7 +1365,11 @@ impl SimpleComponent for StatusView {
         // hamburger menu; we follow the same convention.
         let advanced_row = adw::ActionRow::builder()
             .title("_Advanced")
-            .subtitle("Image source, history, rollback, reset, and settings")
+            // Must match what the dialog actually contains. It previously promised
+            // "Image source, history, rollback" — none of which are in there;
+            // the dialog has Automatic Updates, Network and Reset. Advertising
+            // features that are not behind the row reads as a broken app.
+            .subtitle("Automatic updates, network, and reset")
             .activatable(true)
             .use_underline(true)
             .build();
