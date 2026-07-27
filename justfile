@@ -241,7 +241,7 @@ gui-test-setup:
 #   just broadway                  # default geometry
 #   just broadway 360x640          # narrow, to exercise the breakpoint
 broadway size="":
-    WSIZE={{ size }} /var/tmp/broadway-launch.sh
+    WSIZE={{ size }} tests/gui/broadway-launch.sh
 
 # Run dogtail/behave GUI tests against the *currently installed* Flatpak,
 # inside the current GNOME Wayland session. Requires:

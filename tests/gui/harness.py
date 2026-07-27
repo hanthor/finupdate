@@ -49,7 +49,7 @@ Prefer `activate_by_keyboard()` where the tab order is stable — it survives
 layout shifts that would break a coordinate.
 
 Everything runs on himachal (the local VPS cannot build GTK4). This module is
-executed there and drives `/var/tmp/broadway-launch.sh` locally.
+executed there and drives `broadway-launch.sh`, its sibling in this directory.
 """
 
 from __future__ import annotations
@@ -61,7 +61,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 BROADWAY_URL = "http://localhost:8085"
-LAUNCHER = "/var/tmp/broadway-launch.sh"
+# The tracked script, not a copy of it. This used to point at
+# /var/tmp/broadway-launch.sh, which had to be refreshed by hand — so editing
+# the version under git changed nothing, and the suite kept exercising whatever
+# had last been copied out. Silent staleness in a test harness is worse than a
+# crash: the run goes green against code that isn't the code under review.
+LAUNCHER = str(Path(__file__).resolve().parent / "broadway-launch.sh")
 # Must match broadway-launch.sh. $HOME is shared host<->toolbox; /var/tmp is not.
 JOURNAL_PATH = str(Path.home() / ".finupdate-test-journal.jsonl")
 APP_LOG = "/var/tmp/finupdate-broadway.log"
@@ -222,7 +227,15 @@ class FinupdateApp:
         env = [f'APP_ARGS="{self._args()}"', f'FIN_IMAGE={self.image}']
         if self.window_size:
             env.append(f"WSIZE={self.window_size}")
-        sh(f"{' '.join(env)} {LAUNCHER} >/dev/null 2>&1")
+        # Keep the launcher's output rather than routing it to /dev/null: it
+        # carries the compiler diagnostics when the build step fails, and
+        # without them a broken build surfaces as a bare "exit status 1".
+        proc = sh(f"{' '.join(env)} {LAUNCHER} 2>&1", check=False, timeout=1800)
+        if proc.returncode != 0:
+            raise CheckFailed(
+                f"launcher failed (exit {proc.returncode}):\n"
+                f"{proc.stdout[-2000:]}{proc.stderr[-2000:]}"
+            )
         # The launcher already sleeps for the listener; give the first frame
         # time to paint before any capture.
         time.sleep(4)

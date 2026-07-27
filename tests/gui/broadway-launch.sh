@@ -32,6 +32,33 @@ fi
 rm -f "$JOURNAL" /var/tmp/finupdate-broadway.log /var/tmp/broadwayd.log
 rm -rf "$TESTCFG"; mkdir -p "$TESTCFG"
 
+# Build before launching. Without this the suite runs whatever binary happens
+# to be in target/ — which passed green against a hero-row fix that wasn't in
+# it, and only the screenshot gave it away. A GUI suite that can silently test
+# stale code is not a GUI suite. Set SKIP_BUILD=1 to re-launch a binary you
+# built by hand.
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    echo "building..."
+    # `toolbox run` returns 0 even when the command inside fails, so the exit
+    # status is useless here — check for a sentinel the inner shell only prints
+    # on success. Getting this wrong means a failed build launches the previous
+    # binary and the suite reports green.
+    # `set -o pipefail` is load-bearing: `cargo build | tail -20 && echo OK`
+    # takes its status from `tail`, which always succeeds, so the sentinel was
+    # printed even for a build that failed to compile.
+    BUILD_OUT=$(toolbox run --container finupdate bash -c \
+        "set -o pipefail; cd $REPO && TMPDIR=/var/tmp/finupdate-build \
+         cargo build 2>&1 | tail -20 && echo __BUILD_OK__" 2>&1)
+    case "$BUILD_OUT" in
+        *__BUILD_OK__*) : ;;
+        *)
+            echo "$BUILD_OUT" >&2
+            echo "BUILD FAILED — refusing to launch a stale binary" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 setsid toolbox run --container finupdate \
     gtk4-broadwayd --port "$PORT" "$DISPLAY_ID" \
     </dev/null >/var/tmp/broadwayd.log 2>&1 &
