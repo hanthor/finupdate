@@ -95,7 +95,29 @@ The resulting `gnome-control-center` binary statically links the
 `updates` panel into the same blob as the upstream panels — there's no
 runtime plugin discovery.
 
-### 6. Ship the patched package
+### 6. Build at the **release** profile — and check it isn't in dry-run
+
+`cc-updates-panel.c` embeds the *entire* app through
+`finupdate_panel_widget_new`, so the panel inherits finupdate's settings
+defaults wholesale. That makes the meson profile load-bearing for shipping:
+
+```sh
+meson setup builddir              # -Dprofile=default → PROFILE=''  (release)
+meson setup builddir -Dprofile=development   # → PROFILE='Devel'   (dry-run)
+```
+
+Only `Devel` enables dry-run by default. A build that comes up in dry-run looks
+completely normal but **withholds every privileged command**, so the panel
+appears to work while quietly refusing to update anything — with no error to
+chase. Confirm on first launch that the panel does *not* show the
+"Dry run — actions are recorded, your system is not modified" banner.
+
+(An earlier version of `Settings::default()` keyed dry-run off
+`PROFILE == "Devel" || PROFILE.is_empty()`, which caught the release build too.
+That is fixed, and `only_an_explicit_devel_profile_counts_as_a_dev_build`
+guards it.)
+
+### 7. Ship the patched package
 
 Replace the system `gnome-control-center` with the patched build. On
 Bluefin/Dakota this lands as a Containerfile step in the image build:
@@ -121,10 +143,23 @@ If you need to change the C ABI surface (i.e. `src/ffi.rs` in the
 finupdate repo), re-run `build-aux/install-libfinupdate.sh` to reinstall
 the cdylib + header, then rebuild cc.
 
-## What's not yet implemented
+## What's implemented
 
-Everything beyond the hero row + Check button. The remaining work is
-roughly:
+Out of date below — `finupdate_panel_widget_new` now returns the whole
+`UpdatesPanel`, so the panel already renders the full app: hero row, update
+check, automatic-updates toggle, the Advanced subpage, and the
+`AdwNavigationView` drill-downs (Image Source, Image History, What's New).
+It also inherits the adaptive layout work, so it shrinks with
+gnome-control-center's own breakpoints rather than forcing the Settings window
+wider.
+
+**Not yet verified:** `finupdate_panel_widget_new` itself has never been
+exercised end-to-end. `examples/panel-demo/` calls
+`finupdate_changelog_widget_new` and `finupdate_rebase_widget_new` — the
+individual widgets — so the entry point the shipped panel actually uses is
+still untested inside a real patched gnome-control-center.
+
+## Older notes on remaining work
 
 - Wire the rebase dialog as a Cc subpage (adw::NavigationView).
 - Embed the changelog "What's New" widget (`status_view.rs`'s
