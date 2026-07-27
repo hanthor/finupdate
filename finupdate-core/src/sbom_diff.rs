@@ -805,11 +805,17 @@ mod direction_tests {
         let d = diff_packages(&booted, &target);
 
         assert_eq!(
-            d.upgraded.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            d.upgraded
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
             ["bootc"]
         );
         assert_eq!(
-            d.downgraded.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            d.downgraded
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
             ["gnome-shell"]
         );
         assert!(d.removed.is_empty() && d.added.is_empty());
@@ -917,14 +923,23 @@ mod network_tests {
             .await
             .unwrap();
         println!("blob bytes: {}", blob.len());
-        println!("first 300: {}", String::from_utf8_lossy(&blob[..blob.len().min(300)]));
+        println!(
+            "first 300: {}",
+            String::from_utf8_lossy(&blob[..blob.len().min(300)])
+        );
         let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&blob);
         match parsed {
             Ok(v) => {
-                println!("top-level keys: {:?}",
-                    v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()));
-                println!("packages len: {:?}",
-                    v.get("packages").and_then(|p| p.as_array()).map(|a| a.len()));
+                println!(
+                    "top-level keys: {:?}",
+                    v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+                );
+                println!(
+                    "packages len: {:?}",
+                    v.get("packages")
+                        .and_then(|p| p.as_array())
+                        .map(|a| a.len())
+                );
             }
             Err(e) => println!("not JSON: {e}"),
         }

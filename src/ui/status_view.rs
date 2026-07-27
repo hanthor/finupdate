@@ -2189,7 +2189,10 @@ impl SimpleComponent for StatusView {
                                 );
                                 toast_overlay.add_toast(toast);
                             } else {
-                                super::host_actions::run_bootc_install_reset(&toast_overlay, "Factory reset");
+                                super::host_actions::run_bootc_install_reset(
+                                    &toast_overlay,
+                                    "Factory reset",
+                                );
                             }
                         }
                         dlg.close();
@@ -2727,7 +2730,11 @@ fn rebuild_history_list(
             .icon_name(chevron_icon)
             // Icon-only, so it needs both a tooltip and an accessible name —
             // otherwise a screen reader announces an unlabelled button.
-            .tooltip_text(if is_expanded { "Hide details" } else { "Show details" })
+            .tooltip_text(if is_expanded {
+                "Hide details"
+            } else {
+                "Show details"
+            })
             .build();
         chev_btn.update_property(&[gtk::accessible::Property::Label(if is_expanded {
             "Hide details"
@@ -2961,7 +2968,9 @@ fn spawn_changelog_fetch(
                             t.elapsed().as_millis(),
                             available.len()
                         );
-                        let _ = sender.input_sender().send(StatusViewInput::AvailableTagsLoaded(available));
+                        let _ = sender
+                            .input_sender()
+                            .send(StatusViewInput::AvailableTagsLoaded(available));
                     }
                     Ok(_) => println!(
                         "[debug] changelog: phase=list_available_tags ms={} count=0",
@@ -3031,11 +3040,14 @@ fn spawn_changelog_fetch(
                 println!("[debug] changelog: phase=github_commits url={}", url);
                 if let Ok(resp) = client.get(&url).send().await {
                     if let Ok(commits_json) = resp.json::<Vec<GithubCommit>>().await {
-                        all_commits.extend(
-                            commits_json
-                                .into_iter()
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name, c.commit.author.date)),
-                        );
+                        all_commits.extend(commits_json.into_iter().map(|c| {
+                            (
+                                c.sha,
+                                c.commit.message,
+                                c.commit.author.name,
+                                c.commit.author.date,
+                            )
+                        }));
                     }
                 }
 
@@ -3052,7 +3064,14 @@ fn spawn_changelog_fetch(
                             commits_json
                                 .into_iter()
                                 .filter(|c| c.commit.message.starts_with("feat:"))
-                                .map(|c| (c.sha, c.commit.message, c.commit.author.name, c.commit.author.date)),
+                                .map(|c| {
+                                    (
+                                        c.sha,
+                                        c.commit.message,
+                                        c.commit.author.name,
+                                        c.commit.author.date,
+                                    )
+                                }),
                         );
                     }
                 }
@@ -3073,7 +3092,9 @@ fn spawn_changelog_fetch(
                     t_github.elapsed().as_millis(),
                     all_commits.len()
                 );
-                let _ = sender.input_sender().send(StatusViewInput::GithubCommitsLoaded(all_commits));
+                let _ = sender
+                    .input_sender()
+                    .send(StatusViewInput::GithubCommitsLoaded(all_commits));
             }
             println!(
                 "[debug] changelog: phase=total ms={}",
@@ -3096,8 +3117,8 @@ fn spawn_changelog_fetch(
             let settings = Settings::load();
             // Prefer the actual date-stamped full_ref of the newest build;
             // fall back to the stream tag only if we got no versions.
-            let target_ref = newest_full_ref
-                .unwrap_or_else(|| format!("{}:{}", registry_uri, selected_tag));
+            let target_ref =
+                newest_full_ref.unwrap_or_else(|| format!("{}:{}", registry_uri, selected_tag));
 
             // Get the booted image's actual digest-pinned ref from bootc
             // status or mock_identity so we compare two distinct manifests.
@@ -3120,9 +3141,7 @@ fn spawn_changelog_fetch(
                             .and_then(|v| v.as_str())?;
                         Some(format!("{}@{}", img, digest))
                     })
-                    .unwrap_or_else(|| {
-                        format!("{}:{}", registry_uri, read_selected_tag())
-                    })
+                    .unwrap_or_else(|| format!("{}:{}", registry_uri, read_selected_tag()))
             };
 
             if booted_ref != target_ref {
@@ -3138,16 +3157,19 @@ fn spawn_changelog_fetch(
                         booted_ref,
                         target_ref
                     );
-                    match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await
-                    {
+                    match crate::sbom_diff::fetch_and_diff_sboms(booted_ref, target_ref).await {
                         Some(diff) => {
-                            let _ = sbom_sender.input_sender().send(StatusViewInput::SbomDiffLoaded(diff));
+                            let _ = sbom_sender
+                                .input_sender()
+                                .send(StatusViewInput::SbomDiffLoaded(diff));
                         }
                         None => {
                             tracing::info!(
                                 "sbom_diff: no diff available (registry didn't return SPDX referrers)"
                             );
-                            let _ = sbom_sender.input_sender().send(StatusViewInput::SbomDiffUnavailable);
+                            let _ = sbom_sender
+                                .input_sender()
+                                .send(StatusViewInput::SbomDiffUnavailable);
                         }
                     }
                 });
