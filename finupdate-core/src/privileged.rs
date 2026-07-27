@@ -151,10 +151,7 @@ pub fn privileged_async(
     action_journal::record(action, args, &full, suppressed);
 
     if suppressed.blocks_execution() {
-        tracing::warn!(
-            "{action} suppressed — would have run: {}",
-            full.join(" ")
-        );
+        tracing::warn!("{action} suppressed — would have run: {}", full.join(" "));
         return ExecAsync::Suppressed;
     }
 
@@ -180,10 +177,18 @@ mod tests {
 
     #[test]
     fn argv_preserves_argument_order_and_arity() {
-        let got = resolve_argv(&["bootc", "switch", "ghcr.io/ublue-os/bluefin:stable"], Privilege::Pkexec);
+        let got = resolve_argv(
+            &["bootc", "switch", "ghcr.io/ublue-os/bluefin:stable"],
+            Privilege::Pkexec,
+        );
         assert_eq!(
             got,
-            vec!["pkexec", "bootc", "switch", "ghcr.io/ublue-os/bluefin:stable"]
+            vec![
+                "pkexec",
+                "bootc",
+                "switch",
+                "ghcr.io/ublue-os/bluefin:stable"
+            ]
         );
     }
 

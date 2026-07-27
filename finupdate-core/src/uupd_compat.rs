@@ -182,10 +182,8 @@ pub async fn write_config(config: &UupdConfig) -> anyhow::Result<()> {
     ];
 
     let settings = crate::settings::Settings::load();
-    let suppressed = crate::action_journal::Suppressed::from_flags(
-        settings.dev_mode,
-        settings.dry_run,
-    );
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
 
     let mut cmd = match crate::privileged::privileged_async(
         "write_uupd_config",
@@ -271,10 +269,8 @@ fn parse_timer_state(stdout: &str) -> Option<bool> {
 /// dry-run the intent is journalled and the timer is left alone.
 pub async fn set_uupd_timer(enable: bool) -> anyhow::Result<()> {
     let settings = crate::settings::Settings::load();
-    let suppressed = crate::action_journal::Suppressed::from_flags(
-        settings.dev_mode,
-        settings.dry_run,
-    );
+    let suppressed =
+        crate::action_journal::Suppressed::from_flags(settings.dev_mode, settings.dry_run);
     set_uupd_timer_with(enable, suppressed).await
 }
 
@@ -592,8 +588,7 @@ mod tests {
         }
 
         // Suppressed::No so the mock pkexec on PATH is actually invoked.
-        let result =
-            set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
+        let result = set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
 
         unsafe {
             std::env::set_var("PATH", &original_path);
@@ -617,8 +612,7 @@ mod tests {
         }
 
         // Suppressed::No so the mock pkexec on PATH is actually invoked.
-        let result =
-            set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
+        let result = set_uupd_timer_with(true, crate::action_journal::Suppressed::No).await;
 
         unsafe {
             std::env::set_var("PATH", &original_path);

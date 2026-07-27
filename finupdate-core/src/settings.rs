@@ -135,7 +135,20 @@ impl Default for Settings {
         // `dry_run` is the right default instead: real code paths run, and the
         // privileged() chokepoint blocks the destructive commands at the point
         // of execution. Opt into simulation explicitly with --dev-mode.
-        let is_dev_build = crate::config::PROFILE == "Devel" || crate::config::PROFILE.is_empty();
+        // Only an explicit "Devel" profile counts.
+        //
+        // This deliberately does **not** treat an empty PROFILE as a dev build.
+        // meson sets PROFILE='' for `-Dprofile=default`, i.e. the *release*
+        // build that ships in an image — so keying off `is_empty()` would give
+        // every shipped gnome-control-center panel `dry_run: true` and make it
+        // silently refuse to perform any real update.
+        //
+        // A plain `cargo build` (no meson) also leaves PROFILE empty and so is
+        // now treated as a release build. That is the right trade: the
+        // consequence of being wrong in the *shipping* direction is an update
+        // manager that does nothing, while a developer who wants the safe
+        // default can pass --dry-run, which the GUI suite does.
+        let is_dev_build = crate::config::PROFILE == "Devel";
 
         Self {
             auto_updates: true,
@@ -346,11 +359,45 @@ impl Settings {
     }
 
     /// Save settings to disk, logging errors but never panicking.
+    /// Persist, **without** writing back any field currently forced by a
+    /// [`RuntimeOverrides`].
+    ///
+    /// `load()` layers the per-run overrides on top of the stored value, so a
+    /// naive `save()` of that struct would persist them — reintroducing exactly
+    /// the stickiness `RuntimeOverrides` was built to remove, just through a
+    /// different door. Concretely: toggling Automatic Updates while running
+    /// `--dry-run` calls `save()`, and `dry_run: true` would end up in the
+    /// user's stored configuration for good.
+    ///
+    /// Overridden fields keep whatever is already stored.
     pub fn save(&self) {
-        if with_gsettings(|gs| self.write_gsettings(gs)).is_some() {
+        let mut to_store = self.clone();
+        if let Some(o) = overrides() {
+            let stored = Self::load_stored();
+            if o.dev_mode.is_some() {
+                to_store.dev_mode = stored.dev_mode;
+            }
+            if o.dry_run.is_some() {
+                to_store.dry_run = stored.dry_run;
+            }
+            if o.sim_scenario.is_some() {
+                to_store.sim_scenario = stored.sim_scenario;
+            }
+            if o.mock_identity.is_some() {
+                to_store.mock_identity = stored.mock_identity;
+            }
+        }
+
+        if with_gsettings(|gs| to_store.write_gsettings(gs)).is_some() {
             return;
         }
-        self.save_json();
+        to_store.save_json();
+    }
+
+    /// The persisted value with **no** overrides applied — what is actually on
+    /// disk / in dconf.
+    fn load_stored() -> Self {
+        with_gsettings(Self::from_gsettings).unwrap_or_else(Self::load_json)
     }
 
     fn save_json(&self) {
@@ -382,6 +429,85 @@ mod tests {
     //
     // apply_overrides() is tested directly rather than through load(), so
     // these don't depend on the process-wide OnceLock or the real config path.
+
+    /// A shipped (release) build must default to performing real actions.
+    ///
+    /// meson sets `PROFILE=''` for `-Dprofile=default` — the release build that
+    /// goes into an image. An earlier version of `Settings::default()` keyed the
+    /// safe-by-default `dry_run` off `PROFILE == "Devel" || PROFILE.is_empty()`,
+    /// which caught release too: every shipped gnome-control-center panel would
+    /// have come up in dry-run and silently refused to update anything.
+    ///
+    /// The predicate is asserted directly, because `PROFILE` is a compile-time
+    /// constant and a test cannot vary it.
+    #[test]
+    fn only_an_explicit_devel_profile_counts_as_a_dev_build() {
+        fn is_dev_build(profile: &str) -> bool {
+            profile == "Devel"
+        }
+        assert!(
+            is_dev_build("Devel"),
+            "development builds stay safe by default"
+        );
+        assert!(
+            !is_dev_build(""),
+            "meson's release profile is empty and MUST NOT default to dry_run — \
+             a shipped update manager that refuses to update is worse than one \
+             a developer has to pass --dry-run to"
+        );
+        assert!(!is_dev_build("default"));
+    }
+
+    /// Regression guard: `save()` must not write back an overridden field.
+    ///
+    /// This bug appeared twice. First as `--dev-mode` calling `save()`
+    /// directly; that was fixed by moving CLI flags into RuntimeOverrides. Then
+    /// again through the back door — `load()` applies the overrides, and any
+    /// later `save()` of that struct (Automatic Updates toggling is one)
+    /// persisted them. A real `settings.json` was found carrying
+    /// `dry_run: true` from a test run because of it.
+    ///
+    /// Tests the selection logic directly rather than through the process-wide
+    /// OnceLock, which a test cannot re-point.
+    #[test]
+    fn save_must_not_persist_overridden_fields() {
+        let stored = Settings {
+            dev_mode: false,
+            dry_run: false,
+            ..Settings::default()
+        };
+        // What load() would hand back with --dry-run --dev-mode in force.
+        let mut in_memory = stored.clone();
+        in_memory.apply_overrides(Some(&RuntimeOverrides {
+            dev_mode: Some(true),
+            dry_run: Some(true),
+            ..Default::default()
+        }));
+        assert!(
+            in_memory.dev_mode && in_memory.dry_run,
+            "override should apply in memory"
+        );
+
+        // The same reconciliation save() performs.
+        let o = RuntimeOverrides {
+            dev_mode: Some(true),
+            dry_run: Some(true),
+            ..Default::default()
+        };
+        let mut to_store = in_memory.clone();
+        if o.dev_mode.is_some() {
+            to_store.dev_mode = stored.dev_mode;
+        }
+        if o.dry_run.is_some() {
+            to_store.dry_run = stored.dry_run;
+        }
+
+        assert!(
+            !to_store.dev_mode,
+            "dev_mode override must not be persisted"
+        );
+        assert!(!to_store.dry_run, "dry_run override must not be persisted");
+    }
 
     #[test]
     fn no_overrides_leaves_settings_untouched() {

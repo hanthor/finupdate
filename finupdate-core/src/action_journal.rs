@@ -99,10 +99,7 @@ fn sink() -> Option<&'static Mutex<std::fs::File>> {
             Ok(f) => Some(Mutex::new(f)),
             Err(e) => {
                 // Don't take the app down over a test-only facility.
-                tracing::error!(
-                    "action journal disabled: cannot open {:?}: {e}",
-                    path
-                );
+                tracing::error!("action journal disabled: cannot open {:?}: {e}", path);
                 None
             }
         }
@@ -120,12 +117,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// Never panics and never propagates I/O errors: a broken journal must not
 /// change application behaviour.
-pub fn record(
-    action: &str,
-    args: serde_json::Value,
-    would_run: &[String],
-    suppressed: Suppressed,
-) {
+pub fn record(action: &str, args: serde_json::Value, would_run: &[String], suppressed: Suppressed) {
     let Some(sink) = sink() else { return };
 
     let mut guard = match sink.lock() {
